@@ -49,7 +49,7 @@ class MemoryManager:
     - MAX_CONTEXT_CHARS: total context injected into system prompt
     """
 
-    MAX_CONTEXT_CHARS = 8000
+    MAX_CONTEXT_CHARS = 6000   # ~1500 tokens — keep memory injection lean
     MAX_FILES = 25          # Hard cap on total memory files
     MAX_FILE_CHARS = 800    # Max content chars per file (excluding metadata header)
 
@@ -148,10 +148,18 @@ class MemoryManager:
 
     async def get_context(self) -> str:
         """
-        Return all memory files as a single formatted string for injection
-        into the system prompt.  Truncates gracefully if total size is large.
+        Return memory files sorted by most-recently-updated first, up to
+        MAX_CONTEXT_CHARS (~1500 tokens).  Newer memories take priority.
         """
-        files = await self.list_files()
+        try:
+            paths = sorted(
+                (p for p in self.memory_dir.glob("*.md") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,  # newest first
+            )
+            files = [p.name for p in paths]
+        except Exception:
+            files = await self.list_files()
         if not files:
             return ""
 

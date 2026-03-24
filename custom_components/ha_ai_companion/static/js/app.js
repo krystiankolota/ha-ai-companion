@@ -70,6 +70,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Check health
     checkHealth();
+
+    // Save session before the user navigates away / refreshes
+    window.addEventListener('beforeunload', () => {
+        if (conversationHistory && conversationHistory.length > 0) {
+            // Use sendBeacon so the request fires even during page unload
+            const payload = JSON.stringify({
+                title: (() => {
+                    const first = conversationHistory.find(m => m.role === 'user');
+                    return first ? String(first.content).substring(0, 60).trim() : 'New conversation';
+                })(),
+                messages: conversationHistory
+            });
+            navigator.sendBeacon(`api/sessions/${currentSessionId}`, new Blob([payload], { type: 'application/json' }));
+        }
+    });
 });
 
 // Check health endpoint
@@ -667,12 +682,18 @@ function addLoadingIndicator() {
                 <span class="dot"></span>
                 <span class="dot"></span>
             </div>
-            <span class="loading-text">AI is thinking...</span>
+            <span class="loading-text" id="loadingStatusText">AI is thinking...</span>
         </div>
     `;
     chatMessages.appendChild(loadingDiv);
     scrollToBottom();
     return loadingDiv;
+}
+
+// Update the status text inside the loading indicator
+function updateLoadingStatus(text) {
+    const el = document.getElementById('loadingStatusText');
+    if (el) el.textContent = text;
 }
 
 // Remove loading indicator
@@ -1151,8 +1172,8 @@ async function loadSessions() {
     try {
         const response = await fetch('api/sessions');
         if (!response.ok) return;
-        const sessions = await response.json();
-        renderSessionsList(sessions);
+        const data = await response.json();
+        renderSessionsList(data.sessions || data);
     } catch (e) {
         console.error('Failed to load sessions:', e);
     }

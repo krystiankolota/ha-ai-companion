@@ -30,6 +30,20 @@ function connectWebSocket() {
     ws.onclose = () => {
         console.log('WebSocket closed');
         ws = null;
+        // If we were mid-response, clean up so the UI doesn't freeze
+        if (loadingIndicator && loadingIndicator.parentNode) {
+            removeLoadingIndicator(loadingIndicator);
+            loadingIndicator = null;
+            addSystemMessage('⚠️ Connection lost. Your message may not have been processed — please try again.');
+        }
+        if (sendBtn && sendBtn.disabled) {
+            sendBtn.disabled = false;
+            if (messageInput) messageInput.focus();
+        }
+        // Save whatever we have so far
+        if (typeof window.autoSaveSession === 'function') {
+            window.autoSaveSession();
+        }
     };
 
     return ws;
@@ -155,18 +169,26 @@ function handleWebSocketMessage(message) {
             currentMessageContent = '';
 
             // Show tool execution indicator summary
-            addSystemMessage(`🔧 Calling ${data.tool_calls.length} tool(s): ${data.tool_calls.map(tc => tc.function.name).join(', ')}`);
+            const toolNames = data.tool_calls.map(tc => tc.function.name).join(', ');
+            addSystemMessage(`🔧 Calling ${data.tool_calls.length} tool(s): ${toolNames}`);
 
             // Re-add loading indicator while tools execute and AI processes next response
             if (!loadingIndicator) {
                 loadingIndicator = addLoadingIndicator();
+            }
+            if (typeof updateLoadingStatus === 'function') {
+                updateLoadingStatus(`Running: ${toolNames}…`);
             }
 
         } else if (eventType === 'tool_start') {
             // Store the arguments for later use when we get the tool_result
             if (data.tool_call_id && data.arguments) {
                 toolCallArguments[data.tool_call_id] = data.arguments;
-                console.log(`Stored arguments for tool_call_id ${data.tool_call_id}:`, data.arguments);
+            }
+
+            // Update loading indicator status text
+            if (typeof updateLoadingStatus === 'function') {
+                updateLoadingStatus(`Running: ${data.function}…`);
             }
 
             // Show individual tool execution start
@@ -231,8 +253,17 @@ function handleWebSocketMessage(message) {
                 addApprovalCard(changesetData);
             }
 
+            // Incrementally save after each tool result so progress survives a refresh
+            if (typeof window.autoSaveSession === 'function') {
+                window.autoSaveSession();
+            }
+
         } else if (eventType === 'complete') {
             console.log('Stream complete:', data);
+
+            if (typeof updateLoadingStatus === 'function' && data.iterations > 1) {
+                updateLoadingStatus(`Done (${data.iterations} iterations)`);
+            }
 
             // Update token counter with final totals
             if (data.usage) {

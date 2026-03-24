@@ -119,6 +119,10 @@ class AgentSystem:
         # In-memory storage for pending changesets
         self.pending_changesets: Dict[str, Changeset] = {}
 
+        # Home topology cache (areas → entities) — refreshed every 10 minutes
+        self._topology_cache: Optional[str] = None
+        self._topology_cache_time: Optional[datetime] = None
+
         # System prompt for the configuration agent
         base_prompt = system_prompt or self._get_default_system_prompt()
 
@@ -215,6 +219,8 @@ Anti-bloat rules (enforced by the system, also your responsibility):
 Context injection:
 - Memory is already injected into this prompt at session start — check it before calling read_memories
 - Call read_memories only for a specific file not shown in the injected context
+- Home layout (areas → entities) is injected below — use it to answer location/entity questions without tool calls
+- Only call get_entity_states when you need live state values or attributes not shown in the layout
 
 Automation Suggestion Guidelines:
 - When asked to suggest automations, first call get_entity_states to see what devices exist
@@ -281,6 +287,11 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         system_content = system_content + "\n\n" + memory_context
                 except Exception as mem_err:
                     logger.warning(f"Failed to load memory context: {mem_err}")
+
+            # Inject home topology (areas → entities) — cached, fails silently
+            topology = await self._build_home_topology()
+            if topology:
+                system_content = system_content + "\n\n" + topology
 
             system_message = {
                 "role": "system",
@@ -735,7 +746,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 # Execute each tool call and stream results immediately
                 for tool_idx, tool_call in enumerate(accumulated_tool_calls):
                     function_name = tool_call["function"]["name"]
-                    function_args = json.loads(tool_call["function"]["arguments"])
+                    function_args = json.loads(tool_call["function"]["arguments"] or "{}")
 
                     logger.info(f"[ITERATION {iteration}] Calling tool: {function_name}")
 
@@ -849,12 +860,205 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 })
             }
 
+            # Fire-and-forget memory consolidation — runs after response is delivered
+            import asyncio
+            asyncio.ensure_future(self._run_memory_consolidation(messages + new_messages))
+
         except Exception as e:
             logger.error(f"Agent streaming error: {e}", exc_info=True)
             yield {
                 "event": "error",
                 "data": json.dumps({"error": str(e)})
             }
+
+    async def _build_home_topology(self) -> str:
+        """
+        Build a compact home layout string (areas → entities) for system prompt injection.
+        Cached for 10 minutes to avoid repeated WebSocket calls.
+        Returns empty string on failure — topology is advisory, never required.
+        """
+        _TTL = 600  # 10 minutes
+        if (self._topology_cache is not None and
+                self._topology_cache_time is not None and
+                (datetime.now() - self._topology_cache_time).total_seconds() < _TTL):
+            return self._topology_cache
+
+        try:
+            areas: Dict[str, str] = {}        # area_id → name
+            entity_area: Dict[str, str] = {}  # entity_id → area_id
+            entity_state: Dict[str, tuple] = {}  # entity_id → (state, friendly_name)
+
+            hass = self.config_manager.hass if self.config_manager else None
+            if hass:
+                # Custom component mode — use in-memory registries (fast, no I/O)
+                area_reg = hass.area_registry.async_get()
+                for area in area_reg.areas.values():
+                    areas[area.id] = area.name
+                ent_reg = hass.entity_registry.async_get()
+                for ent in ent_reg.entities.values():
+                    if ent.area_id:
+                        entity_area[ent.entity_id] = ent.area_id
+                for state in hass.states.async_all():
+                    entity_state[state.entity_id] = (
+                        state.state,
+                        state.attributes.get("friendly_name", state.entity_id)
+                    )
+            else:
+                # Add-on mode — 3 WebSocket calls (cached, so only every 10 min)
+                supervisor_token = os.getenv('SUPERVISOR_TOKEN')
+                if not supervisor_token:
+                    return ""
+                from ..ha.ha_websocket import HomeAssistantWebSocket
+                ws = HomeAssistantWebSocket("ws://supervisor/core/websocket", supervisor_token)
+                await ws.connect()
+                try:
+                    for a in await ws.list_areas():
+                        areas[a["area_id"]] = a["name"]
+                    for e in await ws.list_entities():
+                        if e.get("area_id"):
+                            entity_area[e["entity_id"]] = e["area_id"]
+                    for s in await ws.get_states():
+                        entity_state[s["entity_id"]] = (
+                            s.get("state", ""),
+                            s.get("attributes", {}).get("friendly_name", s["entity_id"])
+                        )
+                finally:
+                    await ws.close()
+
+            if not entity_state:
+                return ""
+
+            # Domain counts
+            domain_counts: Dict[str, int] = {}
+            for eid in entity_state:
+                d = eid.split(".")[0]
+                domain_counts[d] = domain_counts.get(d, 0) + 1
+
+            SHOW_DOMAINS = ["light", "switch", "climate", "media_player", "cover",
+                            "vacuum", "fan", "lock", "sensor", "binary_sensor",
+                            "scene", "script", "automation", "input_boolean"]
+            domain_parts = [f"{domain_counts[d]} {d}" for d in SHOW_DOMAINS if d in domain_counts]
+            other = sum(v for k, v in domain_counts.items() if k not in SHOW_DOMAINS)
+            if other:
+                domain_parts.append(f"{other} other")
+
+            lines = [f"## Home Layout — {len(entity_state)} entities: {', '.join(domain_parts)}"]
+
+            # Group actionable entities by area (skip pure diagnostic domains)
+            SKIP_DOMAINS = {"logbook", "persistent_notification", "zone", "sun", "weather",
+                            "update", "person", "device_tracker"}
+            area_buckets: Dict[str, List[str]] = {aid: [] for aid in areas}
+            unassigned_count = 0
+            for eid, (state_val, fname) in entity_state.items():
+                if eid.split(".")[0] in SKIP_DOMAINS:
+                    continue
+                aid = entity_area.get(eid)
+                if aid and aid in area_buckets:
+                    label = fname if fname and fname != eid else eid
+                    area_buckets[aid].append(f"{label} [{state_val}]")
+                else:
+                    unassigned_count += 1
+
+            # Format each area (max 8 entities shown per area to keep it compact)
+            MAX_CHARS = 2000
+            for aid, aname in areas.items():
+                bucket = area_buckets.get(aid, [])
+                if not bucket:
+                    continue
+                shown = bucket[:8]
+                rest = len(bucket) - len(shown)
+                line = f"**{aname}**: {', '.join(shown)}"
+                if rest:
+                    line += f", +{rest} more"
+                lines.append(line)
+
+            if unassigned_count:
+                lines.append(f"*({unassigned_count} entities not assigned to any area)*")
+
+            result = "\n".join(lines)
+            # Hard cap to stay within token budget
+            if len(result) > MAX_CHARS:
+                result = result[:MAX_CHARS] + "\n*(topology truncated)*"
+
+            self._topology_cache = result
+            self._topology_cache_time = datetime.now()
+            logger.info(f"Home topology built: {len(areas)} areas, {len(entity_state)} entities, {len(result)} chars")
+            return result
+
+        except Exception as e:
+            logger.warning(f"Failed to build home topology (non-fatal): {e}")
+            return ""
+
+    async def _run_memory_consolidation(self, conversation_messages: List[Dict[str, Any]]) -> None:
+        """
+        Background pass after each user turn: let the LLM review what was discussed
+        and save/delete/update memories without involving the user.
+        Runs silently — errors are logged but never surface to the UI.
+        """
+        if not self.memory_manager or not self.client:
+            return
+        try:
+            import json
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            memory_context = await self.memory_manager.get_context()
+            system_content = (
+                "You are a memory consolidation assistant for a Home Assistant AI companion.\n"
+                "Review the conversation and update persistent memory ONLY if clearly warranted.\n\n"
+                "SAVE when ALL of these are true:\n"
+                "  1. The user explicitly stated a durable fact (not inferred, not a current state)\n"
+                "  2. Confidence ≥ 0.85 — if in doubt, do NOT save\n"
+                "  3. It belongs to one of: preference_, identity_, device_, baseline_, pattern_, correction_\n\n"
+                "DO NOT save: current sensor readings, actions just performed, one-time commands,\n"
+                "device specs, HA integration details, anything already in injected memory below.\n\n"
+                "If existing memory is contradicted → overwrite with save_memory (use 'replaces' field).\n"
+                "If existing memory is stale (>90 days, user corrected it) → delete_memory first.\n"
+                "Max 800 chars per file (bullet points only). Max 25 files total — merge before creating new.\n"
+                "If nothing qualifies: call NO tools.\n"
+                f"Current date/time: {now_str}"
+            )
+            if memory_context:
+                system_content += "\n\n" + memory_context
+
+            # Include only role/content pairs — strip any cache_control metadata
+            slim_history = []
+            for m in conversation_messages:
+                if isinstance(m.get("content"), str):
+                    slim_history.append({"role": m["role"], "content": m["content"]})
+                elif isinstance(m.get("content"), list):
+                    # Flatten content blocks to plain text
+                    text = " ".join(
+                        b.get("text", "") for b in m["content"] if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                    if text:
+                        slim_history.append({"role": m["role"], "content": text})
+
+            messages = [{"role": "system", "content": system_content}] + slim_history
+
+            # Build memory-only tool list
+            memory_tools = [t for t in self.tools if t["function"]["name"] in (
+                "save_memory", "delete_memory", "read_memories", "list_memory_stats"
+            )]
+            if not memory_tools:
+                return
+
+            # Non-streaming, single pass, no retry loop
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=memory_tools,
+                tool_choice="auto",
+                max_tokens=1024,
+            )
+
+            choice = response.choices[0]
+            if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+                for tc in choice.message.tool_calls:
+                    fn = tc.function.name
+                    args = json.loads(tc.function.arguments or "{}")
+                    result = await self.agent_tools.execute_tool(fn, args)
+                    logger.info(f"[memory consolidation] {fn}({list(args.keys())}) → success={result.get('success')}")
+        except Exception as e:
+            logger.warning(f"Memory consolidation failed (non-fatal): {e}")
 
     def store_changeset(self, changeset_data: Dict[str, Any]) -> str:
         """
