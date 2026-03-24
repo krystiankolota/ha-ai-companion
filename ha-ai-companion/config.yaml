@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "0.2.0"
+version: "0.2.1"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -46,12 +46,18 @@ privileged: []
 options:
   openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
   openai_api_key: ""
-  openai_model: "gemini-2.5-flash" # Best model for speed and price
+  openai_model: "gemini-2.5-flash"
   log_level: "info"
   system_prompt_file: ""
   temperature: ""
   enable_cache_control: false
-  usage_tracking: "stream_options" # Options: "stream_options", "usage", "disabled"
+  usage_tracking: "stream_options"
+  suggestion_model: ""
+  config_model: ""
+  suggestion_prompt: ""
+  nodered_url: ""
+  nodered_token: ""
+  nodered_flows_file: ""
 
 schema:
   openai_api_url: url
@@ -62,3 +68,9 @@ schema:
   temperature: str?
   enable_cache_control: bool
   usage_tracking: list(stream_options|usage|disabled)
+  suggestion_model: str?
+  config_model: str?
+  suggestion_prompt: str?
+  nodered_url: url?
+  nodered_token: password?
+  nodered_flows_file: str?

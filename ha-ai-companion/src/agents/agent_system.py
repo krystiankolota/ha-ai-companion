@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
 from ..agents.tools import AgentTools
 from ..config import ConfigurationManager
+from ..memory.manager import MemoryManager
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 
@@ -34,7 +35,14 @@ class AgentSystem:
     - Explaining configuration decisions
     """
 
-    def __init__(self, config_manager: ConfigurationManager, system_prompt: Optional[str] = None, enable_cache_control: bool = False, usage_tracking: str = 'stream_options'):
+    def __init__(
+        self,
+        config_manager: ConfigurationManager,
+        system_prompt: Optional[str] = None,
+        enable_cache_control: bool = False,
+        usage_tracking: str = 'stream_options',
+        memory_manager: Optional[MemoryManager] = None,
+    ):
         """
         Initialize the agent system.
 
@@ -46,9 +54,11 @@ class AgentSystem:
                 - 'stream_options': Use stream_options.include_usage (OpenAI format)
                 - 'usage': Use usage.include (alternative format)
                 - 'disabled': Don't request usage tracking
+            memory_manager: Optional MemoryManager for persistent cross-session memories
         """
         self.config_manager = config_manager
-        self.tools = AgentTools(config_manager, agent_system=self)
+        self.memory_manager = memory_manager
+        self.tools = AgentTools(config_manager, agent_system=self, memory_manager=memory_manager)
 
         # Initialize OpenAI client
         api_key = os.getenv('OPENAI_API_KEY')
@@ -63,6 +73,12 @@ class AgentSystem:
 
         self.model = os.getenv('OPENAI_MODEL', 'gpt-4o')
 
+        # Dual-model support: suggestion_model for early/conversational iterations,
+        # config_model for iterations after tool results exist (AI doing actual config work).
+        # Both fall back to the main model if not configured.
+        self.suggestion_model = os.getenv('SUGGESTION_MODEL') or self.model
+        self.config_model = os.getenv('CONFIG_MODEL') or self.model
+
         # Get temperature from environment variable, use None if not specified
         temperature_str = os.getenv('TEMPERATURE')
         self.temperature = float(temperature_str) if temperature_str else None
@@ -74,6 +90,10 @@ class AgentSystem:
         self.usage_tracking = usage_tracking
 
         logger.info(f"AgentSystem initialized with model: {self.model}")
+        if self.suggestion_model != self.model:
+            logger.info(f"Suggestion model override: {self.suggestion_model}")
+        if self.config_model != self.model:
+            logger.info(f"Config model override: {self.config_model}")
         if self.temperature is not None:
             logger.info(f"Temperature: {self.temperature}")
         logger.info(f"Cache control: {'enabled' if self.enable_cache_control else 'disabled'}")
@@ -83,7 +103,15 @@ class AgentSystem:
         self.pending_changesets: Dict[str, Changeset] = {}
 
         # System prompt for the configuration agent
-        self.system_prompt = system_prompt or self._get_default_system_prompt()
+        base_prompt = system_prompt or self._get_default_system_prompt()
+
+        # Append user-defined suggestion prompt if configured
+        suggestion_prompt = os.getenv('SUGGESTION_PROMPT', '').strip()
+        if suggestion_prompt:
+            base_prompt = base_prompt + "\n\nAdditional instructions for automation suggestions:\n" + suggestion_prompt
+            logger.info(f"Appended custom suggestion prompt ({len(suggestion_prompt)} characters)")
+
+        self.system_prompt = base_prompt
         if system_prompt:
             logger.info(f"Using custom system prompt ({len(system_prompt)} characters)")
         else:
@@ -91,9 +119,9 @@ class AgentSystem:
 
     def _get_default_system_prompt(self) -> str:
         """Get the default system prompt for the configuration agent."""
-        return """You are a Home Assistant Configuration Assistant.
+        return """You are a Home Assistant Configuration Assistant with persistent memory.
 
-Your role is to help users manage their Home Assistant configuration files safely and effectively.
+Your role is to help users manage their Home Assistant configuration files safely and effectively, suggest useful automations, and remember important facts about their setup across sessions.
 
 Key Responsibilities:
 1. **Understanding Requests**: Interpret user requests about Home Assistant configuration
@@ -101,10 +129,31 @@ Key Responsibilities:
 3. **Proposing Changes**: Suggest configuration changes with clear explanations using the propose_config_changes tool without requesting confirmation
 4. **Safety First**: Always explain the impact of changes before proposing them
 5. **Best Practices**: Guide users toward Home Assistant best practices
+6. **Automation Suggestions**: Proactively suggest useful automations based on the user's devices and current states
+7. **Memory Management**: Remember important facts about the user's setup across sessions
 
 Available Tools:
-- search_config_files: Search for terms in configuration (use first)
-- propose_config_changes: Propose changes for user approval
+- search_config_files: Search for terms in configuration files (use first when reading config). Includes all Lovelace dashboards as lovelace.yaml (default) and lovelace/{url_path}.yaml (custom).
+- propose_config_changes: Propose file changes for user approval. Supports lovelace.yaml and lovelace/{url_path}.yaml for dashboard edits.
+- list_dashboards: List all Lovelace dashboards with their url_path and virtual file path
+- create_dashboard: Create a new Lovelace dashboard (returns url_path for editing)
+- delete_dashboard: Delete a Lovelace dashboard by url_path
+- get_entity_states: Get live current states of all entities (use for automation suggestions)
+- get_nodered_flows: Read Node-RED flows exported to a JSON file (use when suggesting automations to avoid duplicating existing flows)
+- read_memories: Read persistent memory files from previous sessions
+- save_memory: Save a memory file to persist knowledge across sessions
+- delete_memory: Delete an outdated memory file
+- list_memory_stats: Audit memory files — sizes, ages, stale flags
+
+Dashboard Guidelines:
+- Call list_dashboards first to discover what dashboards exist and their url_path values
+- The default dashboard is always available as lovelace.yaml
+- Custom dashboards are available as lovelace/{url_path}.yaml (e.g. lovelace/kitchen.yaml)
+- To review a dashboard: use search_config_files with 'lovelace' or call list_dashboards then search_config_files
+- To edit a dashboard: read it via search_config_files, then propose_config_changes with the correct path
+- To create a dashboard: call create_dashboard (returns url_path), then populate it via propose_config_changes
+- To delete a dashboard: call delete_dashboard with the url_path (cannot delete the default dashboard)
+- Dashboard YAML structure: must include at minimum 'title' and 'views' keys
 
 Important Guidelines:
 - NEVER suggest changes directly - always use propose_config_changes
@@ -115,8 +164,49 @@ Important Guidelines:
 - Only change what's needed to complete the request of the user
 - Validate that changes align with Home Assistant documentation
 - Warn users about potential breaking changes
-- Suggest testing in a development environment for major changes
-- Remember when searching for files that terms are case-insensitive so don't search for multiple case variations of a word
+- Remember when searching for files that terms are case-insensitive
+
+Memory Guidelines:
+- Categories: preference_, identity_, device_, baseline_, pattern_, correction_ (use as filename prefix)
+- Examples: preference_lighting.md, device_nicknames.md, pattern_morning_routine.md
+
+SAVE only when the user explicitly states a persistent fact:
+- Preferences ("I prefer 22°C", "always dim at night")
+- Device nicknames or locations ("Button 1 is the desk button")
+- Room/home layout facts
+- Baseline sensor norms ("100 ppm CO2 is normal here")
+- Recurring routines or schedules
+- Corrections to previously stored facts
+
+DO NOT save — if in doubt, don't:
+- Current states or live sensor readings (these change constantly)
+- Actions just performed ("I turned on X")
+- One-time commands (not stated as ongoing preference)
+- Device specs, capabilities, or HA integration details
+- Inferred or assumed facts the user never stated
+- Single-event observations or troubleshooting notes
+- Anything already derivable from the HA configuration
+
+Anti-bloat rules (enforced by the system, also your responsibility):
+- Max 25 files total — merge related facts into one file rather than creating many small ones
+- Max 800 chars per file — be terse; bullet points only, no prose
+- When updating a memory, overwrite the whole file — never append stale info
+- Use the `replaces` field when correcting a previous memory to delete the old file atomically
+- Call list_memory_stats periodically and proactively delete/merge stale or oversized files
+- At session end: if you learned something new, save it; if something is now stale, delete it
+
+Context injection:
+- Memory is already injected into this prompt at session start — check it before calling read_memories
+- Call read_memories only for a specific file not shown in the injected context
+
+Automation Suggestion Guidelines:
+- When asked to suggest automations, first call get_entity_states to see what devices exist
+- Also call search_config_files to see what automations already exist (avoid duplicates)
+- If Node-RED is configured, call get_nodered_flows to see existing flows — do NOT suggest automations that are already implemented in Node-RED
+- Suggest practical, common-sense automations based on the devices present
+- Group suggestions by area/domain and explain the benefit of each
+- When Node-RED flows are available, mention whether a suggestion is best done in HA automations or Node-RED
+- Offer to implement any suggestion via propose_config_changes
 
 Response Style:
 - Be concise but thorough
@@ -164,10 +254,20 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             logger.info(f"Agent streaming user message: {user_message[:100]}...")
 
             # Build messages list with prompt caching support
-            # System prompt with cache control (marks the system prompt for caching)
+            # Inject datetime + memory context into system prompt
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            system_content = self.system_prompt + f"\n\nCurrent date/time: {now_str}"
+            if self.memory_manager:
+                try:
+                    memory_context = await self.memory_manager.get_context()
+                    if memory_context:
+                        system_content = system_content + "\n\n" + memory_context
+                except Exception as mem_err:
+                    logger.warning(f"Failed to load memory context: {mem_err}")
+
             system_message = {
                 "role": "system",
-                "content": self.system_prompt
+                "content": system_content
             }
             if self.enable_cache_control:
                 system_message["cache_control"] = {"type": "ephemeral"}
@@ -228,12 +328,69 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             if self.enable_cache_control:
                 propose_tool["cache_control"] = {"type": "ephemeral"}
 
+            dashboard_tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "list_dashboards",
+                        "description": "List all Lovelace dashboards. Returns url_path, title, icon, and virtual_file path for each. Call this before reading or editing a specific dashboard.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "create_dashboard",
+                        "description": "Create a new Lovelace dashboard. After creation, populate it with propose_config_changes using 'lovelace/{url_path}.yaml' as the file_path.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "title": {
+                                    "type": "string",
+                                    "description": "Human-readable dashboard title (e.g. 'Kitchen Dashboard')"
+                                },
+                                "url_path": {
+                                    "type": "string",
+                                    "description": "URL slug for the dashboard (e.g. 'kitchen'). Auto-generated from title if omitted."
+                                },
+                                "icon": {
+                                    "type": "string",
+                                    "description": "Material Design icon (e.g. 'mdi:silverware-fork-knife')"
+                                }
+                            },
+                            "required": ["title"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delete_dashboard",
+                        "description": "Delete a Lovelace dashboard. Cannot delete the default dashboard.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "url_path": {
+                                    "type": "string",
+                                    "description": "Dashboard URL slug to delete (e.g. 'kitchen')"
+                                }
+                            },
+                            "required": ["url_path"]
+                        }
+                    }
+                },
+            ]
+
             tools = [
                 {
                     "type": "function",
                     "function": {
                         "name": "search_config_files",
-                        "description": "Search configuration files (all YAML files + lovelace.yaml, plus individual device/entity/area files if search_pattern matches). Returns individual files like devices/{id}.json, entities/{entity_id}.json, and areas/{area_id}.json for matching items. Devices/entities/areas are ONLY included when search_pattern is provided.",
+                        "description": "Search configuration files (all YAML files + all Lovelace dashboards, plus device/entity/area virtual files). The default dashboard is returned as 'lovelace.yaml'; custom dashboards as 'lovelace/{url_path}.yaml'. Devices/entities/areas are ONLY included when search_pattern is provided.",
                         "parameters": {
                             "type": "object",
                             "properties": {
@@ -246,7 +403,109 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         }
                     }
                 },
-                propose_tool
+                propose_tool,
+                *dashboard_tools,
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_nodered_flows",
+                        "description": "Fetch Node-RED flows via the Node-RED Admin API (or file fallback). Use when suggesting automations to see what is already built in Node-RED and avoid duplicates. Returns flow tabs and nodes with their wiring.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_entity_states",
+                        "description": "Get the current live states of all Home Assistant entities. Use this when suggesting automations or when the user asks about current device states. Returns entity_id, friendly_name, state value, attributes (truncated), area name, and last_changed timestamp for each entity.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "domain_filter": {
+                                    "type": "string",
+                                    "description": "Optional HA domain to limit results (e.g. 'light', 'switch', 'sensor', 'binary_sensor', 'climate', 'media_player'). Omit to get all entities."
+                                }
+                            },
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_memories",
+                        "description": "Read persistent memory files saved from previous sessions. Always call this at the start of a session when context about the user's setup might help. Returns all memory files or a specific one.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Specific memory file to read (e.g. 'home_structure.md'). Omit to read all memory files."
+                                }
+                            },
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "save_memory",
+                        "description": "Save or update a persistent memory file. Use category prefixes: preference_, device_, identity_, baseline_, pattern_, correction_. Only save persistent facts, not current states or command echoes. Use 'replaces' when correcting a previous memory.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Filename with category prefix (e.g. 'preference_lighting.md', 'device_nicknames.md', 'pattern_morning_routine.md'). Only letters, numbers, hyphens and underscores kept; .md forced."
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Full markdown content to store. Concise factual bullet points preferred."
+                                },
+                                "replaces": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Optional list of memory filenames this new entry supersedes (e.g. when the user corrects a preference). Those files are deleted atomically."
+                                }
+                            },
+                            "required": ["filename", "content"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delete_memory",
+                        "description": "Delete a memory file that is no longer accurate or relevant.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Name of the memory file to delete."
+                                }
+                            },
+                            "required": ["filename"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "list_memory_stats",
+                        "description": "Audit memory health: returns each file's name, size in chars, age in days, and a stale flag (true when age > 90 days). Call this periodically to identify files to prune, merge, or delete.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
             ]
 
             # Track tool calls and results
@@ -265,9 +524,16 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 iteration += 1
                 logger.info(f"[ITERATION {iteration}] Calling OpenAI streaming API")
 
+                # Select model: use config_model once tool results exist in messages,
+                # otherwise use suggestion_model (fast/cheap for early conversational turns).
+                has_tool_results = any(m.get("role") == "tool" for m in messages)
+                active_model = self.config_model if has_tool_results else self.suggestion_model
+                if active_model != self.model:
+                    logger.debug(f"[ITERATION {iteration}] Using {'config' if has_tool_results else 'suggestion'} model: {active_model}")
+
                 # Call OpenAI API with streaming
                 api_params = {
-                    "model": self.model,
+                    "model": active_model,
                     "messages": messages,
                     "tools": tools,
                     "tool_choice": "auto",
@@ -285,7 +551,18 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 if self.temperature is not None:
                     api_params["temperature"] = self.temperature
 
-                stream = await self.client.chat.completions.create(**api_params)
+                try:
+                    stream = await self.client.chat.completions.create(**api_params)
+                except Exception as api_err:
+                    # Some providers (e.g. Anthropic/Haiku) reject stream_options or
+                    # usage params — retry without them to keep things working.
+                    err_str = str(api_err).lower()
+                    if 'stream_options' in err_str or 'usage' in err_str or 'extra' in err_str or 'unknown' in err_str:
+                        logger.warning(f"API rejected usage-tracking params, retrying without them: {api_err}")
+                        retry_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage')}
+                        stream = await self.client.chat.completions.create(**retry_params)
+                    else:
+                        raise
 
                 # Accumulate the streaming response
                 accumulated_content = ""
@@ -299,6 +576,21 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 cached_tokens = 0
 
                 async for chunk in stream:
+                    # Guard: some providers (e.g. Anthropic/Haiku) send a final
+                    # usage-only chunk with an empty choices array.
+                    if not chunk.choices:
+                        if self.usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
+                            input_tokens = getattr(chunk.usage, 'prompt_tokens', 0) or getattr(chunk.usage, 'input_tokens', 0)
+                            output_tokens = getattr(chunk.usage, 'completion_tokens', 0) or getattr(chunk.usage, 'output_tokens', 0)
+                            if hasattr(chunk.usage, 'cached_tokens'):
+                                cached_tokens = chunk.usage.cached_tokens or 0
+                            elif hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details:
+                                cached_tokens = getattr(chunk.usage.prompt_tokens_details, 'cached_tokens', 0)
+                            total_input_tokens += input_tokens
+                            total_output_tokens += output_tokens
+                            total_cached_tokens += cached_tokens
+                        continue
+
                     delta = chunk.choices[0].delta
 
                     # Capture token usage if available (present in final chunk)
@@ -459,6 +751,33 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         else:
                             result = await self.tools.propose_config_changes(**function_args)
                             logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, changeset_id={result.get('changeset_id')}")
+                    elif function_name == "list_dashboards":
+                        result = await self.tools.list_dashboards()
+                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
+                    elif function_name == "create_dashboard":
+                        result = await self.tools.create_dashboard(**function_args)
+                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, url_path={result.get('url_path')}")
+                    elif function_name == "delete_dashboard":
+                        result = await self.tools.delete_dashboard(**function_args)
+                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}")
+                    elif function_name == "get_nodered_flows":
+                        result = await self.tools.get_nodered_flows()
+                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
+                    elif function_name == "get_entity_states":
+                        result = await self.tools.get_entity_states(**function_args)
+                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
+                    elif function_name == "read_memories":
+                        result = await self.tools.read_memories(**function_args)
+                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
+                    elif function_name == "save_memory":
+                        result = await self.tools.save_memory(**function_args)
+                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, filename={result.get('filename')}")
+                    elif function_name == "delete_memory":
+                        result = await self.tools.delete_memory(**function_args)
+                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}")
+                    elif function_name == "list_memory_stats":
+                        result = await self.tools.list_memory_stats()
+                        logger.info(f"[ITERATION {iteration}] Tool result: total={result.get('total')}")
                     else:
                         result = {"success": False, "error": f"Unknown tool: {function_name}"}
                         logger.error(f"[ITERATION {iteration}] Unknown tool requested: {function_name}")
@@ -684,3 +1003,102 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 "applied": False,
                 "message": f"Error applying changes: {str(e)}"
             }
+
+    async def generate_suggestions(self) -> Dict[str, Any]:
+        """
+        Generate automation suggestions by pre-fetching context and making a single AI call.
+
+        Fetches entity states, existing automations, and Node-RED flows, then asks
+        the suggestion_model to return structured JSON suggestions.
+
+        Returns:
+            Dict with 'suggestions' list, each item having:
+              - title: str
+              - description: str
+              - category: str (e.g. 'lighting', 'climate', 'security', 'energy', 'comfort')
+              - entities: list[str]  (entity_ids involved)
+              - implementation_hint: str
+        """
+        import json
+
+        if not self.client:
+            return {"success": False, "error": "OpenAI API not configured"}
+
+        try:
+            logger.info("Generating automation suggestions")
+
+            # 1. Gather context
+            entity_states_result = await self.tools.get_entity_states()
+            entity_states_text = json.dumps(entity_states_result.get("states", []), indent=2)
+
+            automations_result = await self.tools.search_config_files(search_pattern="automation")
+            automations_text = json.dumps(automations_result.get("files", []), indent=2)
+
+            nodered_text = ""
+            try:
+                nodered_result = await self.tools.get_nodered_flows()
+                if nodered_result.get("success"):
+                    nodered_text = json.dumps(nodered_result.get("flows", []), indent=2)
+            except Exception:
+                pass
+
+            # 2. Build prompt
+            suggestion_prompt_extra = os.getenv("SUGGESTION_PROMPT", "").strip()
+            context_sections = [
+                f"## Current entity states\n{entity_states_text}",
+                f"## Existing automations\n{automations_text}",
+            ]
+            if nodered_text:
+                context_sections.append(f"## Existing Node-RED flows\n{nodered_text}")
+            if suggestion_prompt_extra:
+                context_sections.append(f"## Additional context\n{suggestion_prompt_extra}")
+
+            context = "\n\n".join(context_sections)
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a Home Assistant automation expert. "
+                        "Based on the provided entity states and existing automations, "
+                        "suggest 5-10 practical automations the user does not already have. "
+                        "Do NOT suggest automations that already exist in the automation list or Node-RED flows. "
+                        "Return ONLY valid JSON — an object with a 'suggestions' array. "
+                        "Each suggestion must have: title (string), description (string), "
+                        "category (one of: lighting, climate, security, energy, comfort, other), "
+                        "entities (array of entity_id strings), implementation_hint (string with brief YAML hint)."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": context
+                }
+            ]
+
+            api_params = {
+                "model": self.suggestion_model,
+                "messages": messages,
+                "stream": False,
+            }
+            if self.temperature is not None:
+                api_params["temperature"] = self.temperature
+
+            response = await self.client.chat.completions.create(**api_params)
+            raw = response.choices[0].message.content.strip()
+
+            # Strip markdown code fences if present
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+
+            parsed = json.loads(raw)
+            suggestions = parsed.get("suggestions", parsed) if isinstance(parsed, dict) else parsed
+
+            logger.info(f"Generated {len(suggestions)} automation suggestions")
+            return {"success": True, "suggestions": suggestions}
+
+        except Exception as e:
+            logger.error(f"Failed to generate suggestions: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}

@@ -12,6 +12,8 @@ import json as json_lib
 
 from .config import ConfigurationManager
 from .agents import AgentSystem
+from .memory import MemoryManager
+from .conversations import ConversationManager
 
 version = "0.2.0"
 
@@ -29,6 +31,12 @@ config_manager: Optional[ConfigurationManager] = None
 # Phase 3: Global agent system instance
 agent_system: Optional[AgentSystem] = None
 
+# Memory manager instance
+memory_manager: Optional[MemoryManager] = None
+
+# Conversation session manager
+conversation_manager: Optional[ConversationManager] = None
+
 # Phase 2: Pydantic models for API requests
 class RestoreBackupRequest(BaseModel):
     backup_name: str
@@ -44,13 +52,17 @@ class ApprovalRequest(BaseModel):
     approved: bool
     validate: bool = True
 
+class SaveSessionRequest(BaseModel):
+    title: Optional[str] = None
+    messages: List[Dict[str, Any]]
+
 # Startup/shutdown event handler
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Initialize application on startup."""
-    global config_manager, agent_system
+    global config_manager, agent_system, memory_manager, conversation_manager
 
-    logger.info("=== AI Configuration Agent Starting ===")
+    logger.info("=== HA AI Companion Starting ===")
     logger.info(f"OpenAI API URL: {os.getenv('OPENAI_API_URL', 'Not configured')}")
     logger.info(f"OpenAI Model: {os.getenv('OPENAI_MODEL', 'Not configured')}")
     logger.info(f"HA Config Dir: {os.getenv('HA_CONFIG_DIR', 'Not configured')}")
@@ -72,6 +84,22 @@ async def lifespan(_: FastAPI):
         logger.info("Configuration manager initialized")
     except Exception as e:
         logger.error(f"Failed to initialize configuration manager: {e}", exc_info=True)
+
+    # Initialize conversation manager
+    try:
+        sessions_dir = os.getenv('SESSIONS_DIR', os.path.join(os.getenv('HA_CONFIG_DIR', '/config'), '.ai_agent_sessions'))
+        conversation_manager = ConversationManager(sessions_dir=sessions_dir)
+        logger.info(f"Conversation manager initialized at {sessions_dir}")
+    except Exception as e:
+        logger.error(f"Failed to initialize conversation manager: {e}", exc_info=True)
+
+    # Initialize memory manager
+    try:
+        memory_dir = os.getenv('MEMORY_DIR', os.path.join(os.getenv('HA_CONFIG_DIR', '/config'), '.ai_agent_memories'))
+        memory_manager = MemoryManager(memory_dir=memory_dir)
+        logger.info(f"Memory manager initialized at {memory_dir}")
+    except Exception as e:
+        logger.error(f"Failed to initialize memory manager: {e}", exc_info=True)
 
     # Phase 3: Initialize agent system
     try:
@@ -108,7 +136,13 @@ async def lifespan(_: FastAPI):
                 logger.warning(f"Invalid usage_tracking value '{usage_tracking}', defaulting to 'stream_options'")
                 usage_tracking = 'stream_options'
 
-            agent_system = AgentSystem(config_manager, system_prompt=system_prompt, enable_cache_control=enable_cache_control, usage_tracking=usage_tracking)
+            agent_system = AgentSystem(
+                config_manager,
+                system_prompt=system_prompt,
+                enable_cache_control=enable_cache_control,
+                usage_tracking=usage_tracking,
+                memory_manager=memory_manager,
+            )
             logger.info("Agent system initialized")
         else:
             logger.warning("Agent system not initialized - config manager unavailable")
@@ -118,11 +152,11 @@ async def lifespan(_: FastAPI):
     yield
 
     # Shutdown
-    logger.info("=== AI Configuration Agent Shutting Down ===")
+    logger.info("=== HA AI Companion Shutting Down ===")
 
 # Initialize FastAPI application with lifespan
 app = FastAPI(
-    title="AI Configuration Agent",
+    title="HA AI Companion",
     description="AI-powered Home Assistant configuration management",
     version=version,
     lifespan=lifespan
@@ -290,3 +324,96 @@ async def approve_changes(request: ApprovalRequest):
     except Exception as e:
         logger.error(f"Approval error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+# --- Session persistence endpoints ---
+
+@app.get("/api/sessions")
+async def list_sessions():
+    """List all saved conversation sessions, newest first."""
+    if not conversation_manager:
+        return {"sessions": []}
+    sessions = await conversation_manager.list_sessions()
+    return {"sessions": sessions}
+
+
+@app.get("/api/sessions/{session_id}")
+async def load_session(session_id: str):
+    """Load a specific session by ID."""
+    if not conversation_manager:
+        raise HTTPException(status_code=503, detail="Conversation manager not initialized")
+    session = await conversation_manager.load_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+@app.put("/api/sessions/{session_id}")
+async def save_session(session_id: str, request: SaveSessionRequest):
+    """Create or overwrite a session."""
+    if not conversation_manager:
+        raise HTTPException(status_code=503, detail="Conversation manager not initialized")
+    title = request.title or ConversationManager._auto_title(request.messages)
+    ok = await conversation_manager.save_session(session_id, title, request.messages)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save session")
+    return {"success": True, "session_id": session_id, "title": title}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a session."""
+    if not conversation_manager:
+        raise HTTPException(status_code=503, detail="Conversation manager not initialized")
+    deleted = await conversation_manager.delete_session(session_id)
+    return {"success": deleted}
+
+
+# --- Suggestions endpoints ---
+
+SUGGESTIONS_FILE_KEY = ".ai_agent_suggestions.json"
+
+def _suggestions_path() -> str:
+    config_dir = os.getenv("HA_CONFIG_DIR", "/config")
+    return os.path.join(config_dir, SUGGESTIONS_FILE_KEY)
+
+
+@app.get("/api/suggestions")
+async def get_suggestions():
+    """Return cached suggestions from disk, or empty list if none."""
+    path = _suggestions_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json_lib.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read suggestions file: {e}")
+    return {"suggestions": [], "generated_at": None}
+
+
+@app.post("/api/suggestions/generate")
+async def generate_suggestions():
+    """Ask the AI to generate fresh automation suggestions and cache them."""
+    if not agent_system:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+
+    try:
+        result = await agent_system.generate_suggestions()
+        if result.get("success"):
+            payload = {
+                "suggestions": result["suggestions"],
+                "generated_at": datetime.now().isoformat()
+            }
+            try:
+                with open(_suggestions_path(), "w") as f:
+                    json_lib.dump(payload, f, indent=2)
+            except Exception as e:
+                logger.warning(f"Failed to cache suggestions: {e}")
+            return payload
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Generation failed"))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Suggestions generation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

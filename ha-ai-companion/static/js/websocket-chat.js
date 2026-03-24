@@ -251,6 +251,11 @@ function handleWebSocketMessage(message) {
             sendBtn.disabled = false;
             messageInput.focus();
 
+            // Auto-save conversation
+            if (typeof window.autoSaveSession === 'function') {
+                window.autoSaveSession();
+            }
+
         } else if (eventType === 'error') {
             addSystemMessage(`❌ Error: ${data.error}`);
 

@@ -115,9 +115,32 @@ class HomeAssistantWebSocket:
                 else:
                     raise Exception(f"Unexpected response type: {response.get('type')}")
 
-    async def get_lovelace_config(self) -> Dict[str, Any]:
+    async def list_lovelace_dashboards(self) -> List[Dict[str, Any]]:
+        """
+        List all Lovelace dashboards.
+
+        Returns:
+            List of dashboard dicts (id, url_path, title, icon, etc.)
+
+        Raises:
+            Exception: If request fails
+        """
+        logger.info("Listing Lovelace dashboards via WebSocket")
+        try:
+            result = await self.call("lovelace/dashboards/list")
+            dashboards = result or []
+            logger.info(f"Found {len(dashboards)} dashboard(s)")
+            return dashboards
+        except Exception as e:
+            logger.error(f"Failed to list Lovelace dashboards: {e}")
+            raise
+
+    async def get_lovelace_config(self, url_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Retrieve Lovelace UI configuration.
+
+        Args:
+            url_path: Dashboard URL path (e.g. 'kitchen'). None for default dashboard.
 
         Returns:
             Lovelace configuration as dictionary
@@ -125,31 +148,100 @@ class HomeAssistantWebSocket:
         Raises:
             Exception: If retrieval fails
         """
-        logger.info("Retrieving Lovelace configuration via WebSocket")
+        label = url_path or "default"
+        logger.info(f"Retrieving Lovelace config ({label}) via WebSocket")
         try:
-            config = await self.call("lovelace/config", force=False)
-            logger.info("Successfully retrieved Lovelace configuration")
+            kwargs: Dict[str, Any] = {"force": False}
+            if url_path:
+                kwargs["url_path"] = url_path
+            config = await self.call("lovelace/config", **kwargs)
+            logger.info(f"Successfully retrieved Lovelace config ({label})")
             return config
         except Exception as e:
-            logger.error(f"Failed to retrieve Lovelace config: {e}")
+            logger.error(f"Failed to retrieve Lovelace config ({label}): {e}")
             raise
 
-    async def save_lovelace_config(self, config: Dict[str, Any]) -> None:
+    async def save_lovelace_config(self, config: Dict[str, Any], url_path: Optional[str] = None) -> None:
         """
         Save Lovelace UI configuration.
 
         Args:
             config: Lovelace configuration dictionary
+            url_path: Dashboard URL path (e.g. 'kitchen'). None for default dashboard.
 
         Raises:
             Exception: If save fails
         """
-        logger.info("Saving Lovelace configuration via WebSocket")
+        label = url_path or "default"
+        logger.info(f"Saving Lovelace config ({label}) via WebSocket")
         try:
-            await self.call("lovelace/config/save", config=config)
-            logger.info("Successfully saved Lovelace configuration")
+            kwargs: Dict[str, Any] = {"config": config}
+            if url_path:
+                kwargs["url_path"] = url_path
+            await self.call("lovelace/config/save", **kwargs)
+            logger.info(f"Successfully saved Lovelace config ({label})")
         except Exception as e:
-            logger.error(f"Failed to save Lovelace config: {e}")
+            logger.error(f"Failed to save Lovelace config ({label}): {e}")
+            raise
+
+    async def create_lovelace_dashboard(
+        self,
+        title: str,
+        url_path: Optional[str] = None,
+        icon: Optional[str] = None,
+        show_in_sidebar: bool = True,
+        require_admin: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Create a new Lovelace dashboard.
+
+        Args:
+            title: Human-readable dashboard title
+            url_path: URL slug (e.g. 'kitchen'). Auto-generated from title if omitted.
+            icon: Material Design icon (e.g. 'mdi:home')
+            show_in_sidebar: Whether to show in the HA sidebar
+            require_admin: Restrict dashboard to admin users
+
+        Returns:
+            Created dashboard info dict
+
+        Raises:
+            Exception: If creation fails
+        """
+        logger.info(f"Creating Lovelace dashboard: {title}")
+        try:
+            params: Dict[str, Any] = {
+                "title": title,
+                "show_in_sidebar": show_in_sidebar,
+                "require_admin": require_admin,
+            }
+            if url_path:
+                params["url_path"] = url_path
+            if icon:
+                params["icon"] = icon
+            result = await self.call("lovelace/dashboards/create", **params)
+            logger.info(f"Successfully created dashboard: {title} (url_path={result.get('url_path')})")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to create Lovelace dashboard '{title}': {e}")
+            raise
+
+    async def delete_lovelace_dashboard(self, url_path: str) -> None:
+        """
+        Delete a Lovelace dashboard.
+
+        Args:
+            url_path: Dashboard URL path to delete
+
+        Raises:
+            Exception: If deletion fails
+        """
+        logger.info(f"Deleting Lovelace dashboard: {url_path}")
+        try:
+            await self.call("lovelace/dashboards/delete", url_path=url_path)
+            logger.info(f"Successfully deleted dashboard: {url_path}")
+        except Exception as e:
+            logger.error(f"Failed to delete Lovelace dashboard '{url_path}': {e}")
             raise
 
     async def reload_config(self) -> None:
@@ -322,6 +414,23 @@ class HomeAssistantWebSocket:
             logger.error(f"Failed to update entity: {e}")
             raise
 
+    async def get_states(self) -> List[Dict[str, Any]]:
+        """
+        Get all current entity states from Home Assistant.
+
+        Returns:
+            List of state dictionaries (entity_id, state, attributes, last_changed, ...)
+        """
+        logger.info("Retrieving entity states via WebSocket")
+        try:
+            result = await self.call("get_states")
+            states = result if isinstance(result, list) else []
+            logger.info(f"Successfully retrieved {len(states)} entity states")
+            return states
+        except Exception as e:
+            logger.error(f"Failed to retrieve entity states: {e}")
+            raise
+
     async def list_areas(self) -> List[Dict[str, Any]]:
         """Get list of all areas from area registry."""
         logger.info("Retrieving area registry via WebSocket")
@@ -399,13 +508,14 @@ class HomeAssistantWebSocket:
             raise
 
 
-async def get_lovelace_config_as_yaml(url: str, token: str) -> Optional[str]:
+async def get_lovelace_config_as_yaml(url: str, token: str, url_path: Optional[str] = None) -> Optional[str]:
     """
     Helper function to retrieve Lovelace config as YAML string.
 
     Args:
         url: WebSocket URL
         token: Access token
+        url_path: Dashboard URL path (None for default dashboard)
 
     Returns:
         YAML string of Lovelace config, or None if retrieval fails
@@ -413,7 +523,7 @@ async def get_lovelace_config_as_yaml(url: str, token: str) -> Optional[str]:
     ws_client = HomeAssistantWebSocket(url, token)
     try:
         await ws_client.connect()
-        config = await ws_client.get_lovelace_config()
+        config = await ws_client.get_lovelace_config(url_path)
 
         # Convert to YAML string
         from ruamel.yaml import YAML
@@ -435,7 +545,7 @@ async def get_lovelace_config_as_yaml(url: str, token: str) -> Optional[str]:
         await ws_client.close()
 
 
-async def save_lovelace_config_from_yaml(url: str, token: str, yaml_content: str) -> None:
+async def save_lovelace_config_from_yaml(url: str, token: str, yaml_content: str, url_path: Optional[str] = None) -> None:
     """
     Helper function to save Lovelace config from YAML string.
 
@@ -443,6 +553,7 @@ async def save_lovelace_config_from_yaml(url: str, token: str, yaml_content: str
         url: WebSocket URL
         token: Access token
         yaml_content: YAML string to parse and save
+        url_path: Dashboard URL path (None for default dashboard)
 
     Raises:
         Exception: If save fails
@@ -458,8 +569,85 @@ async def save_lovelace_config_from_yaml(url: str, token: str, yaml_content: str
         yaml = YAML()
         config = yaml.load(StringIO(yaml_content))
 
-        await ws_client.save_lovelace_config(config)
+        await ws_client.save_lovelace_config(config, url_path)
 
+    finally:
+        await ws_client.close()
+
+
+async def list_lovelace_dashboards_ws(url: str, token: str) -> List[Dict[str, Any]]:
+    """
+    Helper function to list all Lovelace dashboards.
+
+    Args:
+        url: WebSocket URL
+        token: Access token
+
+    Returns:
+        List of dashboard dicts, or empty list on error
+    """
+    ws_client = HomeAssistantWebSocket(url, token)
+    try:
+        await ws_client.connect()
+        return await ws_client.list_lovelace_dashboards()
+    except Exception as e:
+        logger.error(f"Failed to list Lovelace dashboards: {e}")
+        return []
+    finally:
+        await ws_client.close()
+
+
+async def create_lovelace_dashboard_ws(
+    url: str,
+    token: str,
+    title: str,
+    url_path: Optional[str] = None,
+    icon: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Helper function to create a new Lovelace dashboard.
+
+    Args:
+        url: WebSocket URL
+        token: Access token
+        title: Dashboard title
+        url_path: URL slug (auto-generated if omitted)
+        icon: Material Design icon
+
+    Returns:
+        Created dashboard info dict, or None on error
+    """
+    ws_client = HomeAssistantWebSocket(url, token)
+    try:
+        await ws_client.connect()
+        return await ws_client.create_lovelace_dashboard(title, url_path, icon)
+    except Exception as e:
+        logger.error(f"Failed to create Lovelace dashboard: {e}")
+        return None
+    finally:
+        await ws_client.close()
+
+
+async def delete_lovelace_dashboard_ws(url: str, token: str, url_path: str) -> bool:
+    """
+    Helper function to delete a Lovelace dashboard.
+
+    Args:
+        url: WebSocket URL
+        token: Access token
+        url_path: Dashboard URL path to delete
+
+    Returns:
+        True if deleted successfully, False on error
+    """
+    ws_client = HomeAssistantWebSocket(url, token)
+    try:
+        await ws_client.connect()
+        await ws_client.delete_lovelace_dashboard(url_path)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete Lovelace dashboard: {e}")
+        return False
     finally:
         await ws_client.close()
 

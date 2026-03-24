@@ -143,6 +143,7 @@ Available Tools:
 - read_memories: Read persistent memory files from previous sessions
 - save_memory: Save a memory file to persist knowledge across sessions
 - delete_memory: Delete an outdated memory file
+- list_memory_stats: Audit memory files — sizes, ages, stale flags
 
 Dashboard Guidelines:
 - Call list_dashboards first to discover what dashboards exist and their url_path values
@@ -166,15 +167,37 @@ Important Guidelines:
 - Remember when searching for files that terms are case-insensitive
 
 Memory Guidelines:
-- Memories are categorized: preference, identity, device, baseline, pattern, correction
-- Use category prefix in filenames (e.g. 'preference_lighting.md', 'device_nicknames.md', 'pattern_morning.md')
-- SAVE memories for: stated user preferences, device nicknames/locations, room layouts, recurring routines, baseline sensor norms, explicit corrections
-- DO NOT save: current device states, live sensor readings, command echoes ("I just turned on X"), one-time commands, device specs/capabilities, time-sensitive data
-- When a user CORRECTS a previous preference, use the `replaces` field in save_memory to delete the old file atomically
-- Keep files concise and factual — overwrite the whole file when updating, never append stale info
-- At the start of a session, memory context is already injected into this prompt — check it before calling read_memories
-- Call read_memories only when you need a specific file not shown in the injected context
-- After conversations where you learned something new and persistent, save it proactively without asking
+- Categories: preference_, identity_, device_, baseline_, pattern_, correction_ (use as filename prefix)
+- Examples: preference_lighting.md, device_nicknames.md, pattern_morning_routine.md
+
+SAVE only when the user explicitly states a persistent fact:
+- Preferences ("I prefer 22°C", "always dim at night")
+- Device nicknames or locations ("Button 1 is the desk button")
+- Room/home layout facts
+- Baseline sensor norms ("100 ppm CO2 is normal here")
+- Recurring routines or schedules
+- Corrections to previously stored facts
+
+DO NOT save — if in doubt, don't:
+- Current states or live sensor readings (these change constantly)
+- Actions just performed ("I turned on X")
+- One-time commands (not stated as ongoing preference)
+- Device specs, capabilities, or HA integration details
+- Inferred or assumed facts the user never stated
+- Single-event observations or troubleshooting notes
+- Anything already derivable from the HA configuration
+
+Anti-bloat rules (enforced by the system, also your responsibility):
+- Max 25 files total — merge related facts into one file rather than creating many small ones
+- Max 800 chars per file — be terse; bullet points only, no prose
+- When updating a memory, overwrite the whole file — never append stale info
+- Use the `replaces` field when correcting a previous memory to delete the old file atomically
+- Call list_memory_stats periodically and proactively delete/merge stale or oversized files
+- At session end: if you learned something new, save it; if something is now stale, delete it
+
+Context injection:
+- Memory is already injected into this prompt at session start — check it before calling read_memories
+- Call read_memories only for a specific file not shown in the injected context
 
 Automation Suggestion Guidelines:
 - When asked to suggest automations, first call get_entity_states to see what devices exist
@@ -471,6 +494,18 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         }
                     }
                 },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "list_memory_stats",
+                        "description": "Audit memory health: returns each file's name, size in chars, age in days, and a stale flag (true when age > 90 days). Call this periodically to identify files to prune, merge, or delete.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
             ]
 
             # Track tool calls and results
@@ -740,6 +775,9 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     elif function_name == "delete_memory":
                         result = await self.tools.delete_memory(**function_args)
                         logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}")
+                    elif function_name == "list_memory_stats":
+                        result = await self.tools.list_memory_stats()
+                        logger.info(f"[ITERATION {iteration}] Tool result: total={result.get('total')}")
                     else:
                         result = {"success": False, "error": f"Unknown tool: {function_name}"}
                         logger.error(f"[ITERATION {iteration}] Unknown tool requested: {function_name}")

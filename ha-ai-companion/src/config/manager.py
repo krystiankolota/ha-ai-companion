@@ -220,7 +220,12 @@ class ConfigurationManager:
             await self._write_area_json(file_path, content)
             return
         elif file_path == "lovelace.yaml":
-            await self._write_lovelace_yaml(content)
+            await self._write_lovelace_yaml(content, url_path=None)
+            return
+        elif file_path.startswith("lovelace/") and file_path.endswith(".yaml"):
+            # Named dashboard: lovelace/{url_path}.yaml
+            dashboard_url_path = file_path[len("lovelace/"):-len(".yaml")] or None
+            await self._write_lovelace_yaml(content, url_path=dashboard_url_path)
             return
 
         # Regular file handling
@@ -461,43 +466,44 @@ class ConfigurationManager:
         finally:
             await ws_client.close()
 
-    async def _write_lovelace_yaml(self, yaml_content: str):
+    async def _write_lovelace_yaml(self, yaml_content: str, url_path: Optional[str] = None):
         """
-        Write lovelace config.
+        Write Lovelace config for a specific dashboard.
+
+        Args:
+            yaml_content: YAML string to write
+            url_path: Dashboard URL path (None = default dashboard)
 
         Uses hass API in custom component mode, WebSocket in add-on mode.
         """
-        # Parse YAML to get the config structure
+        label = url_path or "default"
         config = self.yaml.load(yaml_content)
 
         # Custom component mode: use hass directly
         if self.hass is not None:
             from homeassistant.components.lovelace.const import DOMAIN as LOVELACE_DOMAIN
 
-            logger.info("Saving Lovelace config via hass API (custom component mode)")
+            logger.info(f"Saving Lovelace config ({label}) via hass API")
 
-            # Check if lovelace is loaded
             if LOVELACE_DOMAIN not in self.hass.data:
                 raise ConfigurationError("Lovelace component not loaded")
 
-            # Get the lovelace data (LovelaceData object)
             lovelace_data = self.hass.data.get(LOVELACE_DOMAIN)
-
-            if lovelace_data and hasattr(lovelace_data, 'dashboards'):
-                # LovelaceData has a dashboards dict
-                dashboards = lovelace_data.dashboards
-
-                # Try to get default dashboard (None key or 'lovelace' key)
-                default_dashboard = dashboards.get(None) or dashboards.get('lovelace')
-
-                if default_dashboard:
-                    await default_dashboard.async_save(config)
-                    logger.info("Updated Lovelace config via hass API")
-                    return
-                else:
-                    raise ConfigurationError("Lovelace dashboard not available")
-            else:
+            if not (lovelace_data and hasattr(lovelace_data, 'dashboards')):
                 raise ConfigurationError("Lovelace dashboards not available")
+
+            dashboards = lovelace_data.dashboards
+            if url_path is None:
+                dashboard = dashboards.get(None) or dashboards.get('lovelace')
+            else:
+                dashboard = dashboards.get(url_path)
+
+            if not dashboard:
+                raise ConfigurationError(f"Dashboard '{label}' not found")
+
+            await dashboard.async_save(config)
+            logger.info(f"Updated Lovelace config ({label}) via hass API")
+            return
 
         # Add-on mode: use WebSocket API
         from ..ha.ha_websocket import HomeAssistantWebSocket
@@ -511,8 +517,8 @@ class ConfigurationManager:
 
         try:
             await ws_client.connect()
-            await ws_client.save_lovelace_config(config)
-            logger.info("Updated Lovelace config via WebSocket")
+            await ws_client.save_lovelace_config(config, url_path)
+            logger.info(f"Updated Lovelace config ({label}) via WebSocket")
         finally:
             await ws_client.close()
 

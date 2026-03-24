@@ -1,6 +1,6 @@
-// AI Configuration Agent - Main JavaScript
+// HA AI Companion - Main JavaScript
 
-console.log('AI Configuration Agent initializing...');
+console.log('HA AI Companion initializing...');
 
 // Global state
 let conversationHistory = [];
@@ -13,9 +13,17 @@ let cumulativeInputTokens = 0;
 let cumulativeOutputTokens = 0;
 let cumulativeCachedTokens = 0;
 
+// Session management
+let currentSessionId = generateSessionId();
+
+function generateSessionId() {
+    return 'sess-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+}
+
 // DOM elements
 let chatMessages, messageInput, sendBtn, diffModal, diffContent, exportBtn, importBtn, importFileInput;
 let tokenCounter, tokenCounterInput, tokenCounterOutput, tokenCounterCached;
+let sessionsPanel, sidebarToggleBtn, sessionsList, newChatBtn;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -34,6 +42,10 @@ document.addEventListener('DOMContentLoaded', () => {
     tokenCounterInput = document.getElementById('tokenCounterInput');
     tokenCounterOutput = document.getElementById('tokenCounterOutput');
     tokenCounterCached = document.getElementById('tokenCounterCached');
+    sessionsPanel = document.getElementById('sessionsPanel');
+    sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+    sessionsList = document.getElementById('sessionsList');
+    newChatBtn = document.getElementById('newChatBtn');
 
     // Set up event listeners
     sendBtn.addEventListener('click', sendMessage);
@@ -44,10 +56,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Sidebar toggle
+    if (sidebarToggleBtn) sidebarToggleBtn.addEventListener('click', toggleSidebar);
+    if (newChatBtn) newChatBtn.addEventListener('click', newChat);
+
     // Export/Import listeners
     exportBtn.addEventListener('click', exportConversation);
     importBtn.addEventListener('click', () => importFileInput.click());
     importFileInput.addEventListener('change', importConversation);
+
+    // Load sessions list
+    loadSessions();
 
     // Check health
     checkHealth();
@@ -63,7 +82,7 @@ async function checkHealth() {
         if (!data.agent_system_ready) {
             addSystemMessage('⚠️ AI system not ready. Please configure OPENAI_API_KEY.');
         } else {
-            addSystemMessage('✅ AI Configuration Agent ready. How can I help you today?');
+            addSystemMessage('✅ HA AI Companion ready. How can I help you today?');
         }
     } catch (error) {
         console.error('Health check failed:', error);
@@ -235,6 +254,9 @@ async function sendMessage() {
                             data.usage.cached_tokens || 0
                         );
                     }
+
+                    // Auto-save conversation
+                    autoSaveSession();
 
                 } else if (name === 'error') {
                     addSystemMessage(`❌ Error: ${data.error}`);
@@ -1117,3 +1139,131 @@ function importConversation(event) {
 
     reader.readAsText(file);
 }
+
+// ── Session Management ────────────────────────────────────────────────────────
+
+function toggleSidebar() {
+    if (sessionsPanel) sessionsPanel.classList.toggle('collapsed');
+}
+
+async function loadSessions() {
+    if (!sessionsList) return;
+    try {
+        const response = await fetch('api/sessions');
+        if (!response.ok) return;
+        const sessions = await response.json();
+        renderSessionsList(sessions);
+    } catch (e) {
+        console.error('Failed to load sessions:', e);
+    }
+}
+
+function renderSessionsList(sessions) {
+    if (!sessionsList) return;
+    if (!sessions || sessions.length === 0) {
+        sessionsList.innerHTML = '<div class="sessions-loading">No conversations yet</div>';
+        return;
+    }
+    sessionsList.innerHTML = sessions.map(s => `
+        <div class="session-item ${s.id === currentSessionId ? 'active' : ''}"
+             onclick="switchSession('${s.id}')"
+             data-session-id="${s.id}">
+            <div class="session-item-body">
+                <div class="session-item-title">${escapeHtml(s.title || 'Untitled')}</div>
+                <div class="session-item-meta">${s.message_count || 0} msg · ${formatSessionDate(s.updated_at)}</div>
+            </div>
+            <button class="session-item-delete" title="Delete"
+                    onclick="event.stopPropagation(); deleteSession('${s.id}')">🗑</button>
+        </div>
+    `).join('');
+}
+
+function formatSessionDate(iso) {
+    if (!iso) return '';
+    try {
+        const d = new Date(iso);
+        const diff = Date.now() - d.getTime();
+        if (diff < 60000) return 'just now';
+        if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+        if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+        return d.toLocaleDateString();
+    } catch (e) { return ''; }
+}
+
+window.switchSession = async function(sessionId) {
+    if (sessionId === currentSessionId) return;
+    try {
+        const response = await fetch(`api/sessions/${sessionId}`);
+        if (!response.ok) { addSystemMessage('❌ Failed to load conversation.'); return; }
+        const session = await response.json();
+
+        currentSessionId = sessionId;
+        conversationHistory = session.messages || [];
+
+        chatMessages.innerHTML = '';
+        cumulativeInputTokens = 0;
+        cumulativeOutputTokens = 0;
+        cumulativeCachedTokens = 0;
+        if (tokenCounter) tokenCounter.style.display = 'none';
+
+        for (const msg of conversationHistory) {
+            if (msg.role === 'user') {
+                addUserMessage(msg.content);
+            } else if (msg.role === 'assistant') {
+                if (msg.content) addAssistantMessage(msg.content);
+                if (msg.tool_calls) addToolCallMessage(msg.tool_calls);
+            }
+        }
+
+        addSystemMessage(`📂 ${escapeHtml(session.title || 'Conversation')}`);
+        loadSessions();
+    } catch (e) {
+        console.error('Load session error:', e);
+        addSystemMessage('❌ Failed to load conversation.');
+    }
+};
+
+function newChat() {
+    currentSessionId = generateSessionId();
+    conversationHistory = [];
+    chatMessages.innerHTML = '';
+    cumulativeInputTokens = 0;
+    cumulativeOutputTokens = 0;
+    cumulativeCachedTokens = 0;
+    if (tokenCounter) tokenCounter.style.display = 'none';
+    addSystemMessage('✅ HA AI Companion ready. How can I help you today?');
+    loadSessions();
+}
+
+window.deleteSession = async function(sessionId) {
+    if (!confirm('Delete this conversation?')) return;
+    try {
+        await fetch(`api/sessions/${sessionId}`, { method: 'DELETE' });
+        if (sessionId === currentSessionId) {
+            newChat();
+        } else {
+            loadSessions();
+        }
+    } catch (e) {
+        console.error('Delete session error:', e);
+    }
+};
+
+async function autoSaveSession() {
+    if (!conversationHistory || conversationHistory.length === 0) return;
+    try {
+        const firstUser = conversationHistory.find(m => m.role === 'user');
+        const title = firstUser ? String(firstUser.content).substring(0, 60).trim() : 'New conversation';
+        await fetch(`api/sessions/${currentSessionId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, messages: conversationHistory })
+        });
+        loadSessions();
+    } catch (e) {
+        console.error('Auto-save error:', e);
+    }
+}
+
+// Export for use from websocket-chat.js
+window.autoSaveSession = autoSaveSession;

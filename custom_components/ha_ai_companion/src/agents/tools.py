@@ -940,6 +940,28 @@ class AgentTools:
             logger.error(f"delete_memory error: {e}")
             return {"success": False, "error": str(e)}
 
+    async def list_memory_stats(self) -> Dict[str, Any]:
+        """
+        Return audit stats for all memory files: name, size, age in days.
+
+        Use this periodically to review memory health — identify stale files
+        (age_days > 90), oversized files, or files that could be merged.
+        A file is flagged as stale when it hasn't been updated in 90+ days.
+
+        Returns:
+            Dict with files list (filename, chars, age_days, stale flag),
+            total count, and enforced limits.
+        """
+        if not self.memory_manager:
+            return {"success": False, "error": "Memory manager not available"}
+
+        try:
+            stats = await self.memory_manager.get_stats()
+            return {"success": True, **stats}
+        except Exception as e:
+            logger.error(f"list_memory_stats error: {e}")
+            return {"success": False, "error": str(e)}
+
     # ------------------------------------------------------------------
     # Dashboard management tools
     # ------------------------------------------------------------------
