@@ -60,7 +60,7 @@ class AgentSystem:
         self.memory_manager = memory_manager
         self.tools = AgentTools(config_manager, agent_system=self, memory_manager=memory_manager)
 
-        # Initialize OpenAI client
+        # Initialize main OpenAI client
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             logger.warning("No OpenAI API key configured")
@@ -73,11 +73,28 @@ class AgentSystem:
 
         self.model = os.getenv('OPENAI_MODEL', 'gpt-4o')
 
-        # Dual-model support: suggestion_model for early/conversational iterations,
-        # config_model for iterations after tool results exist (AI doing actual config work).
-        # Both fall back to the main model if not configured.
-        self.suggestion_model = os.getenv('SUGGESTION_MODEL') or self.model
-        self.config_model = os.getenv('CONFIG_MODEL') or self.model
+        # Suggestion model — independent provider, all 3 vars must be set to activate.
+        # No fallback mixing: if any of the 3 are missing, main client+model is used.
+        _s_model = os.getenv('SUGGESTION_MODEL')
+        _s_url   = os.getenv('SUGGESTION_API_URL')
+        _s_key   = os.getenv('SUGGESTION_API_KEY')
+        if _s_model and _s_url and _s_key:
+            self.suggestion_model = _s_model
+            self.suggestion_client = AsyncOpenAI(api_key=_s_key, base_url=_s_url)
+        else:
+            self.suggestion_model = self.model
+            self.suggestion_client = self.client
+
+        # Config model — independent provider, all 3 vars must be set to activate.
+        _c_model = os.getenv('CONFIG_MODEL')
+        _c_url   = os.getenv('CONFIG_API_URL')
+        _c_key   = os.getenv('CONFIG_API_KEY')
+        if _c_model and _c_url and _c_key:
+            self.config_model = _c_model
+            self.config_client = AsyncOpenAI(api_key=_c_key, base_url=_c_url)
+        else:
+            self.config_model = self.model
+            self.config_client = self.client
 
         # Get temperature from environment variable, use None if not specified
         temperature_str = os.getenv('TEMPERATURE')
@@ -524,12 +541,11 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 iteration += 1
                 logger.info(f"[ITERATION {iteration}] Calling OpenAI streaming API")
 
-                # Select model: use config_model once tool results exist in messages,
-                # otherwise use suggestion_model (fast/cheap for early conversational turns).
+                # Select client+model: config once tool results exist, suggestion before that.
                 has_tool_results = any(m.get("role") == "tool" for m in messages)
-                active_model = self.config_model if has_tool_results else self.suggestion_model
-                if active_model != self.model:
-                    logger.debug(f"[ITERATION {iteration}] Using {'config' if has_tool_results else 'suggestion'} model: {active_model}")
+                active_model  = self.config_model  if has_tool_results else self.suggestion_model
+                active_client = self.config_client if has_tool_results else self.suggestion_client
+                logger.debug(f"[ITERATION {iteration}] Using {'config' if has_tool_results else 'suggestion'} model: {active_model}")
 
                 # Call OpenAI API with streaming
                 api_params = {
@@ -552,7 +568,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     api_params["temperature"] = self.temperature
 
                 try:
-                    stream = await self.client.chat.completions.create(**api_params)
+                    stream = await active_client.chat.completions.create(**api_params)
                 except Exception as api_err:
                     # Some providers (e.g. Anthropic/Haiku) reject stream_options or
                     # usage params — retry without them to keep things working.
@@ -560,7 +576,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     if 'stream_options' in err_str or 'usage' in err_str or 'extra' in err_str or 'unknown' in err_str:
                         logger.warning(f"API rejected usage-tracking params, retrying without them: {api_err}")
                         retry_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage')}
-                        stream = await self.client.chat.completions.create(**retry_params)
+                        stream = await active_client.chat.completions.create(**retry_params)
                     else:
                         raise
 

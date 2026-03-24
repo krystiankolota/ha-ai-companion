@@ -16,7 +16,13 @@
           "nodered_url": "Node-RED URL (optional, e.g. http://homeassistant:1880)",
           "nodered_token": "Node-RED API Token (optional, if auth is enabled)",
           "nodered_flows_file": "Node-RED Flows File fallback (optional, relative to config dir)",
-          "suggestion_prompt": "Custom Automation Suggestion Instructions (optional)"
+          "suggestion_prompt": "Custom Automation Suggestion Instructions (optional)",
+          "suggestion_model": "Suggestion Model (optional) — all 3 suggestion fields must be set together",
+          "suggestion_api_url": "Suggestion API URL (optional)",
+          "suggestion_api_key": "Suggestion API Key (optional)",
+          "config_model": "Config Model (optional) — all 3 config fields must be set together",
+          "config_api_url": "Config API URL (optional)",
+          "config_api_key": "Config API Key (optional)"
         }
       }
     },
@@ -43,7 +49,13 @@
           "nodered_url": "Node-RED URL (optional, e.g. http://homeassistant:1880)",
           "nodered_token": "Node-RED API Token (optional, if auth is enabled)",
           "nodered_flows_file": "Node-RED Flows File fallback (optional, relative to config dir)",
-          "suggestion_prompt": "Custom Automation Suggestion Instructions (optional)"
+          "suggestion_prompt": "Custom Automation Suggestion Instructions (optional)",
+          "suggestion_model": "Suggestion Model (optional) — all 3 suggestion fields must be set together",
+          "suggestion_api_url": "Suggestion API URL (optional)",
+          "suggestion_api_key": "Suggestion API Key (optional)",
+          "config_model": "Config Model (optional) — all 3 config fields must be set together",
+          "config_api_url": "Config API URL (optional)",
+          "config_api_key": "Config API Key (optional)"
         }
       }
     }

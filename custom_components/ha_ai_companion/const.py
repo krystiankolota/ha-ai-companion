@@ -16,7 +16,11 @@ CONF_NODERED_URL = "nodered_url"
 CONF_NODERED_TOKEN = "nodered_token"
 CONF_SUGGESTION_PROMPT = "suggestion_prompt"
 CONF_SUGGESTION_MODEL = "suggestion_model"
+CONF_SUGGESTION_API_URL = "suggestion_api_url"
+CONF_SUGGESTION_API_KEY = "suggestion_api_key"
 CONF_CONFIG_MODEL = "config_model"
+CONF_CONFIG_API_URL = "config_api_url"
+CONF_CONFIG_API_KEY = "config_api_key"
 
 # Default values
 DEFAULT_API_URL = "https://api.openai.com/v1"

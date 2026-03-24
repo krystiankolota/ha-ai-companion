@@ -1,0 +1,86 @@
+configuration:
+  openai_api_url:
+    name: API URL
+    description: >-
+      OpenAI-compatible API endpoint. Examples:
+      https://api.anthropic.com/v1 (Anthropic),
+      https://generativelanguage.googleapis.com/v1beta/openai/ (Google Gemini),
+      https://api.openai.com/v1 (OpenAI),
+      https://openrouter.ai/api/v1 (OpenRouter),
+      http://homeassistant:11434/v1 (local Ollama).
+  openai_api_key:
+    name: API Key
+    description: API key for your chosen provider.
+  openai_model:
+    name: Main Model
+    description: >-
+      Model used for configuration changes and general chat.
+      Examples: claude-haiku-4-5-20251001, gemini-2.5-flash, gpt-4o, llama3.2.
+  suggestion_model:
+    name: Suggestion Model (optional)
+    description: >-
+      Model used for the suggestion phase (before any tools are called).
+      All three suggestion fields (model + API URL + API key) must be set together to activate.
+      Leave all three empty to use the Main Model for this phase.
+  suggestion_api_url:
+    name: Suggestion API URL (optional)
+    description: API endpoint for the suggestion model. Required when setting a suggestion model.
+  suggestion_api_key:
+    name: Suggestion API Key (optional)
+    description: API key for the suggestion model provider. Required when setting a suggestion model.
+  config_model:
+    name: Config Model (optional)
+    description: >-
+      Model used once tool results arrive (config edits, device/entity changes, Lovelace).
+      All three config fields (model + API URL + API key) must be set together to activate.
+      Leave all three empty to use the Main Model for this phase.
+  config_api_url:
+    name: Config API URL (optional)
+    description: API endpoint for the config model. Required when setting a config model.
+  config_api_key:
+    name: Config API Key (optional)
+    description: API key for the config model provider. Required when setting a config model.
+  log_level:
+    name: Log Level
+    description: Verbosity of add-on logs. Use "debug" when troubleshooting.
+  system_prompt_file:
+    name: System Prompt File (optional)
+    description: >-
+      Path to a custom system prompt file relative to /config
+      (e.g. ai_companion_prompt.txt). Leave empty to use the built-in prompt.
+  temperature:
+    name: Temperature (optional)
+    description: >-
+      Controls randomness of AI responses (0.0–2.0).
+      Lower = more focused, higher = more creative. Leave empty for model default.
+      Recommended: 0.3–0.7 for config changes.
+  enable_cache_control:
+    name: Enable Prompt Caching
+    description: >-
+      Enable Anthropic prompt caching to reduce costs and improve response times.
+      Only set to true when using Anthropic Claude models directly. Leave off for all other providers.
+  usage_tracking:
+    name: Token Usage Tracking
+    description: >-
+      How token usage is reported in the UI footer.
+      stream_options: real-time (OpenAI, Gemini).
+      usage: post-response (Anthropic, OpenRouter).
+      disabled: no tracking (Ollama, unsupported providers).
+  suggestion_prompt:
+    name: Custom Suggestion Instructions (optional)
+    description: >-
+      Extra instructions appended to the system prompt when generating automation suggestions.
+      Example: "Focus on energy-saving automations" or "Always consider my work schedule (9–5)".
+  nodered_url:
+    name: Node-RED URL (optional)
+    description: >-
+      Base URL of your Node-RED instance (e.g. http://homeassistant:1880).
+      When set, the AI reads your existing flows before suggesting automations to avoid duplicates.
+  nodered_token:
+    name: Node-RED API Token (optional)
+    description: Node-RED API token. Only needed if Node-RED authentication is enabled.
+  nodered_flows_file:
+    name: Node-RED Flows File (optional)
+    description: >-
+      Path to a Node-RED flows JSON export relative to /config, used as fallback
+      when the live Node-RED API is unreachable. Example: node_red_flows.json.

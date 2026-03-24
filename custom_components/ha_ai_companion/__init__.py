@@ -27,7 +27,11 @@ from .const import (
     CONF_NODERED_TOKEN,
     CONF_SUGGESTION_PROMPT,
     CONF_SUGGESTION_MODEL,
+    CONF_SUGGESTION_API_URL,
+    CONF_SUGGESTION_API_KEY,
     CONF_CONFIG_MODEL,
+    CONF_CONFIG_API_URL,
+    CONF_CONFIG_API_KEY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -131,10 +135,30 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
     elif "SUGGESTION_MODEL" in os.environ:
         del os.environ["SUGGESTION_MODEL"]
 
+    if config.get(CONF_SUGGESTION_API_URL):
+        os.environ["SUGGESTION_API_URL"] = config.get(CONF_SUGGESTION_API_URL)
+    elif "SUGGESTION_API_URL" in os.environ:
+        del os.environ["SUGGESTION_API_URL"]
+
+    if config.get(CONF_SUGGESTION_API_KEY):
+        os.environ["SUGGESTION_API_KEY"] = config.get(CONF_SUGGESTION_API_KEY)
+    elif "SUGGESTION_API_KEY" in os.environ:
+        del os.environ["SUGGESTION_API_KEY"]
+
     if config.get(CONF_CONFIG_MODEL):
         os.environ["CONFIG_MODEL"] = config.get(CONF_CONFIG_MODEL)
     elif "CONFIG_MODEL" in os.environ:
         del os.environ["CONFIG_MODEL"]
+
+    if config.get(CONF_CONFIG_API_URL):
+        os.environ["CONFIG_API_URL"] = config.get(CONF_CONFIG_API_URL)
+    elif "CONFIG_API_URL" in os.environ:
+        del os.environ["CONFIG_API_URL"]
+
+    if config.get(CONF_CONFIG_API_KEY):
+        os.environ["CONFIG_API_KEY"] = config.get(CONF_CONFIG_API_KEY)
+    elif "CONFIG_API_KEY" in os.environ:
+        del os.environ["CONFIG_API_KEY"]
 
     # Create backup directory if it doesn't exist
     os.makedirs(os.environ["BACKUP_DIR"], exist_ok=True)

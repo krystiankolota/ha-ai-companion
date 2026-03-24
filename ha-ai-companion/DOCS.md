@@ -138,20 +138,54 @@ system_prompt_file: ""
 temperature: ""
 enable_cache_control: false
 usage_tracking: "stream_options"
+suggestion_model: ""
+config_model: ""
+suggestion_prompt: ""
+nodered_url: ""
+nodered_token: ""
+nodered_flows_file: ""
 ```
 
 #### Configuration Parameters
 
+**Core**
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `openai_api_url` | URL | `https://generativelanguage.googleapis.com/v1beta/openai/` | API endpoint URL (Google Cloud default, can be changed to any OpenAI-compatible provider) |
-| `openai_api_key` | Password | *Required* | API authentication key |
-| `openai_model` | String | `gemini-2.5-flash` | Model identifier to use |
-| `log_level` | List | `info` | Logging level: `debug`, `info`, `warning`, `error` |
-| `system_prompt_file` | String | `""` (empty) | Optional: Path to custom system prompt file (relative to `/config`) |
-| `temperature` | String | `""` (empty) | Optional: Model temperature (0.0-2.0). Lower=more focused, higher=more creative. Empty uses model default |
-| `enable_cache_control` | Boolean | `false` | Enable prompt caching for Anthropic Claude models to reduce costs and improve response time |
-| `usage_tracking` | List | `stream_options` | Token usage tracking method: `stream_options` (real-time), `usage` (post-response), or `disabled` |
+| `openai_api_url` | String | `https://generativelanguage.googleapis.com/v1beta/openai/` | API endpoint — any OpenAI-compatible provider |
+| `openai_api_key` | String | *Required* | API key for your provider |
+| `openai_model` | String | `gemini-2.5-flash` | Main model for config edits and general chat |
+| `log_level` | List | `info` | Log verbosity: `debug`, `info`, `warning`, `error` |
+
+**Dual-Model (optional)**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `suggestion_model` | String | `""` | Model used during the suggestion phase (before tool results). Leave empty to use `openai_model`. Tip: use a cheaper/faster model here. |
+| `config_model` | String | `""` | Model used once tool results arrive (config edits, device changes). Leave empty to use `openai_model`. Tip: use a stronger model here. |
+
+**Prompt Customisation (optional)**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `system_prompt_file` | String | `""` | Path to a custom system prompt file relative to `/config` |
+| `suggestion_prompt` | String | `""` | Extra instructions appended to the system prompt for automation suggestions |
+| `temperature` | String | `""` | Model temperature (0.0–2.0). Empty = model default. Lower = more focused. |
+
+**Model Behaviour (optional)**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_cache_control` | Boolean | `false` | Enable Anthropic prompt caching — only for Anthropic Claude models |
+| `usage_tracking` | List | `stream_options` | Token tracking: `stream_options` (OpenAI/Gemini), `usage` (Anthropic/OpenRouter), `disabled` (Ollama) |
+
+**Node-RED Integration (optional)**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `nodered_url` | String | `""` | Node-RED base URL (e.g. `http://homeassistant:1880`). When set, the AI reads existing flows before suggesting automations. |
+| `nodered_token` | String | `""` | Node-RED API token — only needed if Node-RED authentication is enabled |
+| `nodered_flows_file` | String | `""` | Path to a Node-RED flows JSON export relative to `/config`, used as fallback when the live API is unreachable |
 
 ### AI Provider Setup
 

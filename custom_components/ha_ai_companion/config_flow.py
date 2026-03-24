@@ -26,7 +26,11 @@ from .const import (
     CONF_NODERED_TOKEN,
     CONF_SUGGESTION_PROMPT,
     CONF_SUGGESTION_MODEL,
+    CONF_SUGGESTION_API_URL,
+    CONF_SUGGESTION_API_KEY,
     CONF_CONFIG_MODEL,
+    CONF_CONFIG_API_URL,
+    CONF_CONFIG_API_KEY,
     DEFAULT_API_URL,
     DEFAULT_MODEL,
     DEFAULT_LOG_LEVEL,
@@ -49,7 +53,11 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
     vol.Optional(CONF_NODERED_FLOWS_FILE): cv.string,
     vol.Optional(CONF_SUGGESTION_PROMPT): cv.string,
     vol.Optional(CONF_SUGGESTION_MODEL): cv.string,
+    vol.Optional(CONF_SUGGESTION_API_URL): cv.string,
+    vol.Optional(CONF_SUGGESTION_API_KEY): cv.string,
     vol.Optional(CONF_CONFIG_MODEL): cv.string,
+    vol.Optional(CONF_CONFIG_API_URL): cv.string,
+    vol.Optional(CONF_CONFIG_API_KEY): cv.string,
 })
 
 
@@ -213,8 +221,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     default=self.config_entry.data.get(CONF_SUGGESTION_MODEL, "")
                 ): cv.string,
                 vol.Optional(
+                    CONF_SUGGESTION_API_URL,
+                    default=self.config_entry.data.get(CONF_SUGGESTION_API_URL, "")
+                ): cv.string,
+                vol.Optional(
+                    CONF_SUGGESTION_API_KEY,
+                    default=self.config_entry.data.get(CONF_SUGGESTION_API_KEY, "")
+                ): cv.string,
+                vol.Optional(
                     CONF_CONFIG_MODEL,
                     default=self.config_entry.data.get(CONF_CONFIG_MODEL, "")
+                ): cv.string,
+                vol.Optional(
+                    CONF_CONFIG_API_URL,
+                    default=self.config_entry.data.get(CONF_CONFIG_API_URL, "")
+                ): cv.string,
+                vol.Optional(
+                    CONF_CONFIG_API_KEY,
+                    default=self.config_entry.data.get(CONF_CONFIG_API_KEY, "")
                 ): cv.string,
             }),
         )
