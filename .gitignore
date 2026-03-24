@@ -58,3 +58,5 @@ addon_config/
 # Claude Code — local AI context (personal, not for version control)
 CLAUDE.md
 docs/knowledge/
+
+/CLAUDE.md
