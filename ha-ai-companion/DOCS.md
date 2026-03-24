@@ -87,7 +87,7 @@ For development and testing outside of Home Assistant:
 ```bash
 # Clone the repository
 git clone *(your repository URL here)*.git
-cd ha-config-ai-agent/ha-config-ai-agent
+cd ha-ai-companion/ha-ai-companion
 
 # Create virtual environment
 python3 -m venv .venv
@@ -805,7 +805,7 @@ curl http://localhost:8099/api/config/backups?file_path=configuration.yaml
 ```bash
 # Clone repository
 git clone *(your repository URL here)*.git
-cd ha-config-ai-agent
+cd ha-ai-companion
 
 # Create and activate virtual environment
 python3 -m venv .venv

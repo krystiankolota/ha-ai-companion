@@ -54,3 +54,7 @@ sessions.db
 # Add-on specific
 test_config/
 addon_config/
+
+# Claude Code — local AI context (personal, not for version control)
+CLAUDE.md
+docs/knowledge/
