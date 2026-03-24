@@ -72,17 +72,30 @@ function renderSuggestions(data) {
     list.innerHTML = suggestions.map((s, i) => {
         const icon = CATEGORY_ICONS[s.category] || CATEGORY_ICONS.other;
         const entities = (s.entities || []).map(e => `<span class="suggestion-entity">${e}</span>`).join('');
+        const typeBadge = s.type === 'improvement'
+            ? `<span class="suggestion-type suggestion-type--improvement">improvement</span>`
+            : `<span class="suggestion-type suggestion-type--new">new</span>`;
+        const yamlBlock = s.yaml_block
+            ? `<div class="suggestion-yaml-wrap">
+                <div class="suggestion-yaml-header">
+                    <span class="suggestion-yaml-label">YAML</span>
+                    <button class="btn-copy-yaml" data-index="${i}" title="Copy YAML">Copy</button>
+                </div>
+                <pre class="suggestion-hint suggestion-yaml">${escapeHtml(s.yaml_block)}</pre>
+               </div>`
+            : (s.implementation_hint ? `<pre class="suggestion-hint">${escapeHtml(s.implementation_hint)}</pre>` : '');
         return `
         <div class="suggestion-card" data-title="${escapeHtml(s.title)}">
             <div class="suggestion-card-header">
                 <span class="suggestion-icon">${icon}</span>
                 <span class="suggestion-title">${escapeHtml(s.title)}</span>
+                ${typeBadge}
                 <span class="suggestion-category">${escapeHtml(s.category || 'other')}</span>
                 <button class="btn btn-dismiss" title="Don't suggest this again">✕</button>
             </div>
             <p class="suggestion-description">${escapeHtml(s.description)}</p>
             ${entities ? `<div class="suggestion-entities">${entities}</div>` : ''}
-            ${s.implementation_hint ? `<pre class="suggestion-hint">${escapeHtml(s.implementation_hint)}</pre>` : ''}
+            ${yamlBlock}
             <button class="btn btn-secondary btn-add-to-chat" data-index="${i}">Add to chat</button>
         </div>`;
     }).join('');
@@ -102,6 +115,20 @@ function renderSuggestions(data) {
             dismissSuggestion(title, card);
         });
     });
+
+    list.querySelectorAll('.btn-copy-yaml').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const s = suggestions[parseInt(btn.dataset.index)];
+            if (!s || !s.yaml_block) return;
+            navigator.clipboard.writeText(s.yaml_block).then(() => {
+                btn.textContent = 'Copied!';
+                setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+            }).catch(() => {
+                btn.textContent = 'Failed';
+                setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+            });
+        });
+    });
 }
 
 function addSuggestionToChat(suggestion) {
@@ -110,7 +137,11 @@ function addSuggestionToChat(suggestion) {
 
     const input = document.getElementById('messageInput');
     if (input) {
-        input.value = `Please implement this automation suggestion:\n\n**${suggestion.title}**\n${suggestion.description}`;
+        let msg = `Please implement this automation suggestion:\n\n**${suggestion.title}**\n${suggestion.description}`;
+        if (suggestion.yaml_block) {
+            msg += `\n\nStarting YAML:\n\`\`\`yaml\n${suggestion.yaml_block}\n\`\`\``;
+        }
+        input.value = msg;
         input.focus();
     }
 }

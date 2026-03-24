@@ -5,6 +5,19 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-03-24
+
+### Added
+- Suggestion cards now show a type badge: **new** (green) or **improvement** (blue)
+- `yaml_block` rendered as a YAML code block with a one-click Copy button on each suggestion card
+- "Add to chat" prefills the message with the YAML block included
+
+### Changed
+- Suggestion engine rewritten: randomized entity sampling (max 150), attribute slimming, reads `automations.yaml` / `scripts.yaml` / `scenes.yaml` directly, 24k token budget guard
+- AI now generates both new automations (4–6) and improvements to existing ones (2–4) per run
+- Node-RED flows included in suggestion context when `NODERED_URL` is configured
+- Dismissed suggestions are excluded from future generation prompts
+
 ## [0.2.5] - 2026-03-24
 
 ### Added
