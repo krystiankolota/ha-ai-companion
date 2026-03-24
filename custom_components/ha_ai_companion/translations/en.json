@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HA AI Companion",
+        "description": "Set up your HA AI Companion to manage Home Assistant configuration files through natural language.",
+        "data": {
+          "api_key": "OpenAI API Key",
+          "api_url": "API URL",
+          "model": "Model Name",
+          "log_level": "Log Level",
+          "temperature": "Temperature (optional)",
+          "system_prompt_file": "System Prompt File (optional)",
+          "enable_cache_control": "Enable Cache Control",
+          "usage_tracking": "Usage Tracking Method",
+          "nodered_url": "Node-RED URL (optional, e.g. http://homeassistant:1880)",
+          "nodered_token": "Node-RED API Token (optional, if auth is enabled)",
+          "nodered_flows_file": "Node-RED Flows File fallback (optional, relative to config dir)",
+          "suggestion_prompt": "Custom Automation Suggestion Instructions (optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the API. Please check your API key and URL.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "HA AI Companion is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HA AI Companion Options",
+        "data": {
+          "api_url": "API URL",
+          "model": "Model Name",
+          "log_level": "Log Level",
+          "temperature": "Temperature (optional)",
+          "system_prompt_file": "System Prompt File (optional)",
+          "enable_cache_control": "Enable Cache Control",
+          "usage_tracking": "Usage Tracking Method",
+          "nodered_url": "Node-RED URL (optional, e.g. http://homeassistant:1880)",
+          "nodered_token": "Node-RED API Token (optional, if auth is enabled)",
+          "nodered_flows_file": "Node-RED Flows File fallback (optional, relative to config dir)",
+          "suggestion_prompt": "Custom Automation Suggestion Instructions (optional)"
+        }
+      }
+    }
+  }
+}
