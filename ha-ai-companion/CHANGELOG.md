@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the AI Configuration Agent add-on will be documented in this file.
+All notable changes to the HA AI Companion add-on will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -60,6 +60,22 @@ Made cache control configurable and added token usage tracking
 
 Enhanced search functionality to support file path patterns. When search_pattern starts with "/", it's treated as a glob pattern and only searches actual files (skipping virtual entities/devices/areas). Example: `/packages/*.yaml` will match all YAML files in the packages directory.
 
-## [0.2.0] - 20205-11-01
+## [0.2.0] - 2025-11-01
 
 Converted to support installation via HACS as custom component as well as add-on installation.
+
+## [0.2.1] - 2026-03-24
+
+### Changed
+- Renamed project from "AI Configuration Agent" to "HA AI Companion"
+- Updated add-on slug, panel title, and repository metadata to match new name
+- Added `repository.yaml` for proper Supervisor add-on repository registration
+
+### Added
+- Multi-dashboard Lovelace management (list, read, edit, create, delete)
+- Device / entity / area management via virtual file system
+- Persistent memory system (6-category taxonomy, markdown files)
+- Session persistence with sidebar UI
+- Automation suggestions tab with live entity context and Node-RED awareness
+- Token usage tracking in UI footer
+- Dual-model support (`suggestion_model` + `config_model`)

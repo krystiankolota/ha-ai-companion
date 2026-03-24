@@ -1,6 +1,6 @@
-# AI Configuration Agent - Documentation
+# HA AI Companion - Documentation
 
-Complete guide for installing, configuring, and using the AI Configuration Agent add-on for Home Assistant.
+Complete guide for installing, configuring, and using the HA AI Companion add-on for Home Assistant.
 
 ## Table of Contents
 
@@ -53,7 +53,7 @@ The AI Configuration Agent can be installed as a local Home Assistant add-on.
 
 3. **Clone the repository**
    ```bash
-   git clone *(your repository URL here)*.git
+   git clone https://github.com/krystiankolota/ha-ai-companion.git
    ```
 
 4. **Add the local repository in Home Assistant**
@@ -65,9 +65,9 @@ The AI Configuration Agent can be installed as a local Home Assistant add-on.
 
 5. **Install the add-on**
    - Refresh the Add-on Store page
-   - Find "AI Configuration Agent" in the local add-ons section
+   - Find "HA AI Companion" in the local add-ons section
    - Click on it and press **Install**
-   - Wait for the installation to complete
+   - Wait for the installation to complete (dependencies will be installed automatically)
 
 6. **Configure the add-on**
    - See [Configuration](#configuration) section below
@@ -86,7 +86,7 @@ For development and testing outside of Home Assistant:
 
 ```bash
 # Clone the repository
-git clone *(your repository URL here)*.git
+git clone https://github.com/krystiankolota/ha-ai-companion.git
 cd ha-ai-companion/ha-ai-companion
 
 # Create virtual environment
@@ -119,7 +119,7 @@ Visit http://localhost:8099 to access the interface.
 
 ### Configuration Options
 
-Configure the add-on through the Home Assistant UI: **Settings** → **Add-ons** → **AI Configuration Agent** → **Configuration**
+Configure the add-on through the Home Assistant UI: **Settings** → **Add-ons** → **HA AI Companion** → **Configuration**
 
 #### Basic Configuration
 
@@ -155,104 +155,165 @@ usage_tracking: "stream_options"
 
 ### AI Provider Setup
 
-The add-on supports any OpenAI-compatible API endpoint. The default configuration uses Google Cloud's Gemini API, but you can easily switch to any other provider.
+The add-on supports any OpenAI-compatible API endpoint.
 
-#### Google Cloud (Default)
+---
 
-**Best for:** Fast responses, cost-effective, high quality
+#### Recommended Configurations by Goal
 
-The add-on is configured by default to use Google Cloud's Gemini API.
+Choose a tier based on your priorities. Each example shows a complete ready-to-use config.
 
-1. Sign up at https://aistudio.google.com/
-2. Create an API key
-3. The default configuration should work:
-   ```yaml
-   openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-   openai_api_key: "your-google-api-key"
-   openai_model: "gemini-2.5-flash"
-   usage_tracking: "stream_options"
-   ```
+##### 💰 Cost — minimize API spend
 
-**Recommended models:**
-- `gemini-2.5-flash` - Default, best balance of speed and quality
-- `gemini-2.0-flash-exp` - Experimental, cutting-edge features
-- `gemini-2.5-pro` - Higher quality, longer context
-- `gemini-1.5-flash` - Faster, lower cost
+| Provider | Model | Notes |
+|----------|-------|-------|
+| Google Gemini | `gemini-2.5-flash` | Free tier available, very cheap |
+| Anthropic | `claude-haiku-4-5-20251001` | Fastest Claude, lowest cost |
+| OpenAI | `gpt-4o-mini` | Cheapest OpenAI option |
+| Ollama (local) | `llama3.2` | Zero API cost, needs local GPU |
 
-#### OpenAI
+```yaml
+# Google Gemini — cost
+openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+openai_api_key: "your-google-api-key"
+openai_model: "gemini-2.5-flash"
+usage_tracking: "stream_options"
+enable_cache_control: false
+```
 
-**Best for:** Production use, proven reliability
+```yaml
+# Anthropic — cost
+openai_api_url: "https://api.anthropic.com/v1"
+openai_api_key: "sk-ant-your-key"
+openai_model: "claude-haiku-4-5-20251001"
+usage_tracking: "usage"
+enable_cache_control: true
+```
 
-1. Sign up at https://platform.openai.com/
-2. Create an API key
-3. Configure the add-on:
-   ```yaml
-   openai_api_url: "https://api.openai.com/v1"
-   openai_api_key: "sk-proj-your-key-here"
-   openai_model: "gpt-4o"
-   usage_tracking: "stream_options"
-   ```
+---
 
-**Recommended models:**
-- `gpt-5-mini` - Best seed and cost but requires validation
-- `gpt-4o` - Best balance of speed and quality without validation
-- `gpt-4o-mini` - Faster, lower cost
-- `gpt-5` - Advanced reasoning (slower, more expensive)
+##### ⚖️ Balance — good quality at reasonable cost
 
-#### OpenRouter
+| Provider | Model | Notes |
+|----------|-------|-------|
+| Google Gemini | `gemini-2.5-flash` | Best value overall |
+| Anthropic | `claude-sonnet-4-5` | Strong reasoning, moderate cost |
+| OpenAI | `gpt-4o` | Reliable, well-tested |
+| OpenRouter | `anthropic/claude-sonnet-4-5` | Access Claude via OpenRouter |
 
-**Best for:** Access to multiple models, competitive pricing
+```yaml
+# Google Gemini — balance (default)
+openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+openai_api_key: "your-google-api-key"
+openai_model: "gemini-2.5-flash"
+usage_tracking: "stream_options"
+enable_cache_control: false
+```
 
-1. Sign up at https://openrouter.ai/
-2. Create an API key
-3. Configure the add-on:
-   ```yaml
-   openai_api_url: "https://openrouter.ai/api/v1"
-   openai_api_key: "sk-or-v1-your-key"
-   openai_model: "anthropic/claude-3.5-sonnet"
-   ```
+```yaml
+# Anthropic — balance
+openai_api_url: "https://api.anthropic.com/v1"
+openai_api_key: "sk-ant-your-key"
+openai_model: "claude-sonnet-4-5"
+usage_tracking: "usage"
+enable_cache_control: true
+```
 
-#### Anthropic
+```yaml
+# OpenAI — balance
+openai_api_url: "https://api.openai.com/v1"
+openai_api_key: "sk-proj-your-key"
+openai_model: "gpt-4o"
+usage_tracking: "stream_options"
+enable_cache_control: false
+```
 
-Access to the Claude family of models
+---
 
-1. Sign up at https://console.anthropic.com/
-2. Create an API key
-3. Configure the add-on:
-   ```yaml
-   openai_api_url: "https://api.anthropic.com/v1/"
-   openai_api_key: "sk-or-v1-your-key"
-   openai_model: "claude-sonnet-4-5"
-   ```
+##### 🏆 Quality — best possible results, cost secondary
 
-**Recommended models:**
-- `claude-4.5-haiku` - Fast inexpensive reasoning
-- `claude-4.5-sonnet` - Excellent reasoning
+| Provider | Model | Notes |
+|----------|-------|-------|
+| Google Gemini | `gemini-2.5-pro` | Best Gemini model, longer context |
+| Anthropic | `claude-opus-4-6` | Highest capability Claude |
+| Anthropic | `claude-sonnet-4-6` | Near-opus quality, faster |
+| OpenRouter | `google/gemini-2.5-pro` | Gemini Pro via OpenRouter |
 
+```yaml
+# Anthropic — quality
+openai_api_url: "https://api.anthropic.com/v1"
+openai_api_key: "sk-ant-your-key"
+openai_model: "claude-sonnet-4-6"
+usage_tracking: "usage"
+enable_cache_control: true
+```
 
-#### Local Ollama
+```yaml
+# Google Gemini — quality
+openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+openai_api_key: "your-google-api-key"
+openai_model: "gemini-2.5-pro"
+usage_tracking: "stream_options"
+enable_cache_control: false
+```
 
-**Best for:** Privacy, offline use, no API costs
+---
 
-1. Install Ollama: https://ollama.ai/
-2. Pull a model:
-   ```bash
-   ollama pull llama3.2
-   ```
-3. Ensure Ollama is accessible from Home Assistant
-4. Configure the add-on:
-   ```yaml
-   openai_api_url: "http://host.docker.internal:11434/v1"
-   openai_api_key: "ollama"
-   openai_model: "llama3.2"
-   ```
+#### Provider Setup
 
-**Recommended models:**
-- `llama3.2` - Good general performance
-- `mistral` - Fast and capable
-- `codellama` - Optimized for code
+##### Google Gemini
 
-**Note:** Performance depends on your hardware. GPU recommended.
+1. Sign up at https://aistudio.google.com/ and create an API key
+2. Free tier available — good starting point
+
+**All models:** `gemini-2.5-flash` · `gemini-2.5-pro`
+
+##### OpenAI
+
+1. Sign up at https://platform.openai.com/ and create an API key
+
+**All models:** `gpt-4o-mini` · `gpt-4o`
+
+##### Anthropic
+
+1. Sign up at https://console.anthropic.com/ and create an API key
+2. Enable `cache_control` and set `usage_tracking: usage` for best results
+
+**All models:** `claude-haiku-4-5-20251001` · `claude-sonnet-4-5` · `claude-sonnet-4-6` · `claude-opus-4-6`
+
+##### OpenRouter
+
+**Best for:** Trying many providers with one API key
+
+1. Sign up at https://openrouter.ai/ and create an API key
+2. Use `usage_tracking: "usage"` for best compatibility
+
+```yaml
+openai_api_url: "https://openrouter.ai/api/v1"
+openai_api_key: "sk-or-v1-your-key"
+openai_model: "anthropic/claude-sonnet-4-5"
+usage_tracking: "usage"
+```
+
+**Popular models on OpenRouter:** `anthropic/claude-sonnet-4-5` · `google/gemini-2.5-flash` · `openai/gpt-4o`
+
+##### Local Ollama
+
+**Best for:** Privacy, offline use, zero API cost
+
+1. Install Ollama and pull a model: `ollama pull llama3.2`
+2. Ensure Ollama is reachable from Home Assistant
+
+```yaml
+openai_api_url: "http://host.docker.internal:11434/v1"
+openai_api_key: "ollama"
+openai_model: "llama3.2"
+usage_tracking: "disabled"
+```
+
+**Recommended models:** `llama3.2` · `mistral` · `qwen2.5`
+
+**Note:** Performance depends on your hardware. GPU strongly recommended.
 
 ### Custom System Prompt
 
@@ -467,7 +528,7 @@ After installation and configuration:
 
 1. **Access the interface**
    - Open Home Assistant
-   - Click "Config Agent" in the sidebar
+   - Click "AI Companion" in the sidebar
    - Or go to the add-on page and click "Open Web UI"
 
 2. **Verify the connection**
@@ -804,7 +865,7 @@ curl http://localhost:8099/api/config/backups?file_path=configuration.yaml
 
 ```bash
 # Clone repository
-git clone *(your repository URL here)*.git
+git clone https://github.com/krystiankolota/ha-ai-companion.git
 cd ha-ai-companion
 
 # Create and activate virtual environment
@@ -954,12 +1015,12 @@ Follow conventional commits:
 
 ## Support & Resources
 
-- **GitHub Issues:** *(your repository URL here)*/issues
+- **GitHub Issues:** https://github.com/krystiankolota/ha-ai-companion/issues
 - **Home Assistant Community:** https://community.home-assistant.io/
 - **Documentation:** You're reading it!
 - **Technical Details:** See [CLAUDE.md](../CLAUDE.md)
 
 ---
 
-**Last Updated:** January 26, 2025
-**Version:** 0.6.0
+**Last Updated:** 2026-03-24
+**Version:** 0.2.1
