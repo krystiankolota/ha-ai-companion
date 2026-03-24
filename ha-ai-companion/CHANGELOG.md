@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-03-24
+
+### Added
+- Dismiss button (✕) on each suggestion card — marks it as unwanted and hides it immediately
+- Dismissed suggestions persist in `/config/.ai_agent_suggestions_dismissed.json`
+- AI won't re-suggest dismissed items in future generation runs
+- `POST /api/suggestions/dismiss`, `GET /api/suggestions/dismissed`, `DELETE /api/suggestions/dismissed` endpoints
+- Status line shows how many suggestions are currently dismissed
+
 ## [0.2.4] - 2026-03-24
 
 ### Added

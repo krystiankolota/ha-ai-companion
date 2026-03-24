@@ -1066,6 +1066,21 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             ]
             if nodered_text:
                 context_sections.append(f"## Existing Node-RED flows\n{nodered_text}")
+
+            # Inject dismissed suggestions so the AI won't re-suggest them
+            dismissed = []
+            try:
+                config_dir = os.getenv("HA_CONFIG_DIR", "/config")
+                dismissed_path = os.path.join(config_dir, ".ai_agent_suggestions_dismissed.json")
+                if os.path.exists(dismissed_path):
+                    with open(dismissed_path, "r") as f:
+                        dismissed = json.load(f)
+            except Exception:
+                pass
+            if dismissed:
+                dismissed_list = "\n".join(f"- {t}" for t in dismissed)
+                context_sections.append(f"## User has dismissed these suggestions — do NOT suggest them again\n{dismissed_list}")
+
             if suggestion_prompt_extra:
                 context_sections.append(f"## Additional context\n{suggestion_prompt_extra}")
 

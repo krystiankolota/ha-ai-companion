@@ -21,13 +21,46 @@ function formatGeneratedAt(iso) {
     }
 }
 
+let dismissedTitles = new Set();
+
+async function loadDismissed() {
+    try {
+        const resp = await fetch('api/suggestions/dismissed');
+        if (resp.ok) {
+            const data = await resp.json();
+            dismissedTitles = new Set(data.dismissed || []);
+        }
+    } catch (e) {
+        console.warn('Failed to load dismissed suggestions:', e);
+    }
+}
+
+async function dismissSuggestion(title, card) {
+    try {
+        await fetch('api/suggestions/dismiss', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title })
+        });
+        dismissedTitles.add(title);
+        card.style.transition = 'opacity 0.3s';
+        card.style.opacity = '0';
+        setTimeout(() => card.remove(), 300);
+    } catch (e) {
+        console.warn('Failed to dismiss suggestion:', e);
+    }
+}
+
 function renderSuggestions(data) {
     const list = document.getElementById('suggestionsList');
     const status = document.getElementById('suggestionsStatus');
-    const suggestions = data.suggestions || [];
+    const allSuggestions = data.suggestions || [];
+    const suggestions = allSuggestions.filter(s => !dismissedTitles.has(s.title));
 
     if (data.generated_at) {
-        status.textContent = `Last generated: ${formatGeneratedAt(data.generated_at)}`;
+        const dismissedCount = allSuggestions.length - suggestions.length;
+        const extra = dismissedCount > 0 ? ` (${dismissedCount} dismissed)` : '';
+        status.textContent = `Last generated: ${formatGeneratedAt(data.generated_at)}${extra}`;
         status.style.display = 'block';
     }
 
@@ -40,11 +73,12 @@ function renderSuggestions(data) {
         const icon = CATEGORY_ICONS[s.category] || CATEGORY_ICONS.other;
         const entities = (s.entities || []).map(e => `<span class="suggestion-entity">${e}</span>`).join('');
         return `
-        <div class="suggestion-card">
+        <div class="suggestion-card" data-title="${escapeHtml(s.title)}">
             <div class="suggestion-card-header">
                 <span class="suggestion-icon">${icon}</span>
                 <span class="suggestion-title">${escapeHtml(s.title)}</span>
                 <span class="suggestion-category">${escapeHtml(s.category || 'other')}</span>
+                <button class="btn btn-dismiss" title="Don't suggest this again">✕</button>
             </div>
             <p class="suggestion-description">${escapeHtml(s.description)}</p>
             ${entities ? `<div class="suggestion-entities">${entities}</div>` : ''}
@@ -53,11 +87,19 @@ function renderSuggestions(data) {
         </div>`;
     }).join('');
 
-    // Wire up "Add to chat" buttons
+    // Wire up buttons
     list.querySelectorAll('.btn-add-to-chat').forEach(btn => {
         btn.addEventListener('click', () => {
             const s = suggestions[parseInt(btn.dataset.index)];
             addSuggestionToChat(s);
+        });
+    });
+
+    list.querySelectorAll('.btn-dismiss').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const card = btn.closest('.suggestion-card');
+            const title = card.dataset.title;
+            dismissSuggestion(title, card);
         });
     });
 }
@@ -143,7 +185,8 @@ function initTabs() {
     });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadDismissed();
     initTabs();
 
     const genBtn = document.getElementById('generateSuggestionsBtn');

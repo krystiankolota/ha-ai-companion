@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "0.2.4"
+version = "0.2.5"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -372,10 +372,29 @@ async def delete_session(session_id: str):
 # --- Suggestions endpoints ---
 
 SUGGESTIONS_FILE_KEY = ".ai_agent_suggestions.json"
+DISMISSED_FILE_KEY  = ".ai_agent_suggestions_dismissed.json"
 
 def _suggestions_path() -> str:
     config_dir = os.getenv("HA_CONFIG_DIR", "/config")
     return os.path.join(config_dir, SUGGESTIONS_FILE_KEY)
+
+def _dismissed_path() -> str:
+    config_dir = os.getenv("HA_CONFIG_DIR", "/config")
+    return os.path.join(config_dir, DISMISSED_FILE_KEY)
+
+def _read_dismissed() -> list:
+    path = _dismissed_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json_lib.load(f)
+        except Exception:
+            pass
+    return []
+
+def _write_dismissed(titles: list):
+    with open(_dismissed_path(), "w") as f:
+        json_lib.dump(titles, f, indent=2)
 
 
 @app.get("/api/suggestions")
@@ -389,6 +408,33 @@ async def get_suggestions():
         except Exception as e:
             logger.warning(f"Failed to read suggestions file: {e}")
     return {"suggestions": [], "generated_at": None}
+
+
+@app.post("/api/suggestions/dismiss")
+async def dismiss_suggestion(request: Request):
+    """Add a suggestion title to the persistent dismissed list."""
+    body = await request.json()
+    title = body.get("title", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    dismissed = _read_dismissed()
+    if title not in dismissed:
+        dismissed.append(title)
+        _write_dismissed(dismissed)
+    return {"dismissed": dismissed}
+
+
+@app.delete("/api/suggestions/dismissed")
+async def clear_dismissed():
+    """Clear all dismissed suggestions."""
+    _write_dismissed([])
+    return {"dismissed": []}
+
+
+@app.get("/api/suggestions/dismissed")
+async def get_dismissed():
+    """Return the current dismissed suggestions list."""
+    return {"dismissed": _read_dismissed()}
 
 
 @app.post("/api/suggestions/generate")
