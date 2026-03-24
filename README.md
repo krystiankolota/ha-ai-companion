@@ -136,6 +136,15 @@ What automations do I have for the bedroom lights?
 
 ---
 
+## Acknowledgements
+
+This project builds on ideas and code from:
+
+- [yinzara/ha-config-ai-agent](https://github.com/yinzara/ha-config-ai-agent) — original HA config AI agent
+- [ITSpecialist111/ai_automation_suggester](https://github.com/ITSpecialist111/ai_automation_suggester) — automation suggestion concept
+
+---
+
 ## License
 
 MIT
