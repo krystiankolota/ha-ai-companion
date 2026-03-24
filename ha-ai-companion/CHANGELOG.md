@@ -64,6 +64,11 @@ Enhanced search functionality to support file path patterns. When search_pattern
 
 Converted to support installation via HACS as custom component as well as add-on installation.
 
+## [0.2.2] - 2026-03-24
+
+### Fixed
+- Add-on schema validation: changed `nodered_url` and `nodered_token` from `url?`/`password?` to `str?` to allow empty string defaults
+
 ## [0.2.1] - 2026-03-24
 
 ### Changed

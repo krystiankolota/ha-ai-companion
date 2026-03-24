@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "0.2.1"
+version: "0.2.2"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -71,6 +71,6 @@ schema:
   suggestion_model: str?
   config_model: str?
   suggestion_prompt: str?
-  nodered_url: url?
-  nodered_token: password?
+  nodered_url: str?
+  nodered_token: str?
   nodered_flows_file: str?
