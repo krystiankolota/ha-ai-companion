@@ -21,9 +21,12 @@ function generateSessionId() {
 }
 
 // DOM elements
-let chatMessages, messageInput, sendBtn, diffModal, diffContent, exportBtn, importBtn, importFileInput;
+let chatMessages, messageInput, sendBtn, diffModal, diffContent;
 let tokenCounter, tokenCounterInput, tokenCounterOutput, tokenCounterCached;
-let sessionsPanel, sidebarToggleBtn, sessionsList, newChatBtn;
+let sessionsPanel, sidebarToggleBtn, sessionsList, newChatBtn, sidebarBackdrop;
+
+// Cost tracking
+let cumulativeCostUsd = 0;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -35,9 +38,6 @@ document.addEventListener('DOMContentLoaded', () => {
     sendBtn = document.getElementById('sendBtn');
     diffModal = document.getElementById('diffModal');
     diffContent = document.getElementById('diffContent');
-    exportBtn = document.getElementById('exportBtn');
-    importBtn = document.getElementById('importBtn');
-    importFileInput = document.getElementById('importFileInput');
     tokenCounter = document.getElementById('tokenCounter');
     tokenCounterInput = document.getElementById('tokenCounterInput');
     tokenCounterOutput = document.getElementById('tokenCounterOutput');
@@ -46,6 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
     sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
     sessionsList = document.getElementById('sessionsList');
     newChatBtn = document.getElementById('newChatBtn');
+    sidebarBackdrop = document.getElementById('sidebarBackdrop');
 
     // Set up event listeners
     sendBtn.addEventListener('click', sendMessage);
@@ -60,10 +61,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (sidebarToggleBtn) sidebarToggleBtn.addEventListener('click', toggleSidebar);
     if (newChatBtn) newChatBtn.addEventListener('click', newChat);
 
-    // Export/Import listeners
-    exportBtn.addEventListener('click', exportConversation);
-    importBtn.addEventListener('click', () => importFileInput.click());
-    importFileInput.addEventListener('change', importConversation);
+    // Close sidebar when backdrop is tapped (mobile)
+    if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', closeSidebar);
 
     // Load sessions list
     loadSessions();
@@ -540,13 +539,24 @@ function resetTokenCounter() {
     cumulativeInputTokens = 0;
     cumulativeOutputTokens = 0;
     cumulativeCachedTokens = 0;
-    tokenCounterTotal.textContent = '0';
     tokenCounterInput.textContent = '↓0';
     tokenCounterOutput.textContent = '↑0';
     tokenCounterCached.textContent = '💾0';
     tokenCounterCached.style.display = 'none';
     tokenCounter.style.display = 'none';
 }
+
+// Update session cost display (called from websocket-chat.js)
+function updateCostDisplay(costUsd) {
+    if (!costUsd) return;
+    cumulativeCostUsd += costUsd;
+    const el = document.getElementById('sessionCost');
+    if (el) {
+        el.textContent = `💰 $${cumulativeCostUsd.toFixed(4)}`;
+        el.style.display = 'inline';
+    }
+}
+window.updateCostDisplay = updateCostDisplay;
 
 // Add system message to chat
 function addSystemMessage(content) {
@@ -1072,99 +1082,29 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Export conversation to JSON file
-function exportConversation() {
-    if (conversationHistory.length === 0) {
-        addSystemMessage('⚠️ No conversation to export.');
-        return;
-    }
-
-    const exportData = {
-        version: '1.0',
-        timestamp: new Date().toISOString(),
-        conversationHistory: conversationHistory,
-        messageCount: conversationHistory.length
-    };
-
-    const jsonString = JSON.stringify(exportData, null, 2);
-    const blob = new Blob([jsonString], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ha-config-agent-conversation-${new Date().toISOString().split('T')[0]}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    addSystemMessage('✅ Conversation exported successfully.');
-}
-
-// Import conversation from JSON file
-function importConversation(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        try {
-            const importData = JSON.parse(e.target.result);
-
-            // Validate import data structure
-            if (!importData.conversationHistory || !Array.isArray(importData.conversationHistory)) {
-                throw new Error('Invalid conversation file format.');
-            }
-
-            // Clear current conversation
-            conversationHistory = [];
-            chatMessages.innerHTML = '';
-
-            // Restore conversation history
-            conversationHistory = importData.conversationHistory;
-
-            // Rebuild UI from history
-            for (const msg of conversationHistory) {
-                if (msg.role === 'user') {
-                    addUserMessage(msg.content);
-                } else if (msg.role === 'assistant') {
-                    if (msg.content) {
-                        addAssistantMessage(msg.content);
-                    }
-                    // Handle tool calls if present
-                    if (msg.tool_calls) {
-                        addToolCallMessage(msg.tool_calls);
-                    }
-                } else if (msg.role === 'tool') {
-                    // Tool messages are typically not displayed individually in UI
-                    // They're shown via tool result messages
-                }
-            }
-
-            addSystemMessage(`✅ Conversation imported successfully. ${importData.messageCount} messages restored.`);
-
-            // Reset file input
-            event.target.value = '';
-
-        } catch (error) {
-            console.error('Import error:', error);
-            addSystemMessage(`❌ Failed to import conversation: ${error.message}`);
-            event.target.value = '';
-        }
-    };
-
-    reader.onerror = function() {
-        addSystemMessage('❌ Failed to read file.');
-        event.target.value = '';
-    };
-
-    reader.readAsText(file);
-}
 
 // ── Session Management ────────────────────────────────────────────────────────
 
+function isMobile() {
+    return window.innerWidth <= 768;
+}
+
 function toggleSidebar() {
-    if (sessionsPanel) sessionsPanel.classList.toggle('collapsed');
+    if (!sessionsPanel) return;
+    if (isMobile()) {
+        const isOpen = sessionsPanel.classList.toggle('mobile-open');
+        if (sidebarBackdrop) sidebarBackdrop.classList.toggle('visible', isOpen);
+        document.body.style.overflow = isOpen ? 'hidden' : '';
+    } else {
+        sessionsPanel.classList.toggle('collapsed');
+    }
+}
+
+function closeSidebar() {
+    if (!sessionsPanel) return;
+    sessionsPanel.classList.remove('mobile-open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.remove('visible');
+    document.body.style.overflow = '';
 }
 
 async function loadSessions() {
@@ -1238,6 +1178,7 @@ window.switchSession = async function(sessionId) {
 
         addSystemMessage(`📂 ${escapeHtml(session.title || 'Conversation')}`);
         loadSessions();
+        closeSidebar();
     } catch (e) {
         console.error('Load session error:', e);
         addSystemMessage('❌ Failed to load conversation.');
@@ -1251,7 +1192,11 @@ function newChat() {
     cumulativeInputTokens = 0;
     cumulativeOutputTokens = 0;
     cumulativeCachedTokens = 0;
+    cumulativeCostUsd = 0;
     if (tokenCounter) tokenCounter.style.display = 'none';
+    const costEl = document.getElementById('sessionCost');
+    if (costEl) costEl.style.display = 'none';
+    closeSidebar();
     addSystemMessage('✅ HA AI Companion ready. How can I help you today?');
     loadSessions();
 }

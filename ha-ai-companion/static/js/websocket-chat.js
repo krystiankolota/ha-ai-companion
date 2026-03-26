@@ -209,10 +209,6 @@ function handleWebSocketMessage(message) {
 
             // Process tool results (especially for propose_config_changes)
             if (data.function === 'propose_config_changes' && data.result.success) {
-                console.log('propose_config_changes success, creating approval card');
-                console.log('Result:', data.result);
-
-                // Extract changeset info and display approval card
                 const changesetData = {
                     changeset_id: data.result.changeset_id,
                     total_files: data.result.total_files,
@@ -220,34 +216,13 @@ function handleWebSocketMessage(message) {
                     reason: data.result.reason
                 };
 
-                // Get the arguments from the stored tool_start data
-                const args = toolCallArguments[data.tool_call_id];
-                console.log('Retrieved arguments from tool_start event:', args);
-
+                // Prefer arguments echoed back in tool_result, fall back to tool_start store
+                const args = data.arguments || toolCallArguments[data.tool_call_id];
                 if (args && args.changes) {
                     changesetData.file_changes_detail = args.changes;
                     changesetData.original_contents = extractOriginalContents(conversationHistory, args.changes);
-                    console.log('Successfully extracted file_changes_detail and original_contents');
                 } else {
-                    console.error('No arguments found for tool_call_id:', data.tool_call_id);
-                    console.log('Available tool call IDs:', Object.keys(toolCallArguments));
-                }
-
-                console.log('Final changeset data before addApprovalCard:', changesetData);
-                console.log('Has file_changes_detail?', !!changesetData.file_changes_detail);
-                console.log('Has original_contents?', !!changesetData.original_contents);
-
-                // Ensure we have the required data for diffs
-                if (!changesetData.file_changes_detail) {
-                    console.error('ERROR: Missing file_changes_detail in changesetData!');
-                    console.log('Attempting to recover from tool result...');
-
-                    // The backend should have sent the changes in the result
-                    // but we need them from the tool call arguments for the new_content
-                    // Let's try to recover from what we have
-                    if (data.result.files && Array.isArray(data.result.files)) {
-                        console.warn('Only have file list, not full changes. Approval card will show limited info.');
-                    }
+                    console.warn('propose_config_changes: no arguments found, approval card will have limited info');
                 }
 
                 addApprovalCard(changesetData);
@@ -272,6 +247,9 @@ function handleWebSocketMessage(message) {
                     data.usage.output_tokens || 0,
                     data.usage.cached_tokens || 0
                 );
+                if (data.usage.cost_usd !== undefined && typeof window.updateCostDisplay === 'function') {
+                    window.updateCostDisplay(data.usage.cost_usd);
+                }
             }
 
             // Final cleanup

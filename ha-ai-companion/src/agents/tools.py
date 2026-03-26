@@ -722,6 +722,31 @@ class AgentTools:
                             current_content = ""  # Empty content for new files
                             logger.info(f"File {file_path} will be created as a new file")
 
+                    # Safety guard: prevent accidental deletion of automations/scripts/scenes
+                    # by detecting when proposed content has far fewer items than current file.
+                    _GUARDED_FILES = ('automations.yaml', 'scripts.yaml', 'scenes.yaml')
+                    if any(file_path.endswith(g) for g in _GUARDED_FILES) and current_content and current_content.strip():
+                        try:
+                            _ry = YAML()
+                            _current_list = _ry.load(StringIO(current_content))
+                            _new_list = _ry.load(StringIO(new_content)) if new_content.strip() else []
+                            _cur_count = len(_current_list) if isinstance(_current_list, list) else 0
+                            _new_count = len(_new_list) if isinstance(_new_list, list) else 0
+                            if _cur_count > 0 and _new_count < _cur_count * 0.8:
+                                errors.append({
+                                    "file_path": file_path,
+                                    "error": (
+                                        f"SAFETY GUARD: {file_path} currently has {_cur_count} items but your "
+                                        f"proposed content only has {_new_count}. This would permanently DELETE "
+                                        f"{_cur_count - _new_count} existing items. "
+                                        f"Read the current file first with search_config_files, then include ALL "
+                                        f"{_cur_count} existing items in your proposed content before adding new ones."
+                                    )
+                                })
+                                continue
+                        except Exception as _guard_err:
+                            logger.warning(f"Safety guard check failed for {file_path}: {_guard_err}")
+
                     # Validate the new content based on file type
                     if file_path.endswith('.json'):
                         # Validate JSON files (devices.json, entities.json)

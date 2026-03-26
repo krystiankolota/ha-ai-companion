@@ -144,6 +144,8 @@ suggestion_prompt: ""
 nodered_url: ""
 nodered_token: ""
 nodered_flows_file: ""
+input_price_per_1m: 0.0          # Optional: USD per 1M input tokens (enables cost display)
+output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 ```
 
 #### Configuration Parameters
@@ -186,6 +188,27 @@ nodered_flows_file: ""
 | `nodered_url` | String | `""` | Node-RED base URL (e.g. `http://homeassistant:1880`). When set, the AI reads existing flows before suggesting automations. |
 | `nodered_token` | String | `""` | Node-RED API token — only needed if Node-RED authentication is enabled |
 | `nodered_flows_file` | String | `""` | Path to a Node-RED flows JSON export relative to `/config`, used as fallback when the live API is unreachable |
+
+**Cost Display (optional)**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `input_price_per_1m` | Float | `0.0` | USD cost per 1 million input (prompt) tokens. Set to enable cost tracking in the UI footer. |
+| `output_price_per_1m` | Float | `0.0` | USD cost per 1 million output (completion) tokens. |
+
+When both values are set to non-zero, a `💰 $0.0000` cumulative session cost appears next to the token counter in the footer.
+
+**Common pricing reference (as of 2026-03):**
+
+| Model | Input / 1M | Output / 1M |
+|-------|-----------|------------|
+| `gemini-2.5-flash` | $0.075 | $0.30 |
+| `claude-haiku-4-5-20251001` | $0.80 | $4.00 |
+| `claude-sonnet-4-5` | $3.00 | $15.00 |
+| `claude-sonnet-4-6` | $3.00 | $15.00 |
+| `claude-opus-4-6` | $15.00 | $75.00 |
+| `gpt-4o-mini` | $0.15 | $0.60 |
+| `gpt-4o` | $2.50 | $10.00 |
 
 ### AI Provider Setup
 
@@ -578,15 +601,13 @@ After installation and configuration:
 
 The chat interface supports natural language requests about your Home Assistant configuration.
 
-#### Token Usage Display
+#### Token Usage and Cost Display
 
-The footer displays real-time cumulative token usage statistics for the current conversation:
-- **📊** - Token counter icon
-- **↓** - Input tokens (sent to the AI)
-- **↑** - Output tokens (received from the AI)
-- **💾** - Cached tokens (when supported by the model)
+The footer displays cumulative token usage and optional cost for the current session:
+- **📊 ↓ ↑** — Input / output / cached token counters (always visible after first message)
+- **💰 $0.0000** — Session cost in USD (only visible when `input_price_per_1m` / `output_price_per_1m` are configured)
 
-This helps you monitor API usage and costs throughout your conversation session. The counters accumulate across all messages in the current session and reset when the page is refreshed.
+Counters accumulate across all messages in the session and reset when starting a new conversation.
 
 #### Query Examples
 
@@ -1056,5 +1077,5 @@ Follow conventional commits:
 
 ---
 
-**Last Updated:** 2026-03-24
-**Version:** 0.2.1
+**Last Updated:** 2026-03-26
+**Version:** 0.2.8

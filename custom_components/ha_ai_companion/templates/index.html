@@ -13,6 +13,9 @@
 <body>
     <div class="app-wrapper">
 
+        <!-- Backdrop for mobile sidebar -->
+        <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+
         <!-- Sessions sidebar -->
         <aside class="sessions-panel" id="sessionsPanel">
             <div class="sessions-panel-header">
@@ -29,13 +32,10 @@
             <div class="container">
                 <header>
                     <button id="sidebarToggleBtn" class="btn btn-icon sidebar-toggle" title="Toggle conversations">☰</button>
-                    <h1><img src="static/images/icon.png" width="40" height="40"/> HA AI Companion</h1>
+                    <h1><img src="static/images/icon.png" width="40" height="40"/> <span class="header-title">HA AI Companion</span></h1>
                     <div class="header-actions">
-                        <button id="importBtn" class="btn btn-icon" title="Import Conversation">📥</button>
-                        <button id="exportBtn" class="btn btn-icon" title="Export Conversation">📤</button>
                         <span class="version-badge">{{ version }}</span>
                     </div>
-                    <input type="file" id="importFileInput" accept=".json" style="display: none;">
                 </header>
 
                 <!-- Tab navigation -->
@@ -97,14 +97,17 @@
                 </main>
 
                 <footer>
-                    <p>HA AI Companion for Home Assistant</p>
-                    <div id="tokenCounter" class="footer-token-stats" style="display: none;">
-                        <span class="token-counter-icon">📊</span>
-                        <span class="token-counter-breakdown">
-                            <span class="token-counter-input" id="tokenCounterInput" title="Input tokens">↓0</span>
-                            <span class="token-counter-output" id="tokenCounterOutput" title="Output tokens">↑0</span>
-                            <span class="token-counter-cached" id="tokenCounterCached" title="Cached tokens" style="display: none;">💾0</span>
-                        </span>
+                    <p class="footer-label">HA AI Companion</p>
+                    <div class="footer-stats">
+                        <span id="sessionCost" class="footer-cost" style="display: none;" title="Estimated session cost"></span>
+                        <div id="tokenCounter" class="footer-token-stats" style="display: none;">
+                            <span class="token-counter-icon">📊</span>
+                            <span class="token-counter-breakdown">
+                                <span class="token-counter-input" id="tokenCounterInput" title="Input tokens">↓0</span>
+                                <span class="token-counter-output" id="tokenCounterOutput" title="Output tokens">↑0</span>
+                                <span class="token-counter-cached" id="tokenCounterCached" title="Cached tokens" style="display: none;">💾0</span>
+                            </span>
+                        </div>
                     </div>
                 </footer>
             </div>

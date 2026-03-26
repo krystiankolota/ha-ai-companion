@@ -100,6 +100,10 @@ class AgentSystem:
         temperature_str = os.getenv('TEMPERATURE')
         self.temperature = float(temperature_str) if temperature_str else None
 
+        # Pricing (cost display in UI) — default 0 means cost won't be shown
+        self.input_price_per_1m = float(os.getenv('INPUT_PRICE_PER_1M', '0') or '0')
+        self.output_price_per_1m = float(os.getenv('OUTPUT_PRICE_PER_1M', '0') or '0')
+
         # Store cache control setting
         self.enable_cache_control = enable_cache_control
 
@@ -178,7 +182,7 @@ Dashboard Guidelines:
 
 Important Guidelines:
 - NEVER suggest changes directly - always use propose_config_changes
-- Always read the current configuration before proposing changes
+- Always read the current configuration before proposing changes using search_config_files
 - Explain your reasoning in your response when calling propose_config_changes
 - The user can accept or reject your proposed config changes through their own UI
 - Preserve all existing code, comments and structure when possible
@@ -186,6 +190,18 @@ Important Guidelines:
 - Validate that changes align with Home Assistant documentation
 - Warn users about potential breaking changes
 - Remember when searching for files that terms are case-insensitive
+
+Language:
+- Look at the entity friendly_names, automation names, and notification text in the Home Layout section below.
+- Detect the primary language used there (e.g. Polish, German, French, English).
+- Respond in that same language. Generate all new content — automation names, descriptions, notifications, comments — in that language.
+- If the user writes in a different language than the home config, follow the user's message language for your replies but keep generated HA content in the home config language.
+
+Automation safety rules (CRITICAL):
+- Before proposing changes to automations.yaml, scripts.yaml, or scenes.yaml, ALWAYS read the file first with search_config_files.
+- Your proposed content for these files MUST include ALL existing automations/scripts/scenes PLUS any new ones.
+- NEVER submit a partial list — removing existing automations is permanent data loss.
+- If you only want to add one automation, copy ALL existing ones first, then append the new one at the end.
 
 Memory Guidelines:
 - Categories: preference_, identity_, device_, baseline_, pattern_, correction_ (use as filename prefix)
@@ -558,10 +574,14 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 active_client = self.config_client if has_tool_results else self.suggestion_client
                 logger.debug(f"[ITERATION {iteration}] Using {'config' if has_tool_results else 'suggestion'} model: {active_model}")
 
+                # Strip excess cache_control blocks before each call (Anthropic limit: 4 total,
+                # we reserve 1 for system prompt so allow 3 in the messages list)
+                safe_messages = self._strip_excess_cache_control(messages) if self.enable_cache_control else messages
+
                 # Call OpenAI API with streaming
                 api_params = {
                     "model": active_model,
-                    "messages": messages,
+                    "messages": safe_messages,
                     "tools": tools,
                     "tool_choice": "auto",
                     "stream": True
@@ -823,15 +843,20 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     messages.append(tool_message)
                     new_messages.append(tool_message)
 
-                    # Notify about tool result immediately after execution
+                    # Notify about tool result immediately after execution.
+                    # For propose_config_changes, echo back the original arguments so the
+                    # frontend can build the approval card without relying on tool_start lookup.
+                    tool_result_data: Dict[str, Any] = {
+                        "tool_call_id": tool_call["id"],
+                        "function": function_name,
+                        "result": result,
+                        "iteration": iteration,
+                    }
+                    if function_name == "propose_config_changes" and result.get("success"):
+                        tool_result_data["arguments"] = function_args
                     yield {
                         "event": "tool_result",
-                        "data": json.dumps({
-                            "tool_call_id": tool_call["id"],
-                            "function": function_name,
-                            "result": result,
-                            "iteration": iteration
-                        })
+                        "data": json.dumps(tool_result_data)
                     }
 
             # Send completion event with all new messages
@@ -846,17 +871,26 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
             logger.info(f"Agent completed after {iteration} iteration(s) - Total tokens: {total_input_tokens + total_output_tokens} (input: {total_input_tokens}, output: {total_output_tokens}, cached: {total_cached_tokens})")
 
+            cost_usd = (
+                total_input_tokens * self.input_price_per_1m +
+                total_output_tokens * self.output_price_per_1m
+            ) / 1_000_000 if (self.input_price_per_1m or self.output_price_per_1m) else None
+
+            usage_data = {
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+                "cached_tokens": total_cached_tokens,
+                "total_tokens": total_input_tokens + total_output_tokens
+            }
+            if cost_usd is not None:
+                usage_data["cost_usd"] = round(cost_usd, 6)
+
             yield {
                 "event": "complete",
                 "data": json.dumps({
                     "messages": new_messages,
                     "iterations": iteration,
-                    "usage": {
-                        "input_tokens": total_input_tokens,
-                        "output_tokens": total_output_tokens,
-                        "cached_tokens": total_cached_tokens,
-                        "total_tokens": total_input_tokens + total_output_tokens
-                    }
+                    "usage": usage_data
                 })
             }
 
@@ -870,6 +904,45 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 "event": "error",
                 "data": json.dumps({"error": str(e)})
             }
+
+    @staticmethod
+    def _strip_excess_cache_control(messages: List[Dict[str, Any]], max_blocks: int = 3) -> List[Dict[str, Any]]:
+        """
+        Anthropic allows at most 4 cache_control blocks total (system + tools + messages).
+        We reserve 1 for the system prompt and keep at most `max_blocks` in messages.
+        Strip from oldest messages first so newest context is always cached.
+        """
+        # Collect indices of messages that carry cache_control
+        cached_indices = []
+        for i, m in enumerate(messages):
+            has_cc = bool(m.get("cache_control"))
+            if not has_cc and isinstance(m.get("content"), list):
+                has_cc = any(
+                    isinstance(b, dict) and b.get("cache_control")
+                    for b in m["content"]
+                )
+            if has_cc:
+                cached_indices.append(i)
+
+        if len(cached_indices) <= max_blocks:
+            return messages
+
+        # Strip cache_control from oldest over-limit entries
+        strip_set = set(cached_indices[: len(cached_indices) - max_blocks])
+        result = []
+        for i, m in enumerate(messages):
+            if i not in strip_set:
+                result.append(m)
+                continue
+            m2 = dict(m)
+            m2.pop("cache_control", None)
+            if isinstance(m2.get("content"), list):
+                m2["content"] = [
+                    {k: v for k, v in b.items() if k != "cache_control"} if isinstance(b, dict) else b
+                    for b in m2["content"]
+                ]
+            result.append(m2)
+        return result
 
     async def _build_home_topology(self) -> str:
         """

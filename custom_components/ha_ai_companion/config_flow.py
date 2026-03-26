@@ -31,6 +31,8 @@ from .const import (
     CONF_CONFIG_MODEL,
     CONF_CONFIG_API_URL,
     CONF_CONFIG_API_KEY,
+    CONF_INPUT_PRICE_PER_1M,
+    CONF_OUTPUT_PRICE_PER_1M,
     DEFAULT_API_URL,
     DEFAULT_MODEL,
     DEFAULT_LOG_LEVEL,
@@ -58,6 +60,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
     vol.Optional(CONF_CONFIG_MODEL): cv.string,
     vol.Optional(CONF_CONFIG_API_URL): cv.string,
     vol.Optional(CONF_CONFIG_API_KEY): cv.string,
+    vol.Optional(CONF_INPUT_PRICE_PER_1M): vol.Coerce(float),
+    vol.Optional(CONF_OUTPUT_PRICE_PER_1M): vol.Coerce(float),
 })
 
 

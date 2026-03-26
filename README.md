@@ -8,10 +8,11 @@ An AI-powered Home Assistant companion that helps you manage configuration, auto
 
 - **Review, edit and create dashboards** — ask the AI to build or modify Lovelace dashboards
 - **Manage configuration files** — automations, scripts, YAML configs, devices, entities, areas
-- **Suggest automations** — based on your actual live entity states
-- **Persistent memory** — remembers your preferences and setup across sessions
+- **Suggest automations** — based on your actual live entity states, never duplicates existing ones
+- **Persistent memory** — remembers your preferences and home layout across sessions
 - **Node-RED integration** — reads your existing flows to avoid duplicate automations
-- **Conversation history** — sessions saved and accessible across page reloads
+- **Conversation history** — sessions saved and accessible across page reloads, with a mobile-friendly slide-in sidebar
+- **Token + cost tracking** — see cumulative input/output tokens and optional USD cost per session
 
 All changes go through a safe approval workflow: the AI proposes, you see a visual diff, then approve or reject.
 
@@ -44,49 +45,98 @@ Copy the `custom_components/ha_ai_companion/` folder into your Home Assistant `c
 | `temperature` | Model temperature (optional) | model default |
 | `system_prompt_file` | Custom system prompt file in `/config` (optional) | — |
 | `suggestion_prompt` | Extra instructions appended to the system prompt (optional) | — |
-| `enable_cache_control` | Enable prompt caching (Anthropic Claude) | `false` |
-| `usage_tracking` | Token tracking method: `stream_options`, `usage`, `disabled` | `stream_options` |
-| `nodered_url` | Node-RED base URL (optional, e.g. `http://homeassistant:1880`) | — |
+| `enable_cache_control` | Enable prompt caching (Anthropic Claude only) | `false` |
+| `usage_tracking` | Token tracking: `stream_options`, `usage`, `disabled` | `stream_options` |
+| `suggestion_model` | Separate model for the suggestion phase (optional) | main model |
+| `config_model` | Separate model for config edits (optional) | main model |
+| `nodered_url` | Node-RED base URL (optional) | — |
 | `nodered_token` | Node-RED API token (optional, if auth enabled) | — |
+| `input_price_per_1m` | USD per 1M input tokens — enables 💰 cost display in footer | `0.0` |
+| `output_price_per_1m` | USD per 1M output tokens | `0.0` |
 
 ### AI Provider Examples
 
-**Anthropic Claude (recommended):**
-```yaml
-openai_api_url: "https://api.anthropic.com/v1"
-openai_api_key: "sk-ant-..."
-openai_model: "claude-haiku-4-5"
-enable_cache_control: true
-usage_tracking: "usage"
-```
+#### 💰 Cost — minimize spend
 
-**Google Gemini:**
+**Google Gemini Flash (best value, free tier available):**
 ```yaml
 openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
 openai_api_key: "your-google-api-key"
 openai_model: "gemini-2.5-flash"
+usage_tracking: "stream_options"
+input_price_per_1m: 0.075
+output_price_per_1m: 0.30
 ```
 
-**OpenAI:**
+**Anthropic Haiku (fast + cheap Claude):**
+```yaml
+openai_api_url: "https://api.anthropic.com/v1"
+openai_api_key: "sk-ant-..."
+openai_model: "claude-haiku-4-5-20251001"
+enable_cache_control: true
+usage_tracking: "usage"
+input_price_per_1m: 0.80
+output_price_per_1m: 4.00
+```
+
+#### ⚖️ Balance — good quality at reasonable cost
+
+**Anthropic Sonnet:**
+```yaml
+openai_api_url: "https://api.anthropic.com/v1"
+openai_api_key: "sk-ant-..."
+openai_model: "claude-sonnet-4-5"
+enable_cache_control: true
+usage_tracking: "usage"
+input_price_per_1m: 3.00
+output_price_per_1m: 15.00
+```
+
+**OpenAI GPT-4o:**
 ```yaml
 openai_api_url: "https://api.openai.com/v1"
 openai_api_key: "sk-proj-..."
 openai_model: "gpt-4o"
+usage_tracking: "stream_options"
+input_price_per_1m: 2.50
+output_price_per_1m: 10.00
 ```
 
-**OpenRouter (100+ models):**
+#### 🏆 Quality — best results, cost secondary
+
+**Anthropic Claude Sonnet 4.6 (newest, near-Opus quality):**
+```yaml
+openai_api_url: "https://api.anthropic.com/v1"
+openai_api_key: "sk-ant-..."
+openai_model: "claude-sonnet-4-6"
+enable_cache_control: true
+usage_tracking: "usage"
+input_price_per_1m: 3.00
+output_price_per_1m: 15.00
+```
+
+**Google Gemini Pro:**
+```yaml
+openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+openai_api_key: "your-google-api-key"
+openai_model: "gemini-2.5-pro"
+usage_tracking: "stream_options"
+```
+
+#### OpenRouter (100+ models via one key)
 ```yaml
 openai_api_url: "https://openrouter.ai/api/v1"
 openai_api_key: "sk-or-v1-..."
-openai_model: "anthropic/claude-3.5-sonnet"
+openai_model: "anthropic/claude-sonnet-4-5"
 usage_tracking: "usage"
 ```
 
-**Local Ollama:**
+#### Local Ollama (zero cost, privacy)
 ```yaml
 openai_api_url: "http://ollama:11434/v1"
 openai_api_key: "ollama"
 openai_model: "llama3.2"
+usage_tracking: "disabled"
 ```
 
 ---
@@ -116,7 +166,7 @@ The AI remembers facts across sessions using categorised memory files:
 - `correction_` — corrections to previous facts
 
 ### Automation suggestions
-Ask "suggest automations for my home" — the AI fetches live entity states and existing automations/Node-RED flows before suggesting, so it never duplicates what you already have.
+Ask "suggest automations for my home" — the AI fetches live entity states and existing automations/Node-RED flows before suggesting, so it never duplicates what you already have. Each suggestion card includes a type badge (new / improvement) and a copyable YAML block.
 
 ### Conversation sessions
 All conversations are saved automatically. Use the sidebar to switch between past sessions or start a new one.
