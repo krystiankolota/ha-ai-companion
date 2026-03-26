@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "0.2.9"
+version: "1.0.0"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -61,6 +61,12 @@ options:
   nodered_url: ""
   nodered_token: ""
   nodered_flows_file: ""
+  input_price_per_1m: 0.0
+  output_price_per_1m: 0.0
+  max_tokens: 0
+  suggestion_max_tokens: 0
+  config_max_tokens: 0
+  max_sessions: 50
 
 schema:
   openai_api_url: url
@@ -81,3 +87,9 @@ schema:
   nodered_url: str?
   nodered_token: str?
   nodered_flows_file: str?
+  input_price_per_1m: float?
+  output_price_per_1m: float?
+  max_tokens: int?
+  suggestion_max_tokens: int?
+  config_max_tokens: int?
+  max_sessions: int?

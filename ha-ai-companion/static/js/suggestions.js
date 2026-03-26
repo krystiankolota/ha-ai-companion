@@ -29,9 +29,80 @@ async function loadDismissed() {
         if (resp.ok) {
             const data = await resp.json();
             dismissedTitles = new Set(data.dismissed || []);
+            renderDismissedSection();
         }
     } catch (e) {
         console.warn('Failed to load dismissed suggestions:', e);
+    }
+}
+
+function renderDismissedSection() {
+    const section = document.getElementById('dismissedSection');
+    const countEl = document.getElementById('dismissedCount');
+    const listEl = document.getElementById('dismissedList');
+    if (!section) return;
+
+    const titles = [...dismissedTitles];
+    if (titles.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+    countEl.textContent = `(${titles.length})`;
+
+    listEl.innerHTML = `
+        <div class="dismissed-header">
+            <span class="dismissed-header-label">${titles.length} dismissed suggestion${titles.length !== 1 ? 's' : ''}</span>
+            <button id="clearDismissedBtn" class="btn btn-sm btn-danger">Clear all</button>
+        </div>
+        <ul class="dismissed-titles-list">
+            ${titles.map(t => `
+            <li class="dismissed-title-item">
+                <span class="dismissed-title-text">${escapeHtml(t)}</span>
+                <button class="btn-restore" data-title="${escapeHtml(t)}" title="Restore">↩</button>
+            </li>`).join('')}
+        </ul>`;
+
+    document.getElementById('clearDismissedBtn').addEventListener('click', clearAllDismissed);
+    listEl.querySelectorAll('.btn-restore').forEach(btn => {
+        btn.addEventListener('click', () => restoreDismissed(btn.dataset.title));
+    });
+}
+
+async function clearAllDismissed() {
+    try {
+        await fetch('api/suggestions/dismissed', { method: 'DELETE' });
+        dismissedTitles.clear();
+        renderDismissedSection();
+        // Re-render suggestions list if data is cached
+        const listEl = document.getElementById('dismissedList');
+        if (listEl) listEl.style.display = 'none';
+        document.getElementById('dismissedToggleLabel').textContent = 'Show dismissed';
+        // Reload suggestions from cache to show previously-dismissed ones
+        await loadSuggestions();
+    } catch (e) {
+        console.warn('Failed to clear dismissed:', e);
+    }
+}
+
+async function restoreDismissed(title) {
+    try {
+        // Remove from server list by clearing and re-adding all except this one
+        const remaining = [...dismissedTitles].filter(t => t !== title);
+        await fetch('api/suggestions/dismissed', { method: 'DELETE' });
+        for (const t of remaining) {
+            await fetch('api/suggestions/dismiss', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: t })
+            });
+        }
+        dismissedTitles = new Set(remaining);
+        renderDismissedSection();
+        await loadSuggestions();
+    } catch (e) {
+        console.warn('Failed to restore suggestion:', e);
     }
 }
 
@@ -45,7 +116,7 @@ async function dismissSuggestion(title, card) {
         dismissedTitles.add(title);
         card.style.transition = 'opacity 0.3s';
         card.style.opacity = '0';
-        setTimeout(() => card.remove(), 300);
+        setTimeout(() => { card.remove(); renderDismissedSection(); }, 300);
     } catch (e) {
         console.warn('Failed to dismiss suggestion:', e);
     }
@@ -282,4 +353,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const genBtn = document.getElementById('generateSuggestionsBtn');
     if (genBtn) genBtn.addEventListener('click', generateSuggestions);
+
+    const dismissedToggle = document.getElementById('dismissedToggle');
+    if (dismissedToggle) {
+        dismissedToggle.addEventListener('click', () => {
+            const listEl = document.getElementById('dismissedList');
+            const label = document.getElementById('dismissedToggleLabel');
+            const open = listEl.style.display === 'none';
+            listEl.style.display = open ? 'block' : 'none';
+            label.textContent = open ? 'Hide dismissed' : 'Show dismissed';
+        });
+    }
 });

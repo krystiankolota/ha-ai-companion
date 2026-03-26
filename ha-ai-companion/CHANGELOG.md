@@ -5,6 +5,35 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-03-26
+
+### First stable release
+
+All core features are complete and production-tested. This release consolidates everything from the 0.x series.
+
+**Full feature set:**
+- Natural language chat with a streaming AI agent for Home Assistant configuration management
+- Safe approval workflow — every proposed change shows a visual diff; applied only on confirmation; automatic backup + HA validation + rollback on failure
+- Multi-dashboard Lovelace management — list, read, edit, create and delete dashboards
+- Device / entity / area management via virtual file system
+- Automation suggestions tab — based on live entity states, avoids duplicating existing HA automations and Node-RED flows; includes naming audit for unclear entity names
+- Custom suggestion focus textarea — persists in localStorage, sent to the AI as extra context
+- Dismissed suggestion management — view, restore individual, or clear all dismissed suggestions
+- Persistent memory — remembers preferences, device roles, and home layout across sessions; consolidates after every conversation with ecosystem learning (`ecosystem_` category)
+- Home topology injection — area→entity map pre-loaded into every prompt, 10-minute cache
+- Session persistence — JSON files, configurable retention (`max_sessions`), slide-in sidebar with mobile overlay
+- Token + cost tracking — cumulative input/output/cached tokens and optional USD cost in UI footer
+- Mobile-optimised UI — full-width tabs, slide-in session sidebar, collapsed tool cards
+- Language detection — responds and generates HA content in the language of your entity/automation names
+- Per-phase provider config — independent API URL/key/model for suggestion and config phases
+- Per-client usage tracking — auto-detects and caches whether a provider accepts `stream_options`/`usage` params
+- Long conversation summarisation — conversations >30 messages summarised automatically to prevent context overflow
+- Tool alias remapping — old tool names in session history remapped to current names transparently
+- Split-file automation support — safety guard and suggester both handle `automations/`, `scripts/`, `scenes/` directories
+- Token limits per phase — `max_tokens`, `suggestion_max_tokens`, `config_max_tokens` config options
+- Node-RED integration — reads live flows via REST API with file fallback
+- Prompt caching support (Anthropic Claude) — `enable_cache_control` option
+
 ## [0.2.9] - 2026-03-26
 
 ### Added

@@ -1778,3 +1778,40 @@ footer p {
 .naming-issue-suggested { color: var(--success-color, #2ecc71); font-weight: 600; }
 .naming-issue-reason { color: var(--text-secondary, #888); font-size: 0.8rem; flex: 1 1 100%; }
 .btn-fix-name { margin-left: auto; }
+
+/* Dismissed suggestions section */
+.dismissed-section { margin-top: 24px; border-top: 1px solid var(--border-color, #444); padding-top: 12px; }
+.btn-dismissed-toggle {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-secondary, #888); font-size: 0.85rem;
+    padding: 4px 0; display: flex; align-items: center; gap: 6px;
+    text-decoration: underline dotted;
+}
+.btn-dismissed-toggle:hover { color: var(--text-color, #e0e0e0); }
+.dismissed-count { font-size: 0.8rem; color: var(--text-secondary, #888); }
+.dismissed-list { margin-top: 10px; }
+.dismissed-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+}
+.dismissed-header-label { font-size: 0.85rem; color: var(--text-secondary, #888); }
+.dismissed-titles-list { list-style: none; margin: 0; padding: 0; }
+.dismissed-title-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 5px 8px; border-radius: 4px; font-size: 0.85rem;
+    color: var(--text-secondary, #888);
+}
+.dismissed-title-item:hover { background: var(--card-bg, #252535); }
+.dismissed-title-text { flex: 1; }
+.btn-restore {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-secondary, #888); font-size: 1rem; padding: 2px 6px;
+    border-radius: 4px; opacity: 0.6;
+}
+.btn-restore:hover { opacity: 1; color: var(--accent-color, #007bff); }
+.btn-sm { font-size: 0.78rem; padding: 3px 10px; }
+.btn-danger {
+    background: var(--danger-color, #e74c3c);
+    color: #fff; border: none; border-radius: 4px; cursor: pointer;
+}
+.btn-danger:hover { opacity: 0.85; }

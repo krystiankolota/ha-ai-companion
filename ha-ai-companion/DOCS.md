@@ -1092,4 +1092,4 @@ Follow conventional commits:
 ---
 
 **Last Updated:** 2026-03-26
-**Version:** 0.2.9
+**Version:** 1.0.0

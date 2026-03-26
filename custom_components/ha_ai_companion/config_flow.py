@@ -252,5 +252,29 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_CONFIG_API_KEY,
                     default=self.config_entry.data.get(CONF_CONFIG_API_KEY, "")
                 ): cv.string,
+                vol.Optional(
+                    CONF_INPUT_PRICE_PER_1M,
+                    default=self.config_entry.data.get(CONF_INPUT_PRICE_PER_1M, 0.0)
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_OUTPUT_PRICE_PER_1M,
+                    default=self.config_entry.data.get(CONF_OUTPUT_PRICE_PER_1M, 0.0)
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_MAX_TOKENS,
+                    default=self.config_entry.data.get(CONF_MAX_TOKENS, 0)
+                ): cv.positive_int,
+                vol.Optional(
+                    CONF_SUGGESTION_MAX_TOKENS,
+                    default=self.config_entry.data.get(CONF_SUGGESTION_MAX_TOKENS, 0)
+                ): cv.positive_int,
+                vol.Optional(
+                    CONF_CONFIG_MAX_TOKENS,
+                    default=self.config_entry.data.get(CONF_CONFIG_MAX_TOKENS, 0)
+                ): cv.positive_int,
+                vol.Optional(
+                    CONF_MAX_SESSIONS,
+                    default=self.config_entry.data.get(CONF_MAX_SESSIONS, 50)
+                ): cv.positive_int,
             }),
         )
