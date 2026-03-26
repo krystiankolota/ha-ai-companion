@@ -19,12 +19,13 @@ _SAFE_ID = re.compile(r'[^a-zA-Z0-9_\-]')
 class ConversationManager:
     """Manages persistent conversation sessions stored as JSON files."""
 
-    MAX_SESSIONS = 50
+    DEFAULT_MAX_SESSIONS = 50
 
-    def __init__(self, sessions_dir: str):
+    def __init__(self, sessions_dir: str, max_sessions: int = DEFAULT_MAX_SESSIONS):
         self.sessions_dir = Path(sessions_dir)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("ConversationManager initialised at %s", self.sessions_dir)
+        self.MAX_SESSIONS = max(1, max_sessions)
+        logger.info("ConversationManager initialised at %s (max_sessions=%d)", self.sessions_dir, self.MAX_SESSIONS)
 
     def _path(self, session_id: str) -> Path:
         safe = _SAFE_ID.sub('', session_id)[:64] or 'session'

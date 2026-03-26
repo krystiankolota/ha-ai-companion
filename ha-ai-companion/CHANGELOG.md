@@ -5,6 +5,22 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.9] - 2026-03-26
+
+### Added
+- **Custom suggestion focus prompt**: Textarea above the "Generate suggestions" button lets you focus the AI on specific areas (e.g. "focus on bedroom lights"). Value persists in localStorage between page loads.
+- **Device naming audit**: When generating suggestions, the AI also reviews entity friendly_names and lists unclear or ambiguous ones (e.g. "pompa", "sensor_1") with suggested improvements. Results appear as a "🏷️ Unclear entity names" section with "Fix in chat" buttons.
+- **Token limits per agent**: New optional config options `max_tokens`, `suggestion_max_tokens`, `config_max_tokens` — limit output tokens per phase independently.
+- **Configurable session limit**: New `max_sessions` config option (default 50). Oldest sessions are pruned when the limit is exceeded.
+- **Ecosystem memory categories**: Memory consolidation now actively captures device relationships, integration facts, and unclear device roles under `ecosystem_devices.md`, `ecosystem_integrations.md`, `user_patterns.md`.
+
+### Fixed
+- **Suggester shared memory context**: `generate_suggestions()` now injects the full persistent memory context — device nicknames, preferences, home layout — so suggestions are tailored to your specific setup.
+- **Suggester reads full automation content**: Now reads the actual `automations.yaml` file content rather than just keyword search results, so existing automations are properly de-duplicated.
+- **Per-client usage_tracking caching**: After a provider rejects `stream_options`/`usage` params, that decision is cached per client slot — no more redundant retries on every API call.
+- **Long conversation summarization**: Conversations exceeding 30 messages (15 exchanges) now have their oldest messages summarized into a compact block, preventing context overflow and HTTP 400 errors.
+- **Deprecated tool name remapping**: Conversations containing old tool name `call_config_files` are automatically remapped to `search_config_files` when replayed, preventing "unknown tool" errors on imported sessions.
+
 ## [0.2.8] - 2026-03-26
 
 ### Added

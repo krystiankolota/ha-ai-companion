@@ -129,6 +129,11 @@ function renderSuggestions(data) {
             });
         });
     });
+
+    // Render naming issues section if present
+    if (data.naming_issues && data.naming_issues.length > 0) {
+        renderNamingIssues(data.naming_issues);
+    }
 }
 
 function addSuggestionToChat(suggestion) {
@@ -171,6 +176,13 @@ async function generateSuggestions() {
     const btn = document.getElementById('generateSuggestionsBtn');
     const status = document.getElementById('suggestionsStatus');
     const list = document.getElementById('suggestionsList');
+    const focusInput = document.getElementById('suggestionFocusInput');
+
+    const extraPrompt = focusInput ? focusInput.value.trim() : '';
+    // Persist textarea value in localStorage
+    if (focusInput) {
+        try { localStorage.setItem('suggestionFocusPrompt', focusInput.value); } catch (_) {}
+    }
 
     btn.disabled = true;
     btn.textContent = 'Generating…';
@@ -179,7 +191,12 @@ async function generateSuggestions() {
     list.innerHTML = '';
 
     try {
-        const resp = await fetch('api/suggestions/generate', { method: 'POST' });
+        const body = extraPrompt ? { extra_prompt: extraPrompt } : {};
+        const resp = await fetch('api/suggestions/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
         if (resp.ok) {
             const data = await resp.json();
             renderSuggestions(data);
@@ -216,9 +233,52 @@ function initTabs() {
     });
 }
 
+function renderNamingIssues(issues) {
+    if (!issues || issues.length === 0) return;
+    const list = document.getElementById('suggestionsList');
+    const section = document.createElement('div');
+    section.className = 'naming-issues-section';
+    section.innerHTML = `
+        <h3 class="naming-issues-title">🏷️ Unclear entity names (${issues.length})</h3>
+        <p class="naming-issues-intro">These entity names may be confusing. Click "Fix in chat" to rename them.</p>
+        ${issues.map(i => `
+        <div class="naming-issue-card">
+            <span class="naming-issue-entity">${escapeHtml(i.entity_id)}</span>
+            <span class="naming-issue-current">"${escapeHtml(i.current_name)}"</span>
+            <span class="naming-issue-arrow">→</span>
+            <span class="naming-issue-suggested">"${escapeHtml(i.suggested_name)}"</span>
+            <span class="naming-issue-reason">${escapeHtml(i.reason)}</span>
+            <button class="btn btn-secondary btn-fix-name" data-entity="${escapeHtml(i.entity_id)}" data-suggested="${escapeHtml(i.suggested_name)}">Fix in chat</button>
+        </div>`).join('')}`;
+    list.prepend(section);
+
+    section.querySelectorAll('.btn-fix-name').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelector('.tab-btn[data-tab="chat"]').click();
+            const input = document.getElementById('messageInput');
+            if (input) {
+                input.value = `Please rename entity ${btn.dataset.entity} to have the friendly name "${btn.dataset.suggested}"`;
+                input.focus();
+            }
+        });
+    });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     await loadDismissed();
     initTabs();
+
+    // Restore saved focus prompt from localStorage
+    const focusInput = document.getElementById('suggestionFocusInput');
+    if (focusInput) {
+        try {
+            const saved = localStorage.getItem('suggestionFocusPrompt');
+            if (saved) focusInput.value = saved;
+        } catch (_) {}
+        focusInput.addEventListener('input', () => {
+            try { localStorage.setItem('suggestionFocusPrompt', focusInput.value); } catch (_) {}
+        });
+    }
 
     const genBtn = document.getElementById('generateSuggestionsBtn');
     if (genBtn) genBtn.addEventListener('click', generateSuggestions);

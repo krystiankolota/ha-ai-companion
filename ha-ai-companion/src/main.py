@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "0.2.8"
+version = "0.2.9"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -88,7 +88,9 @@ async def lifespan(_: FastAPI):
     # Initialize conversation manager
     try:
         sessions_dir = os.getenv('SESSIONS_DIR', os.path.join(os.getenv('HA_CONFIG_DIR', '/config'), '.ai_agent_sessions'))
-        conversation_manager = ConversationManager(sessions_dir=sessions_dir)
+        _max_sessions_str = os.getenv('MAX_SESSIONS', '').strip()
+        _max_sessions = int(_max_sessions_str) if _max_sessions_str.isdigit() else ConversationManager.DEFAULT_MAX_SESSIONS
+        conversation_manager = ConversationManager(sessions_dir=sessions_dir, max_sessions=_max_sessions)
         logger.info(f"Conversation manager initialized at {sessions_dir}")
     except Exception as e:
         logger.error(f"Failed to initialize conversation manager: {e}", exc_info=True)
@@ -438,16 +440,24 @@ async def get_dismissed():
 
 
 @app.post("/api/suggestions/generate")
-async def generate_suggestions():
+async def generate_suggestions(request: Request):
     """Ask the AI to generate fresh automation suggestions and cache them."""
     if not agent_system:
         raise HTTPException(status_code=503, detail="Agent system not initialized")
 
+    extra_prompt = None
     try:
-        result = await agent_system.generate_suggestions()
+        body = await request.json()
+        extra_prompt = body.get("extra_prompt", "").strip() or None
+    except Exception:
+        pass
+
+    try:
+        result = await agent_system.generate_suggestions(extra_prompt=extra_prompt)
         if result.get("success"):
             payload = {
                 "suggestions": result["suggestions"],
+                "naming_issues": result.get("naming_issues", []),
                 "generated_at": datetime.now().isoformat()
             }
             try:

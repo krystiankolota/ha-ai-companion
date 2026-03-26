@@ -198,6 +198,20 @@ output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 
 When both values are set to non-zero, a `💰 $0.0000` cumulative session cost appears next to the token counter in the footer.
 
+**Token limits (optional)**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_tokens` | Integer | — | Global output token limit applied to all agent phases. |
+| `suggestion_max_tokens` | Integer | — | Override output token limit for the suggestion phase only. |
+| `config_max_tokens` | Integer | — | Override output token limit for the config-editing phase only. |
+
+**Session management (optional)**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_sessions` | Integer | `50` | Maximum number of conversation sessions to keep. Oldest sessions are deleted when the limit is exceeded. |
+
 **Common pricing reference (as of 2026-03):**
 
 | Model | Input / 1M | Output / 1M |
@@ -1078,4 +1092,4 @@ Follow conventional commits:
 ---
 
 **Last Updated:** 2026-03-26
-**Version:** 0.2.8
+**Version:** 0.2.9

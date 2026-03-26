@@ -34,6 +34,10 @@ from .const import (
     CONF_CONFIG_API_KEY,
     CONF_INPUT_PRICE_PER_1M,
     CONF_OUTPUT_PRICE_PER_1M,
+    CONF_MAX_TOKENS,
+    CONF_SUGGESTION_MAX_TOKENS,
+    CONF_CONFIG_MAX_TOKENS,
+    CONF_MAX_SESSIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -171,6 +175,17 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
         os.environ["OUTPUT_PRICE_PER_1M"] = str(config.get(CONF_OUTPUT_PRICE_PER_1M))
     elif "OUTPUT_PRICE_PER_1M" in os.environ:
         del os.environ["OUTPUT_PRICE_PER_1M"]
+
+    for _conf, _env in [
+        (CONF_MAX_TOKENS, "MAX_TOKENS"),
+        (CONF_SUGGESTION_MAX_TOKENS, "SUGGESTION_MAX_TOKENS"),
+        (CONF_CONFIG_MAX_TOKENS, "CONFIG_MAX_TOKENS"),
+        (CONF_MAX_SESSIONS, "MAX_SESSIONS"),
+    ]:
+        if config.get(_conf) is not None:
+            os.environ[_env] = str(config.get(_conf))
+        elif _env in os.environ:
+            del os.environ[_env]
 
     # Create backup directory if it doesn't exist
     os.makedirs(os.environ["BACKUP_DIR"], exist_ok=True)

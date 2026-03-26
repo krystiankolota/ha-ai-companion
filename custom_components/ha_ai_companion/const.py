@@ -23,6 +23,10 @@ CONF_CONFIG_API_URL = "config_api_url"
 CONF_CONFIG_API_KEY = "config_api_key"
 CONF_INPUT_PRICE_PER_1M = "input_price_per_1m"
 CONF_OUTPUT_PRICE_PER_1M = "output_price_per_1m"
+CONF_MAX_TOKENS = "max_tokens"
+CONF_SUGGESTION_MAX_TOKENS = "suggestion_max_tokens"
+CONF_CONFIG_MAX_TOKENS = "config_max_tokens"
+CONF_MAX_SESSIONS = "max_sessions"
 
 # Default values
 DEFAULT_API_URL = "https://api.openai.com/v1"

@@ -724,8 +724,15 @@ class AgentTools:
 
                     # Safety guard: prevent accidental deletion of automations/scripts/scenes
                     # by detecting when proposed content has far fewer items than current file.
+                    # Covers both single-file setups (automations.yaml) and split-file setups
+                    # (automations/heating.yaml, automations/lights.yaml, etc.)
                     _GUARDED_FILES = ('automations.yaml', 'scripts.yaml', 'scenes.yaml')
-                    if any(file_path.endswith(g) for g in _GUARDED_FILES) and current_content and current_content.strip():
+                    _GUARDED_DIRS = ('automations', 'scripts', 'scenes')
+                    _is_guarded = (
+                        any(file_path.endswith(g) for g in _GUARDED_FILES) or
+                        any(f'/{d}/' in f'/{file_path}' for d in _GUARDED_DIRS)
+                    )
+                    if _is_guarded and current_content and current_content.strip():
                         try:
                             _ry = YAML()
                             _current_list = _ry.load(StringIO(current_content))

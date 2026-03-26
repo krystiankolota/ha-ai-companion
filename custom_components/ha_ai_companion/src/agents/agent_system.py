@@ -11,6 +11,37 @@ from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
+# Maps deprecated tool names to their current equivalents.
+# Applied when replaying conversation_history so old sessions don't break.
+TOOL_ALIASES: Dict[str, str] = {
+    "call_config_files": "search_config_files",
+}
+
+
+def _normalize_history_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Remap deprecated tool names in a single history message."""
+    if not TOOL_ALIASES:
+        return msg
+    # Assistant messages carry tool_calls
+    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+        new_tcs = []
+        changed = False
+        for tc in msg["tool_calls"]:
+            fn = tc.get("function", {})
+            old_name = fn.get("name", "")
+            new_name = TOOL_ALIASES.get(old_name, old_name)
+            if new_name != old_name:
+                changed = True
+                tc = dict(tc)
+                tc["function"] = dict(fn)
+                tc["function"]["name"] = new_name
+                logger.debug(f"Remapped tool alias: {old_name} → {new_name}")
+            new_tcs.append(tc)
+        if changed:
+            msg = dict(msg)
+            msg["tool_calls"] = new_tcs
+    return msg
+
 
 @dataclass
 class Changeset:
@@ -103,6 +134,21 @@ class AgentSystem:
         # Pricing (cost display in UI) — default 0 means cost won't be shown
         self.input_price_per_1m = float(os.getenv('INPUT_PRICE_PER_1M', '0') or '0')
         self.output_price_per_1m = float(os.getenv('OUTPUT_PRICE_PER_1M', '0') or '0')
+
+        # Per-agent max_tokens limits (0 = no limit / model default)
+        def _int_env(key: str) -> Optional[int]:
+            val = os.getenv(key, '').strip()
+            return int(val) if val and val.isdigit() and int(val) > 0 else None
+
+        self.max_tokens = _int_env('MAX_TOKENS')
+        self.suggestion_max_tokens = _int_env('SUGGESTION_MAX_TOKENS') or self.max_tokens
+        self.config_max_tokens = _int_env('CONFIG_MAX_TOKENS') or self.max_tokens
+
+        # Per-client cache: tracks whether usage-tracking params were rejected (BUG-8)
+        # Keys: 'main', 'suggestion', 'config' — value: True = params accepted, False = rejected
+        self._client_usage_ok: Dict[str, Optional[bool]] = {
+            'main': None, 'suggestion': None, 'config': None
+        }
 
         # Store cache control setting
         self.enable_cache_control = enable_cache_control
@@ -198,10 +244,12 @@ Language:
 - If the user writes in a different language than the home config, follow the user's message language for your replies but keep generated HA content in the home config language.
 
 Automation safety rules (CRITICAL):
-- Before proposing changes to automations.yaml, scripts.yaml, or scenes.yaml, ALWAYS read the file first with search_config_files.
-- Your proposed content for these files MUST include ALL existing automations/scripts/scenes PLUS any new ones.
+- Before proposing changes to any automation/script/scene file, ALWAYS read the file first with search_config_files.
+- This applies to: automations.yaml, scripts.yaml, scenes.yaml, AND any files inside automations/, scripts/, scenes/ directories (split-file setups like automations/heating.yaml, automations/lights.yaml, etc.)
+- Your proposed content for each file MUST include ALL existing automations/scripts/scenes in that file PLUS any new ones.
 - NEVER submit a partial list — removing existing automations is permanent data loss.
-- If you only want to add one automation, copy ALL existing ones first, then append the new one at the end.
+- If you only want to add one automation, copy ALL existing ones from that file first, then append the new one at the end.
+- When the user has a split-file setup (multiple files per category), edit ONLY the relevant file — do NOT merge all files into one.
 
 Memory Guidelines:
 - Categories: preference_, identity_, device_, baseline_, pattern_, correction_ (use as filename prefix)
@@ -323,6 +371,8 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 # Add conversation history
                 # Mark the last message in history for caching if there's substantial history
                 for idx, msg in enumerate(conversation_history):
+                    # Remap any deprecated tool names before replaying history
+                    msg = _normalize_history_msg(msg)
                     is_last_history_msg = (idx == len(conversation_history) - 1)
                     if self.enable_cache_control and is_last_history_msg and len(conversation_history) >= 3:
                         # Cache the conversation history at this breakpoint
@@ -332,6 +382,14 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     else:
                         messages.append(msg)
                 history_length += len(conversation_history)
+
+            # BUG-6: Summarize very long conversations to avoid context overflow.
+            # If history has > 30 messages (15 exchanges), summarise the oldest half.
+            if conversation_history and len(conversation_history) > 30:
+                try:
+                    messages = await self._summarize_old_history(messages)
+                except Exception as sum_err:
+                    logger.warning(f"History summarization failed (continuing without): {sum_err}")
 
             # Add current user message
             messages.append({"role": "user", "content": user_message})
@@ -598,14 +656,30 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 if self.temperature is not None:
                     api_params["temperature"] = self.temperature
 
+                # Add per-phase max_tokens if configured (FEAT-7)
+                phase_max_tokens = self.config_max_tokens if has_tool_results else self.suggestion_max_tokens
+                if phase_max_tokens:
+                    api_params["max_tokens"] = phase_max_tokens
+
+                # Determine which client slot we're using for BUG-8 per-client caching
+                client_slot = 'config' if has_tool_results else 'suggestion'
+
+                # Strip usage-tracking params if we already know this client rejects them
+                if self._client_usage_ok.get(client_slot) is False:
+                    api_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage')}
+
                 try:
                     stream = await active_client.chat.completions.create(**api_params)
+                    # Mark as accepted only if we haven't already confirmed it
+                    if self._client_usage_ok.get(client_slot) is None:
+                        self._client_usage_ok[client_slot] = True
                 except Exception as api_err:
                     # Some providers (e.g. Anthropic/Haiku) reject stream_options or
                     # usage params — retry without them to keep things working.
                     err_str = str(api_err).lower()
                     if 'stream_options' in err_str or 'usage' in err_str or 'extra' in err_str or 'unknown' in err_str:
                         logger.warning(f"API rejected usage-tracking params, retrying without them: {api_err}")
+                        self._client_usage_ok[client_slot] = False
                         retry_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage')}
                         stream = await active_client.chat.completions.create(**retry_params)
                     else:
@@ -1062,6 +1136,58 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             logger.warning(f"Failed to build home topology (non-fatal): {e}")
             return ""
 
+    async def _summarize_old_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        BUG-6: When conversation history is very long (>30 messages / 15 exchanges),
+        summarise the oldest half into a single system message so the context stays manageable.
+        Keeps the system prompt + summarised block + recent messages intact.
+        """
+        import json
+        # messages[0] is the system prompt; the rest are history + current user msg
+        # (current user msg is NOT yet added when this is called — it's added right after)
+        # Identify the history portion (everything after system message)
+        system_msg = messages[0]
+        history = messages[1:]
+
+        # Keep the newest 20 messages verbatim; summarize the rest
+        keep_recent = 20
+        to_summarize = history[:-keep_recent] if len(history) > keep_recent else []
+        keep = history[-keep_recent:] if len(history) > keep_recent else history
+
+        if not to_summarize:
+            return messages
+
+        # Build a slim text representation of the messages to summarise
+        summary_input = "\n".join(
+            f"{m['role'].upper()}: {m.get('content', '') if isinstance(m.get('content'), str) else ''}"
+            for m in to_summarize
+            if m.get('role') in ('user', 'assistant')
+        )
+
+        summary_prompt = [
+            {"role": "system", "content": "Summarise the following conversation in concise bullet points, capturing all important facts, decisions, and context. Be brief — max 400 words."},
+            {"role": "user", "content": summary_input}
+        ]
+
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.model,
+                messages=summary_prompt,
+                stream=False,
+                max_tokens=600,
+            )
+            summary_text = resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"Summarization API call failed: {e}")
+            return messages
+
+        summary_msg = {
+            "role": "system",
+            "content": f"[Earlier conversation summary]\n{summary_text}"
+        }
+        logger.info(f"Summarized {len(to_summarize)} old messages into a single block ({len(summary_text)} chars)")
+        return [system_msg, summary_msg] + keep
+
     async def _run_memory_consolidation(self, conversation_messages: List[Dict[str, Any]]) -> None:
         """
         Background pass after each user turn: let the LLM review what was discussed
@@ -1080,9 +1206,23 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 "SAVE when ALL of these are true:\n"
                 "  1. The user explicitly stated a durable fact (not inferred, not a current state)\n"
                 "  2. Confidence ≥ 0.85 — if in doubt, do NOT save\n"
-                "  3. It belongs to one of: preference_, identity_, device_, baseline_, pattern_, correction_\n\n"
+                "  3. It belongs to one of the categories below\n\n"
+                "Memory categories and prefixes:\n"
+                "  preference_  — user preferences (temperature, lighting, schedules)\n"
+                "  identity_    — home structure, rooms, layout\n"
+                "  device_      — device nicknames, locations, roles\n"
+                "  baseline_    — normal sensor ranges for this home\n"
+                "  pattern_     — recurring routines or schedules\n"
+                "  correction_  — corrections to previously stored facts\n"
+                "  ecosystem_   — device relationships, integration facts, HA-specific knowledge\n"
+                "                 (e.g. 'pompa = water pressure pump', 'zigbee coordinator on /dev/ttyUSB0')\n\n"
+                "Ecosystem learning (FEAT-9): Actively look for device relationship facts:\n"
+                "  - What a device actually does (especially if name is unclear)\n"
+                "  - Which devices control which other devices\n"
+                "  - Integration-specific facts (coordinator, hub, bridge)\n"
+                "  - Save these under ecosystem_devices.md, ecosystem_integrations.md, or user_patterns.md\n\n"
                 "DO NOT save: current sensor readings, actions just performed, one-time commands,\n"
-                "device specs, HA integration details, anything already in injected memory below.\n\n"
+                "anything already in injected memory below.\n\n"
                 "If existing memory is contradicted → overwrite with save_memory (use 'replaces' field).\n"
                 "If existing memory is stale (>90 days, user corrected it) → delete_memory first.\n"
                 "Max 800 chars per file (bullet points only). Max 25 files total — merge before creating new.\n"
@@ -1297,7 +1437,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 "message": f"Error applying changes: {str(e)}"
             }
 
-    async def generate_suggestions(self) -> Dict[str, Any]:
+    async def generate_suggestions(self, extra_prompt: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate automation suggestions by pre-fetching context and making a single AI call.
 
@@ -1324,8 +1464,18 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             entity_states_result = await self.tools.get_entity_states()
             entity_states_text = json.dumps(entity_states_result.get("states", []), indent=2)
 
-            automations_result = await self.tools.search_config_files(search_pattern="automation")
-            automations_text = json.dumps(automations_result.get("files", []), indent=2)
+            # Read all automation files (supports single-file and split-file setups).
+            # Search for 'alias' which is present in every YAML automation block.
+            automations_result = await self.tools.search_config_files(search_pattern="alias")
+            automations_files = automations_result.get("files", [])
+            # Collect all files whose path suggests they contain automations
+            # (handles automations.yaml, automations/heating.yaml, automations/lights.yaml, etc.)
+            automation_contents = [
+                f"# {f['path']}\n{f.get('content', '')}"
+                for f in automations_files
+                if "automation" in f.get("path", "").lower()
+            ]
+            automations_text = "\n\n".join(automation_contents) if automation_contents else json.dumps(automations_files, indent=2)
 
             nodered_text = ""
             try:
@@ -1335,14 +1485,24 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             except Exception:
                 pass
 
-            # 2. Build prompt
-            suggestion_prompt_extra = os.getenv("SUGGESTION_PROMPT", "").strip()
+            # 2. Inject memory context so the suggester knows device relationships etc.
+            memory_context = ""
+            if self.memory_manager:
+                try:
+                    memory_context = await self.memory_manager.get_context()
+                except Exception:
+                    pass
+
+            # 3. Build context sections
+            suggestion_prompt_env = os.getenv("SUGGESTION_PROMPT", "").strip()
             context_sections = [
                 f"## Current entity states\n{entity_states_text}",
                 f"## Existing automations\n{automations_text}",
             ]
             if nodered_text:
                 context_sections.append(f"## Existing Node-RED flows\n{nodered_text}")
+            if memory_context:
+                context_sections.append(f"## Home context from memory\n{memory_context}")
 
             # Inject dismissed suggestions so the AI won't re-suggest them
             dismissed = []
@@ -1358,8 +1518,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 dismissed_list = "\n".join(f"- {t}" for t in dismissed)
                 context_sections.append(f"## User has dismissed these suggestions — do NOT suggest them again\n{dismissed_list}")
 
-            if suggestion_prompt_extra:
-                context_sections.append(f"## Additional context\n{suggestion_prompt_extra}")
+            # Per-request extra_prompt (from UI textarea) takes priority over env var
+            active_extra = (extra_prompt or "").strip() or suggestion_prompt_env
+            if active_extra:
+                context_sections.append(f"## Additional focus from user\n{active_extra}")
 
             context = "\n\n".join(context_sections)
 
@@ -1371,10 +1533,16 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         "Based on the provided entity states and existing automations, "
                         "suggest 5-10 practical automations the user does not already have. "
                         "Do NOT suggest automations that already exist in the automation list or Node-RED flows. "
-                        "Return ONLY valid JSON — an object with a 'suggestions' array. "
+                        "Also review entity friendly_names and identify any that are unclear, ambiguous, or too generic "
+                        "(e.g. 'pompa', 'sensor_1', 'switch_kitchen'). "
+                        "Return ONLY valid JSON — an object with: "
+                        "'suggestions' (array of automation suggestions) and "
+                        "'naming_issues' (array of unclear names, may be empty). "
                         "Each suggestion must have: title (string), description (string), "
                         "category (one of: lighting, climate, security, energy, comfort, other), "
-                        "entities (array of entity_id strings), implementation_hint (string with brief YAML hint)."
+                        "entities (array of entity_id strings), implementation_hint (string with brief YAML hint). "
+                        "Each naming_issue must have: entity_id (string), current_name (string), "
+                        "suggested_name (string), reason (string)."
                     )
                 },
                 {
@@ -1390,8 +1558,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             }
             if self.temperature is not None:
                 api_params["temperature"] = self.temperature
+            if self.suggestion_max_tokens:
+                api_params["max_tokens"] = self.suggestion_max_tokens
 
-            response = await self.client.chat.completions.create(**api_params)
+            response = await self.suggestion_client.chat.completions.create(**api_params)
             raw = response.choices[0].message.content.strip()
 
             # Strip markdown code fences if present
@@ -1402,10 +1572,15 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 raw = raw.strip()
 
             parsed = json.loads(raw)
-            suggestions = parsed.get("suggestions", parsed) if isinstance(parsed, dict) else parsed
+            if isinstance(parsed, dict):
+                suggestions = parsed.get("suggestions", [])
+                naming_issues = parsed.get("naming_issues", [])
+            else:
+                suggestions = parsed
+                naming_issues = []
 
-            logger.info(f"Generated {len(suggestions)} automation suggestions")
-            return {"success": True, "suggestions": suggestions}
+            logger.info(f"Generated {len(suggestions)} automation suggestions, {len(naming_issues)} naming issues")
+            return {"success": True, "suggestions": suggestions, "naming_issues": naming_issues}
 
         except Exception as e:
             logger.error(f"Failed to generate suggestions: {e}", exc_info=True)
