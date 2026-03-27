@@ -5,6 +5,37 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-27
+
+### Added
+- **Context sources filter** — suggestions toolbar now has a collapsible "Context sources" panel with checkboxes to control what is sent to the LLM (entity states, automations, scenes, scripts, dashboards, Node-RED flows, memory); selections persist in localStorage
+- **Suggestion history** — past suggestion sets are saved (configurable `max_suggestions`, default 10) and browsable via a collapsible "Past suggestions" section in the UI
+- **Multi-step config flow** — HA options flow split into 3 clearly labelled steps: Core Model → Suggestion & Config Phases → Node-RED & Advanced
+- **WebSocket auto-reconnect** — exponential backoff reconnect (1s → 30s max) on dropped connection
+- **Configurable topology cache TTL** — via `TOPOLOGY_CACHE_TTL` env var (default: 600s)
+- `max_suggestions` config option to control suggestion history retention
+
+### Fixed
+- **Mobile suggestions tab** — no more horizontal overflow; YAML blocks scroll within their container; toolbar stacks vertically on small screens
+- **Mobile sessions reliability** — sessions reload when the HA app returns to foreground (fixes disappearing history after location toggle)
+- **XSS** — all AI-generated markdown is now sanitized with DOMPurify before insertion into the DOM
+- **Path traversal** — config directory check now uses `os.sep` suffix to prevent false matches (e.g. `/config2` vs `/config`)
+- **Cost calculation** — cached tokens are now excluded from billable input tokens (fixes overstated cost for Anthropic Claude)
+- **UTC datetimes** — all `datetime.now()` calls replaced with `datetime.now(timezone.utc)` throughout
+- **Lovelace cache race condition** — protected with `asyncio.Lock()` to prevent concurrent double-fetches
+- **Dead SSE code** removed from `app.js` (~230 lines); event listeners now point directly to `sendMessageWebSocket`
+- **N+1 fetch** in dismissed suggestion restore replaced with `Promise.all` parallel fetches
+- **HA options flow** now correctly seeds from merged `entry.data + entry.options` and `__init__.py` reads both
+- Tool calls timeout after 60 seconds (`asyncio.wait_for`) instead of hanging forever
+- `url_path` validated against `^[a-z0-9][a-z0-9_-]*$` before passing to HA in dashboard create/delete
+- Client-side `conversationHistory` capped at 200 messages to prevent mobile memory growth
+- Corrupt suggestions history file is renamed rather than endlessly retried
+- Memory filename sanitization now logs a warning when a name is modified
+- API key masked in startup logs (shows "configured"/"NOT configured")
+- Focus prompt capped at 500 characters
+- ARIA labels added to all icon buttons; `spellcheck="true"` on chat textarea
+- `theme-color` meta tag added for mobile browser chrome
+
 ## [1.0.0] - 2026-03-26
 
 ### First stable release

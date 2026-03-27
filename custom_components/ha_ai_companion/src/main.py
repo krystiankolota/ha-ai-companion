@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import json as json_lib
 
 from .config import ConfigurationManager
@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.0.0"
+version = "1.1.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -65,6 +65,7 @@ async def lifespan(_: FastAPI):
     logger.info("=== HA AI Companion Starting ===")
     logger.info(f"OpenAI API URL: {os.getenv('OPENAI_API_URL', 'Not configured')}")
     logger.info(f"OpenAI Model: {os.getenv('OPENAI_MODEL', 'Not configured')}")
+    logger.info(f"OpenAI API Key: {'configured' if os.getenv('OPENAI_API_KEY') else 'NOT configured'}")
     logger.info(f"HA Config Dir: {os.getenv('HA_CONFIG_DIR', 'Not configured')}")
     logger.info(f"Log Level: {log_level}")
 
@@ -196,7 +197,7 @@ async def health_check():
     """Health check endpoint for Docker and monitoring."""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": version,
         "config_manager_ready": config_manager is not None,
         "agent_system_ready": agent_system is not None,
@@ -399,6 +400,43 @@ def _write_dismissed(titles: list):
         json_lib.dump(titles, f, indent=2)
 
 
+SUGGESTIONS_HISTORY_KEY = ".ai_agent_suggestions_history.json"
+SUGGESTIONS_HISTORY_DEFAULT_MAX = 10
+
+def _suggestions_history_path() -> str:
+    config_dir = os.getenv("HA_CONFIG_DIR", "/config")
+    return os.path.join(config_dir, SUGGESTIONS_HISTORY_KEY)
+
+def _read_suggestions_history() -> list:
+    path = _suggestions_history_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                data = json_lib.load(f)
+            if isinstance(data, list):
+                return data
+            logger.warning("Suggestions history file has unexpected format, resetting")
+        except Exception as e:
+            logger.warning(f"Failed to read suggestions history (corrupt file?): {e}")
+            # Rename corrupt file so we don't keep failing
+            try:
+                os.rename(path, path + ".corrupt")
+            except Exception:
+                pass
+    return []
+
+def _append_to_history(payload: dict):
+    max_s = int(os.getenv("MAX_SUGGESTIONS", str(SUGGESTIONS_HISTORY_DEFAULT_MAX)))
+    history = _read_suggestions_history()
+    history.insert(0, payload)
+    history = history[:max(1, max_s)]
+    try:
+        with open(_suggestions_history_path(), "w") as f:
+            json_lib.dump(history, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to write suggestions history: {e}")
+
+
 @app.get("/api/suggestions")
 async def get_suggestions():
     """Return cached suggestions from disk, or empty list if none."""
@@ -439,6 +477,12 @@ async def get_dismissed():
     return {"dismissed": _read_dismissed()}
 
 
+@app.get("/api/suggestions/history")
+async def get_suggestions_history():
+    """Return past suggestion sets (newest first)."""
+    return {"history": _read_suggestions_history()}
+
+
 @app.post("/api/suggestions/generate")
 async def generate_suggestions(request: Request):
     """Ask the AI to generate fresh automation suggestions and cache them."""
@@ -446,25 +490,33 @@ async def generate_suggestions(request: Request):
         raise HTTPException(status_code=503, detail="Agent system not initialized")
 
     extra_prompt = None
+    resource_types = None
     try:
         body = await request.json()
         extra_prompt = body.get("extra_prompt", "").strip() or None
+        rt = body.get("resource_types")
+        if isinstance(rt, list) and rt:
+            resource_types = rt
     except Exception:
         pass
 
     try:
-        result = await agent_system.generate_suggestions(extra_prompt=extra_prompt)
+        result = await agent_system.generate_suggestions(extra_prompt=extra_prompt, resource_types=resource_types)
         if result.get("success"):
             payload = {
                 "suggestions": result["suggestions"],
                 "naming_issues": result.get("naming_issues", []),
-                "generated_at": datetime.now().isoformat()
+                "generated_at": datetime.now(timezone.utc).isoformat()
             }
             try:
                 with open(_suggestions_path(), "w") as f:
                     json_lib.dump(payload, f, indent=2)
             except Exception as e:
                 logger.warning(f"Failed to cache suggestions: {e}")
+            try:
+                _append_to_history(payload)
+            except Exception as e:
+                logger.warning(f"Failed to append to suggestions history: {e}")
             return payload
         else:
             raise HTTPException(status_code=500, detail=result.get("error", "Generation failed"))

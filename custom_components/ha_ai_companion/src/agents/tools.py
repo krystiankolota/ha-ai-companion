@@ -4,6 +4,7 @@ AI Agent Tool Functions
 Tool functions that agents can call to interact with configuration files.
 These wrap the ConfigurationManager for safe AI operations.
 """
+import asyncio
 import logging
 import os
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
@@ -53,6 +54,7 @@ class AgentTools:
         self.agent_system = agent_system
         self.memory_manager = memory_manager
         self._lovelace_cache: Dict[Optional[str], str] = {}  # {url_path: yaml_str}
+        self._lovelace_lock = asyncio.Lock()
         logger.info("AgentTools initialized")
 
     async def _get_lovelace_config(self, url_path: Optional[str] = None) -> Optional[str]:
@@ -67,71 +69,72 @@ class AgentTools:
         """
         cache_key = url_path  # None for default
 
-        # Return cached version if available
-        if cache_key in self._lovelace_cache:
-            return self._lovelace_cache[cache_key]
+        async with self._lovelace_lock:
+            # Return cached version if available
+            if cache_key in self._lovelace_cache:
+                return self._lovelace_cache[cache_key]
 
-        try:
-            # Custom component mode: use hass directly
-            if self.config_manager.hass is not None:
-                from homeassistant.components.lovelace.const import DOMAIN as LOVELACE_DOMAIN
-                from ruamel.yaml import YAML
+            try:
+                # Custom component mode: use hass directly
+                if self.config_manager.hass is not None:
+                    from homeassistant.components.lovelace.const import DOMAIN as LOVELACE_DOMAIN
+                    from ruamel.yaml import YAML
 
-                hass = self.config_manager.hass
-                logger.info(f"Using hass API to retrieve Lovelace config (url_path={url_path})")
+                    hass = self.config_manager.hass
+                    logger.info(f"Using hass API to retrieve Lovelace config (url_path={url_path})")
 
-                if LOVELACE_DOMAIN not in hass.data:
-                    logger.warning("Lovelace component not loaded in hass.data")
+                    if LOVELACE_DOMAIN not in hass.data:
+                        logger.warning("Lovelace component not loaded in hass.data")
+                        return None
+
+                    lovelace_data = hass.data.get(LOVELACE_DOMAIN)
+                    if not (lovelace_data and hasattr(lovelace_data, 'dashboards')):
+                        logger.warning("No dashboards attribute on lovelace_data")
+                        return None
+
+                    dashboards = lovelace_data.dashboards
+
+                    if url_path is None:
+                        # Default dashboard — keyed as None or 'lovelace'
+                        dashboard = dashboards.get(None) or dashboards.get('lovelace')
+                    else:
+                        dashboard = dashboards.get(url_path)
+
+                    if not dashboard:
+                        logger.warning(f"Dashboard '{url_path}' not found in {list(dashboards.keys())}")
+                        return None
+
+                    config = await dashboard.async_load(False)
+                    if not config:
+                        logger.warning(f"async_load returned empty config for '{url_path}'")
+                        return None
+
+                    yaml = YAML()
+                    yaml.default_flow_style = False
+                    from io import StringIO
+                    stream = StringIO()
+                    yaml.dump(config, stream)
+                    lovelace_yaml = stream.getvalue()
+                    self._lovelace_cache[cache_key] = lovelace_yaml
+                    logger.info(f"Retrieved Lovelace config via hass API (url_path={url_path})")
+                    return lovelace_yaml
+
+                # Add-on mode: use WebSocket API
+                supervisor_token = os.getenv('SUPERVISOR_TOKEN')
+                if not supervisor_token:
+                    logger.debug("No SUPERVISOR_TOKEN, skipping Lovelace config")
                     return None
 
-                lovelace_data = hass.data.get(LOVELACE_DOMAIN)
-                if not (lovelace_data and hasattr(lovelace_data, 'dashboards')):
-                    logger.warning("No dashboards attribute on lovelace_data")
-                    return None
-
-                dashboards = lovelace_data.dashboards
-
-                if url_path is None:
-                    # Default dashboard — keyed as None or 'lovelace'
-                    dashboard = dashboards.get(None) or dashboards.get('lovelace')
-                else:
-                    dashboard = dashboards.get(url_path)
-
-                if not dashboard:
-                    logger.warning(f"Dashboard '{url_path}' not found in {list(dashboards.keys())}")
-                    return None
-
-                config = await dashboard.async_load(False)
-                if not config:
-                    logger.warning(f"async_load returned empty config for '{url_path}'")
-                    return None
-
-                yaml = YAML()
-                yaml.default_flow_style = False
-                from io import StringIO
-                stream = StringIO()
-                yaml.dump(config, stream)
-                lovelace_yaml = stream.getvalue()
-                self._lovelace_cache[cache_key] = lovelace_yaml
-                logger.info(f"Retrieved Lovelace config via hass API (url_path={url_path})")
+                ws_url = "ws://supervisor/core/websocket"
+                lovelace_yaml = await get_lovelace_config_as_yaml(ws_url, supervisor_token, url_path)
+                if lovelace_yaml:
+                    self._lovelace_cache[cache_key] = lovelace_yaml
+                    logger.info(f"Retrieved Lovelace config via WebSocket (url_path={url_path})")
                 return lovelace_yaml
 
-            # Add-on mode: use WebSocket API
-            supervisor_token = os.getenv('SUPERVISOR_TOKEN')
-            if not supervisor_token:
-                logger.debug("No SUPERVISOR_TOKEN, skipping Lovelace config")
+            except Exception as e:
+                logger.debug(f"Failed to get Lovelace config (url_path={url_path}): {e}")
                 return None
-
-            ws_url = "ws://supervisor/core/websocket"
-            lovelace_yaml = await get_lovelace_config_as_yaml(ws_url, supervisor_token, url_path)
-            if lovelace_yaml:
-                self._lovelace_cache[cache_key] = lovelace_yaml
-                logger.info(f"Retrieved Lovelace config via WebSocket (url_path={url_path})")
-            return lovelace_yaml
-
-        except Exception as e:
-            logger.debug(f"Failed to get Lovelace config (url_path={url_path}): {e}")
-            return None
 
     async def _get_all_dashboards(self) -> List[Dict[str, Any]]:
         """
@@ -1065,6 +1068,10 @@ class AgentTools:
                 - virtual_file: str — use this path with propose_config_changes
                 - error: Optional[str]
         """
+        import re as _re
+        if url_path and not _re.match(r'^[a-z0-9][a-z0-9_-]*$', url_path):
+            return {"success": False, "error": f"Invalid url_path '{url_path}': must start with a letter/digit and contain only lowercase letters, digits, hyphens, underscores"}
+
         try:
             supervisor_token = os.getenv('SUPERVISOR_TOKEN')
             if self.config_manager.hass is None and not supervisor_token:
@@ -1122,6 +1129,9 @@ class AgentTools:
         """
         if url_path in (None, 'lovelace', ''):
             return {"success": False, "error": "Cannot delete the default dashboard"}
+        import re as _re
+        if not _re.match(r'^[a-z0-9][a-z0-9_-]*$', url_path):
+            return {"success": False, "error": f"Invalid url_path '{url_path}'"}
         try:
             supervisor_token = os.getenv('SUPERVISOR_TOKEN')
             if supervisor_token:

@@ -3,12 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1e1e1e">
     <title>HA AI Companion</title>
     <link rel="stylesheet" href="static/css/styles.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html@3.4.47/bundles/css/diff2html.min.css">
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.47/bundles/js/diff2html-ui.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
 </head>
 <body>
     <div class="app-wrapper">
@@ -20,7 +22,7 @@
         <aside class="sessions-panel" id="sessionsPanel">
             <div class="sessions-panel-header">
                 <span class="sessions-panel-title">Conversations</span>
-                <button id="newChatBtn" class="btn btn-new-chat" title="Start new conversation">+ New</button>
+                <button id="newChatBtn" class="btn btn-new-chat" title="Start new conversation" aria-label="Start new conversation">+ New</button>
             </div>
             <div id="sessionsList" class="sessions-list">
                 <div class="sessions-loading">Loading...</div>
@@ -31,7 +33,7 @@
         <div class="main-content">
             <div class="container">
                 <header>
-                    <button id="sidebarToggleBtn" class="btn btn-icon sidebar-toggle" title="Toggle conversations">☰</button>
+                    <button id="sidebarToggleBtn" class="btn btn-icon sidebar-toggle" title="Toggle conversations" aria-label="Toggle conversations">☰</button>
                     <h1><img src="static/images/icon.png" width="40" height="40"/> <span class="header-title">HA AI Companion</span></h1>
                     <div class="header-actions">
                         <span class="version-badge">{{ version }}</span>
@@ -57,7 +59,7 @@
                                 <div class="modal-content">
                                     <div class="modal-header">
                                         <h3>📝 Proposed Changes</h3>
-                                        <button class="modal-close" onclick="closeDiffModal()">&times;</button>
+                                        <button class="modal-close" onclick="closeDiffModal()" aria-label="Close">&times;</button>
                                     </div>
                                     <div class="modal-body" id="diffContent">
                                         <!-- Diff content will be inserted here -->
@@ -77,6 +79,8 @@
                                     class="chat-input"
                                     placeholder="Ask me anything about your Home Assistant configuration..."
                                     rows="3"
+                                    spellcheck="true"
+                                    autocomplete="off"
                                 ></textarea>
                                 <button id="sendBtn" class="btn btn-primary">Send</button>
                             </div>
@@ -89,6 +93,18 @@
                             <div class="suggestions-toolbar">
                                 <p class="suggestions-intro">AI-generated automation ideas based on your devices and existing automations.</p>
                                 <textarea id="suggestionFocusInput" class="suggestion-focus-input" rows="2" placeholder="Optional: focus area (e.g. 'focus on bedroom lights and energy saving')"></textarea>
+                                <details class="resource-types-details" id="resourceTypesDetails">
+                                    <summary class="resource-types-summary">Context sources</summary>
+                                    <div class="resource-types-grid" id="resourceTypesGrid">
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="entity_states" checked> Entity states</label>
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="automations" checked> Automations</label>
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="scenes" checked> Scenes</label>
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="scripts" checked> Scripts</label>
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="dashboards" checked> Dashboards</label>
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="nodered" checked> Node-RED flows</label>
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="memory" checked> Memory context</label>
+                                    </div>
+                                </details>
                                 <button id="generateSuggestionsBtn" class="btn btn-primary">Generate suggestions</button>
                             </div>
                             <div id="suggestionsStatus" class="suggestions-status" style="display:none;"></div>
@@ -99,6 +115,13 @@
                                     <span id="dismissedCount" class="dismissed-count"></span>
                                 </button>
                                 <div id="dismissedList" class="dismissed-list" style="display:none;"></div>
+                            </div>
+                            <div id="historySection" class="history-section" style="display:none;">
+                                <button class="btn-history-toggle" id="historyToggle">
+                                    <span>Past suggestions</span>
+                                    <span id="historyCount" class="history-count"></span>
+                                </button>
+                                <div id="historyList" class="history-list" style="display:none;"></div>
                             </div>
                         </div>
                     </div>

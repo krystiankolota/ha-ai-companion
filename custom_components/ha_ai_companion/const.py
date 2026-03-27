@@ -27,9 +27,12 @@ CONF_MAX_TOKENS = "max_tokens"
 CONF_SUGGESTION_MAX_TOKENS = "suggestion_max_tokens"
 CONF_CONFIG_MAX_TOKENS = "config_max_tokens"
 CONF_MAX_SESSIONS = "max_sessions"
+CONF_MAX_SUGGESTIONS = "max_suggestions"
 
 # Default values
 DEFAULT_API_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_LOG_LEVEL = "info"
 DEFAULT_USAGE_TRACKING = "stream_options"
+DEFAULT_MAX_SESSIONS = 50
+DEFAULT_MAX_SUGGESTIONS = 10

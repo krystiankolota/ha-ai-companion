@@ -38,6 +38,7 @@ from .const import (
     CONF_SUGGESTION_MAX_TOKENS,
     CONF_CONFIG_MAX_TOKENS,
     CONF_MAX_SESSIONS,
+    CONF_MAX_SUGGESTIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,8 +97,8 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
     except (FileNotFoundError, OSError) as err:
         _LOGGER.warning("Could not change to component directory, continuing anyway: %s", err)
 
-    # Set environment variables from config
-    config = entry.data
+    # Set environment variables from config (options override initial setup data)
+    config = {**entry.data, **entry.options}
     os.environ["OPENAI_API_KEY"] = config.get(CONF_API_KEY, "")
     os.environ["OPENAI_API_URL"] = config.get(CONF_API_URL, "https://api.openai.com/v1")
     os.environ["OPENAI_MODEL"] = config.get(CONF_MODEL, "gpt-4o")
@@ -181,6 +182,7 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
         (CONF_SUGGESTION_MAX_TOKENS, "SUGGESTION_MAX_TOKENS"),
         (CONF_CONFIG_MAX_TOKENS, "CONFIG_MAX_TOKENS"),
         (CONF_MAX_SESSIONS, "MAX_SESSIONS"),
+        (CONF_MAX_SUGGESTIONS, "MAX_SUGGESTIONS"),
     ]:
         if config.get(_conf) is not None:
             os.environ[_env] = str(config.get(_conf))

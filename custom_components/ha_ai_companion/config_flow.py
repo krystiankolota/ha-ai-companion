@@ -37,10 +37,13 @@ from .const import (
     CONF_SUGGESTION_MAX_TOKENS,
     CONF_CONFIG_MAX_TOKENS,
     CONF_MAX_SESSIONS,
+    CONF_MAX_SUGGESTIONS,
     DEFAULT_API_URL,
     DEFAULT_MODEL,
     DEFAULT_LOG_LEVEL,
     DEFAULT_USAGE_TRACKING,
+    DEFAULT_MAX_SESSIONS,
+    DEFAULT_MAX_SUGGESTIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,24 +73,19 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
     vol.Optional(CONF_SUGGESTION_MAX_TOKENS): cv.positive_int,
     vol.Optional(CONF_CONFIG_MAX_TOKENS): cv.positive_int,
     vol.Optional(CONF_MAX_SESSIONS): cv.positive_int,
+    vol.Optional(CONF_MAX_SUGGESTIONS): cv.positive_int,
 })
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the user input allows us to connect.
-
-    Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
-    """
-    # Validate that we have an API key
+    """Validate the user input allows us to connect."""
     if not data.get(CONF_API_KEY):
         raise ValueError("API key is required")
 
-    # Test the API connection
     try:
         import openai
         import os
 
-        # Temporarily set environment variables for testing
         original_key = os.environ.get("OPENAI_API_KEY")
         original_url = os.environ.get("OPENAI_API_BASE")
 
@@ -96,22 +94,18 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             if data.get(CONF_API_URL):
                 os.environ["OPENAI_API_BASE"] = data[CONF_API_URL]
 
-            # Simple test to verify API access
             client = openai.OpenAI(
                 api_key=data[CONF_API_KEY],
                 base_url=data.get(CONF_API_URL, DEFAULT_API_URL)
             )
 
-            # Try to list models (minimal API call)
             try:
                 models = client.models.list()
                 _LOGGER.debug("Successfully connected to API, found %d models", len(list(models)))
             except Exception as e:
-                # Some APIs don't support model listing, that's OK
                 _LOGGER.debug("Model listing not supported (this is OK): %s", str(e))
 
         finally:
-            # Restore original environment
             if original_key:
                 os.environ["OPENAI_API_KEY"] = original_key
             elif "OPENAI_API_KEY" in os.environ:
@@ -146,14 +140,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except ValueError as err:
                 _LOGGER.error("Validation error: %s", err)
                 errors["base"] = "cannot_connect"
-            except Exception as err:  # pylint: disable=broad-except
+            except Exception as err:
                 _LOGGER.exception("Unexpected exception: %s", err)
                 errors["base"] = "unknown"
             else:
-                # Check if already configured
                 await self.async_set_unique_id("ha_ai_companion")
                 self._abort_if_unique_id_configured()
-
                 return self.async_create_entry(title=info["title"], data=user_input)
 
         return self.async_show_form(
@@ -168,113 +160,85 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow for AI Configuration Agent."""
+    """Handle options flow — split into 3 steps for clarity."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
         self.config_entry = config_entry
+        self._options: dict[str, Any] = {**config_entry.data, **config_entry.options}
+
+    def _get(self, key: str, default=None):
+        """Get current value from accumulated options or config entry."""
+        return self._options.get(key, default)
+
+    # ── Step 1: Core model settings ──────────────────────────────────────────
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage the options."""
+        """Step 1 — Core API and model settings."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            self._options.update(user_input)
+            return await self.async_step_suggestion_phase()
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
-                vol.Optional(
-                    CONF_API_URL,
-                    default=self.config_entry.data.get(CONF_API_URL, DEFAULT_API_URL)
-                ): cv.string,
-                vol.Optional(
-                    CONF_MODEL,
-                    default=self.config_entry.data.get(CONF_MODEL, DEFAULT_MODEL)
-                ): cv.string,
-                vol.Optional(
-                    CONF_LOG_LEVEL,
-                    default=self.config_entry.data.get(CONF_LOG_LEVEL, DEFAULT_LOG_LEVEL)
-                ): vol.In(["debug", "info", "warning", "error"]),
-                vol.Optional(
-                    CONF_TEMPERATURE,
-                    default=self.config_entry.data.get(CONF_TEMPERATURE)
-                ): vol.Coerce(float),
-                vol.Optional(
-                    CONF_SYSTEM_PROMPT_FILE,
-                    default=self.config_entry.data.get(CONF_SYSTEM_PROMPT_FILE, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_ENABLE_CACHE_CONTROL,
-                    default=self.config_entry.data.get(CONF_ENABLE_CACHE_CONTROL, False)
-                ): cv.boolean,
-                vol.Optional(
-                    CONF_USAGE_TRACKING,
-                    default=self.config_entry.data.get(CONF_USAGE_TRACKING, DEFAULT_USAGE_TRACKING)
-                ): vol.In(["stream_options", "usage", "disabled"]),
-                vol.Optional(
-                    CONF_NODERED_URL,
-                    default=self.config_entry.data.get(CONF_NODERED_URL, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_NODERED_TOKEN,
-                    default=self.config_entry.data.get(CONF_NODERED_TOKEN, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_NODERED_FLOWS_FILE,
-                    default=self.config_entry.data.get(CONF_NODERED_FLOWS_FILE, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_SUGGESTION_PROMPT,
-                    default=self.config_entry.data.get(CONF_SUGGESTION_PROMPT, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_SUGGESTION_MODEL,
-                    default=self.config_entry.data.get(CONF_SUGGESTION_MODEL, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_SUGGESTION_API_URL,
-                    default=self.config_entry.data.get(CONF_SUGGESTION_API_URL, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_SUGGESTION_API_KEY,
-                    default=self.config_entry.data.get(CONF_SUGGESTION_API_KEY, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_CONFIG_MODEL,
-                    default=self.config_entry.data.get(CONF_CONFIG_MODEL, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_CONFIG_API_URL,
-                    default=self.config_entry.data.get(CONF_CONFIG_API_URL, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_CONFIG_API_KEY,
-                    default=self.config_entry.data.get(CONF_CONFIG_API_KEY, "")
-                ): cv.string,
-                vol.Optional(
-                    CONF_INPUT_PRICE_PER_1M,
-                    default=self.config_entry.data.get(CONF_INPUT_PRICE_PER_1M, 0.0)
-                ): vol.Coerce(float),
-                vol.Optional(
-                    CONF_OUTPUT_PRICE_PER_1M,
-                    default=self.config_entry.data.get(CONF_OUTPUT_PRICE_PER_1M, 0.0)
-                ): vol.Coerce(float),
-                vol.Optional(
-                    CONF_MAX_TOKENS,
-                    default=self.config_entry.data.get(CONF_MAX_TOKENS, 0)
-                ): cv.positive_int,
-                vol.Optional(
-                    CONF_SUGGESTION_MAX_TOKENS,
-                    default=self.config_entry.data.get(CONF_SUGGESTION_MAX_TOKENS, 0)
-                ): cv.positive_int,
-                vol.Optional(
-                    CONF_CONFIG_MAX_TOKENS,
-                    default=self.config_entry.data.get(CONF_CONFIG_MAX_TOKENS, 0)
-                ): cv.positive_int,
-                vol.Optional(
-                    CONF_MAX_SESSIONS,
-                    default=self.config_entry.data.get(CONF_MAX_SESSIONS, 50)
-                ): cv.positive_int,
+                vol.Optional(CONF_API_URL, default=self._get(CONF_API_URL, DEFAULT_API_URL)): cv.string,
+                vol.Optional(CONF_MODEL, default=self._get(CONF_MODEL, DEFAULT_MODEL)): cv.string,
+                vol.Optional(CONF_MAX_TOKENS, default=self._get(CONF_MAX_TOKENS, 0)): cv.positive_int,
+                vol.Optional(CONF_TEMPERATURE, default=self._get(CONF_TEMPERATURE)): vol.Coerce(float),
+                vol.Optional(CONF_LOG_LEVEL, default=self._get(CONF_LOG_LEVEL, DEFAULT_LOG_LEVEL)): vol.In(["debug", "info", "warning", "error"]),
+                vol.Optional(CONF_USAGE_TRACKING, default=self._get(CONF_USAGE_TRACKING, DEFAULT_USAGE_TRACKING)): vol.In(["stream_options", "usage", "disabled"]),
+                vol.Optional(CONF_ENABLE_CACHE_CONTROL, default=self._get(CONF_ENABLE_CACHE_CONTROL, False)): cv.boolean,
+                vol.Optional(CONF_MAX_SESSIONS, default=self._get(CONF_MAX_SESSIONS, DEFAULT_MAX_SESSIONS)): cv.positive_int,
+                vol.Optional(CONF_INPUT_PRICE_PER_1M, default=self._get(CONF_INPUT_PRICE_PER_1M, 0.0)): vol.Coerce(float),
+                vol.Optional(CONF_OUTPUT_PRICE_PER_1M, default=self._get(CONF_OUTPUT_PRICE_PER_1M, 0.0)): vol.Coerce(float),
+            }),
+        )
+
+    # ── Step 2: Suggestion & Config phase overrides ───────────────────────────
+
+    async def async_step_suggestion_phase(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 2 — Suggestion and config phase model overrides."""
+        if user_input is not None:
+            self._options.update(user_input)
+            return await self.async_step_advanced()
+
+        return self.async_show_form(
+            step_id="suggestion_phase",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_SUGGESTION_MODEL, default=self._get(CONF_SUGGESTION_MODEL, "")): cv.string,
+                vol.Optional(CONF_SUGGESTION_API_URL, default=self._get(CONF_SUGGESTION_API_URL, "")): cv.string,
+                vol.Optional(CONF_SUGGESTION_API_KEY, default=self._get(CONF_SUGGESTION_API_KEY, "")): cv.string,
+                vol.Optional(CONF_SUGGESTION_MAX_TOKENS, default=self._get(CONF_SUGGESTION_MAX_TOKENS, 0)): cv.positive_int,
+                vol.Optional(CONF_SUGGESTION_PROMPT, default=self._get(CONF_SUGGESTION_PROMPT, "")): cv.string,
+                vol.Optional(CONF_MAX_SUGGESTIONS, default=self._get(CONF_MAX_SUGGESTIONS, DEFAULT_MAX_SUGGESTIONS)): cv.positive_int,
+                vol.Optional(CONF_CONFIG_MODEL, default=self._get(CONF_CONFIG_MODEL, "")): cv.string,
+                vol.Optional(CONF_CONFIG_API_URL, default=self._get(CONF_CONFIG_API_URL, "")): cv.string,
+                vol.Optional(CONF_CONFIG_API_KEY, default=self._get(CONF_CONFIG_API_KEY, "")): cv.string,
+                vol.Optional(CONF_CONFIG_MAX_TOKENS, default=self._get(CONF_CONFIG_MAX_TOKENS, 0)): cv.positive_int,
+            }),
+        )
+
+    # ── Step 3: Node-RED & Advanced ──────────────────────────────────────────
+
+    async def async_step_advanced(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 3 — Node-RED integration and advanced settings."""
+        if user_input is not None:
+            self._options.update(user_input)
+            return self.async_create_entry(title="", data=self._options)
+
+        return self.async_show_form(
+            step_id="advanced",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_NODERED_URL, default=self._get(CONF_NODERED_URL, "")): cv.string,
+                vol.Optional(CONF_NODERED_TOKEN, default=self._get(CONF_NODERED_TOKEN, "")): cv.string,
+                vol.Optional(CONF_NODERED_FLOWS_FILE, default=self._get(CONF_NODERED_FLOWS_FILE, "")): cv.string,
+                vol.Optional(CONF_SYSTEM_PROMPT_FILE, default=self._get(CONF_SYSTEM_PROMPT_FILE, "")): cv.string,
             }),
         )
