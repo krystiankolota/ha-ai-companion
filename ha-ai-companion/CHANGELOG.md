@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-03-27
+
+### Added
+- **Per-phase usage tracking** — suggestion and config phases can now each have their own `usage_tracking` setting (`stream_options`, `usage`, `disabled`) independent of the global setting; useful when using different AI providers per phase that require different token reporting formats. Configure in options flow step 2 (Suggestion & Config Phases).
+
 ## [1.1.0] - 2026-03-27
 
 ### Added

@@ -98,7 +98,10 @@ class ConfigurationManager:
         full_path = (self.config_dir / file_path).resolve()
 
         # Ensure path is within config_dir (prevents path traversal)
-        if not str(full_path).startswith(str(self.config_dir)):
+        # Use os.sep suffix to avoid false matches like /config2 matching /config
+        config_str = str(self.config_dir)
+        full_str = str(full_path)
+        if full_str != config_str and not full_str.startswith(config_str + os.sep):
             raise ConfigurationError(
                 f"Invalid path: {file_path} is outside config directory"
             )

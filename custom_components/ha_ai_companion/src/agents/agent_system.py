@@ -154,8 +154,12 @@ class AgentSystem:
         # Store cache control setting
         self.enable_cache_control = enable_cache_control
 
-        # Store usage tracking mode
+        # Store usage tracking mode (global) and per-phase overrides
         self.usage_tracking = usage_tracking
+        _su = os.getenv('SUGGESTION_USAGE_TRACKING', 'default').strip().lower()
+        self.suggestion_usage_tracking = usage_tracking if _su == 'default' else _su
+        _cu = os.getenv('CONFIG_USAGE_TRACKING', 'default').strip().lower()
+        self.config_usage_tracking = usage_tracking if _cu == 'default' else _cu
 
         logger.info(f"AgentSystem initialized with model: {self.model}")
         if self.suggestion_model != self.model:
@@ -165,7 +169,7 @@ class AgentSystem:
         if self.temperature is not None:
             logger.info(f"Temperature: {self.temperature}")
         logger.info(f"Cache control: {'enabled' if self.enable_cache_control else 'disabled'}")
-        logger.info(f"Usage tracking: {self.usage_tracking}")
+        logger.info(f"Usage tracking: {self.usage_tracking} (suggestion: {self.suggestion_usage_tracking}, config: {self.config_usage_tracking})")
 
         # In-memory storage for pending changesets
         self.pending_changesets: Dict[str, Changeset] = {}
@@ -646,10 +650,11 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     "stream": True
                 }
 
-                # Add usage tracking based on configured mode
-                if self.usage_tracking == 'stream_options':
+                # Add usage tracking based on per-phase mode
+                active_usage_tracking = self.config_usage_tracking if has_tool_results else self.suggestion_usage_tracking
+                if active_usage_tracking == 'stream_options':
                     api_params["stream_options"] = {"include_usage": True}
-                elif self.usage_tracking == 'usage':
+                elif active_usage_tracking == 'usage':
                     api_params["usage"] = {"include": True}
                 # If disabled, don't add any usage tracking parameters
 
@@ -701,7 +706,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     # Guard: some providers (e.g. Anthropic/Haiku) send a final
                     # usage-only chunk with an empty choices array.
                     if not chunk.choices:
-                        if self.usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
+                        if active_usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
                             input_tokens = getattr(chunk.usage, 'prompt_tokens', 0) or getattr(chunk.usage, 'input_tokens', 0)
                             output_tokens = getattr(chunk.usage, 'completion_tokens', 0) or getattr(chunk.usage, 'output_tokens', 0)
                             if hasattr(chunk.usage, 'cached_tokens'):
@@ -717,7 +722,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
                     # Capture token usage if available (present in final chunk)
                     # Only attempt to parse if usage tracking is not disabled
-                    if self.usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
+                    if active_usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
                         input_tokens = getattr(chunk.usage, 'prompt_tokens', 0) or getattr(chunk.usage, 'input_tokens', 0)
                         output_tokens = getattr(chunk.usage, 'completion_tokens', 0) or getattr(chunk.usage, 'output_tokens', 0)
 

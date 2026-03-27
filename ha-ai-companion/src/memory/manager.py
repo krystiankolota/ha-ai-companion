@@ -30,8 +30,11 @@ def _sanitise(filename: str) -> str:
     # Remove extension so we can force .md
     stem = Path(name).stem
     # Replace unsafe chars with underscore
-    stem = _SAFE_FILENAME.sub('_', stem).strip('_') or 'memory'
-    return f"{stem}.md"
+    sanitised_stem = _SAFE_FILENAME.sub('_', stem).strip('_') or 'memory'
+    result = f"{sanitised_stem}.md"
+    if result != f"{stem}.md":
+        logger.warning(f"Memory filename sanitized: '{filename}' → '{result}'")
+    return result
 
 
 class MemoryManager:

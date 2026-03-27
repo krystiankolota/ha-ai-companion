@@ -32,6 +32,8 @@ from .const import (
     CONF_CONFIG_MODEL,
     CONF_CONFIG_API_URL,
     CONF_CONFIG_API_KEY,
+    CONF_SUGGESTION_USAGE_TRACKING,
+    CONF_CONFIG_USAGE_TRACKING,
     CONF_INPUT_PRICE_PER_1M,
     CONF_OUTPUT_PRICE_PER_1M,
     CONF_MAX_TOKENS,
@@ -114,6 +116,8 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     os.environ["ENABLE_CACHE_CONTROL"] = str(config.get(CONF_ENABLE_CACHE_CONTROL, False)).lower()
     os.environ["USAGE_TRACKING"] = config.get(CONF_USAGE_TRACKING, "stream_options")
+    os.environ["SUGGESTION_USAGE_TRACKING"] = config.get(CONF_SUGGESTION_USAGE_TRACKING, "default")
+    os.environ["CONFIG_USAGE_TRACKING"] = config.get(CONF_CONFIG_USAGE_TRACKING, "default")
     os.environ["MEMORY_DIR"] = os.path.join(hass.config.config_dir, ".ai_agent_memories")
     os.environ["SESSIONS_DIR"] = os.path.join(hass.config.config_dir, ".ai_agent_sessions")
 

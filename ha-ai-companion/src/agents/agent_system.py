@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from typing import Dict, Any, Optional, List
@@ -5,7 +6,7 @@ from openai import AsyncOpenAI
 from ..agents.tools import AgentTools
 from ..config import ConfigurationManager
 from ..memory.manager import MemoryManager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 
 
@@ -153,8 +154,12 @@ class AgentSystem:
         # Store cache control setting
         self.enable_cache_control = enable_cache_control
 
-        # Store usage tracking mode
+        # Store usage tracking mode (global) and per-phase overrides
         self.usage_tracking = usage_tracking
+        _su = os.getenv('SUGGESTION_USAGE_TRACKING', 'default').strip().lower()
+        self.suggestion_usage_tracking = usage_tracking if _su == 'default' else _su
+        _cu = os.getenv('CONFIG_USAGE_TRACKING', 'default').strip().lower()
+        self.config_usage_tracking = usage_tracking if _cu == 'default' else _cu
 
         logger.info(f"AgentSystem initialized with model: {self.model}")
         if self.suggestion_model != self.model:
@@ -164,7 +169,7 @@ class AgentSystem:
         if self.temperature is not None:
             logger.info(f"Temperature: {self.temperature}")
         logger.info(f"Cache control: {'enabled' if self.enable_cache_control else 'disabled'}")
-        logger.info(f"Usage tracking: {self.usage_tracking}")
+        logger.info(f"Usage tracking: {self.usage_tracking} (suggestion: {self.suggestion_usage_tracking}, config: {self.config_usage_tracking})")
 
         # In-memory storage for pending changesets
         self.pending_changesets: Dict[str, Changeset] = {}
@@ -342,7 +347,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
             # Build messages list with prompt caching support
             # Inject datetime + memory context into system prompt
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
             system_content = self.system_prompt + f"\n\nCurrent date/time: {now_str}"
             if self.memory_manager:
                 try:
@@ -645,10 +650,11 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     "stream": True
                 }
 
-                # Add usage tracking based on configured mode
-                if self.usage_tracking == 'stream_options':
+                # Add usage tracking based on per-phase mode
+                active_usage_tracking = self.config_usage_tracking if has_tool_results else self.suggestion_usage_tracking
+                if active_usage_tracking == 'stream_options':
                     api_params["stream_options"] = {"include_usage": True}
-                elif self.usage_tracking == 'usage':
+                elif active_usage_tracking == 'usage':
                     api_params["usage"] = {"include": True}
                 # If disabled, don't add any usage tracking parameters
 
@@ -700,7 +706,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     # Guard: some providers (e.g. Anthropic/Haiku) send a final
                     # usage-only chunk with an empty choices array.
                     if not chunk.choices:
-                        if self.usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
+                        if active_usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
                             input_tokens = getattr(chunk.usage, 'prompt_tokens', 0) or getattr(chunk.usage, 'input_tokens', 0)
                             output_tokens = getattr(chunk.usage, 'completion_tokens', 0) or getattr(chunk.usage, 'output_tokens', 0)
                             if hasattr(chunk.usage, 'cached_tokens'):
@@ -716,7 +722,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
                     # Capture token usage if available (present in final chunk)
                     # Only attempt to parse if usage tracking is not disabled
-                    if self.usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
+                    if active_usage_tracking != 'disabled' and hasattr(chunk, 'usage') and chunk.usage:
                         input_tokens = getattr(chunk.usage, 'prompt_tokens', 0) or getattr(chunk.usage, 'input_tokens', 0)
                         output_tokens = getattr(chunk.usage, 'completion_tokens', 0) or getattr(chunk.usage, 'output_tokens', 0)
 
@@ -857,7 +863,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
                     # Execute the tool function
                     if function_name == "search_config_files":
-                        result = await self.tools.search_config_files(**function_args)
+                        try:
+                            result = await asyncio.wait_for(self.tools.search_config_files(**function_args), timeout=60.0)
+                        except asyncio.TimeoutError:
+                            result = {"success": False, "error": "Tool execution timed out after 60 seconds"}
                         logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, file_count={result.get('count')}")
                     elif function_name == "propose_config_changes":
                         if "changes" not in function_args or not isinstance(function_args["changes"], list):
@@ -882,10 +891,16 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         result = await self.tools.delete_dashboard(**function_args)
                         logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}")
                     elif function_name == "get_nodered_flows":
-                        result = await self.tools.get_nodered_flows()
+                        try:
+                            result = await asyncio.wait_for(self.tools.get_nodered_flows(), timeout=60.0)
+                        except asyncio.TimeoutError:
+                            result = {"success": False, "error": "Tool execution timed out after 60 seconds"}
                         logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
                     elif function_name == "get_entity_states":
-                        result = await self.tools.get_entity_states(**function_args)
+                        try:
+                            result = await asyncio.wait_for(self.tools.get_entity_states(**function_args), timeout=60.0)
+                        except asyncio.TimeoutError:
+                            result = {"success": False, "error": "Tool execution timed out after 60 seconds"}
                         logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
                     elif function_name == "read_memories":
                         result = await self.tools.read_memories(**function_args)
@@ -945,8 +960,9 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
             logger.info(f"Agent completed after {iteration} iteration(s) - Total tokens: {total_input_tokens + total_output_tokens} (input: {total_input_tokens}, output: {total_output_tokens}, cached: {total_cached_tokens})")
 
+            billable_input = max(0, total_input_tokens - total_cached_tokens)
             cost_usd = (
-                total_input_tokens * self.input_price_per_1m +
+                billable_input * self.input_price_per_1m +
                 total_output_tokens * self.output_price_per_1m
             ) / 1_000_000 if (self.input_price_per_1m or self.output_price_per_1m) else None
 
@@ -1024,10 +1040,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         Cached for 10 minutes to avoid repeated WebSocket calls.
         Returns empty string on failure — topology is advisory, never required.
         """
-        _TTL = 600  # 10 minutes
+        _TTL = int(os.getenv("TOPOLOGY_CACHE_TTL", "600"))  # default 10 minutes
         if (self._topology_cache is not None and
                 self._topology_cache_time is not None and
-                (datetime.now() - self._topology_cache_time).total_seconds() < _TTL):
+                (datetime.now(timezone.utc) - self._topology_cache_time).total_seconds() < _TTL):
             return self._topology_cache
 
         try:
@@ -1128,7 +1144,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 result = result[:MAX_CHARS] + "\n*(topology truncated)*"
 
             self._topology_cache = result
-            self._topology_cache_time = datetime.now()
+            self._topology_cache_time = datetime.now(timezone.utc)
             logger.info(f"Home topology built: {len(areas)} areas, {len(entity_state)} entities, {len(result)} chars")
             return result
 
@@ -1198,7 +1214,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             return
         try:
             import json
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
             memory_context = await self.memory_manager.get_context()
             system_content = (
                 "You are a memory consolidation assistant for a Home Assistant AI companion.\n"
@@ -1286,7 +1302,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         import uuid
         changeset_id = changeset_data.get('changeset_id') or str(uuid.uuid4())[:8]
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         changeset = Changeset(
             changeset_id=changeset_id,
             file_changes=changeset_data['file_changes'],
@@ -1341,7 +1357,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
         # Check if expired
         expires_at = datetime.fromisoformat(changeset.expires_at)
-        if datetime.now() > expires_at:
+        if datetime.now(timezone.utc) > expires_at:
             del self.pending_changesets[change_id]
             return {
                 "success": False,
@@ -1437,7 +1453,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 "message": f"Error applying changes: {str(e)}"
             }
 
-    async def generate_suggestions(self, extra_prompt: Optional[str] = None) -> Dict[str, Any]:
+    async def generate_suggestions(self, extra_prompt: Optional[str] = None, resource_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Generate automation suggestions by pre-fetching context and making a single AI call.
 
@@ -1459,50 +1475,87 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
         try:
             logger.info("Generating automation suggestions")
+            ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'dashboards', 'nodered', 'memory']
+            active_types = set(resource_types) if resource_types else set(ALL_RESOURCE_TYPES)
 
-            # 1. Gather context
-            entity_states_result = await self.tools.get_entity_states()
-            entity_states_text = json.dumps(entity_states_result.get("states", []), indent=2)
+            # 1. Gather context based on selected resource types
+            context_sections = []
 
-            # Read all automation files (supports single-file and split-file setups).
-            # Search for 'alias' which is present in every YAML automation block.
-            automations_result = await self.tools.search_config_files(search_pattern="alias")
-            automations_files = automations_result.get("files", [])
-            # Collect all files whose path suggests they contain automations
-            # (handles automations.yaml, automations/heating.yaml, automations/lights.yaml, etc.)
-            automation_contents = [
-                f"# {f['path']}\n{f.get('content', '')}"
-                for f in automations_files
-                if "automation" in f.get("path", "").lower()
-            ]
-            automations_text = "\n\n".join(automation_contents) if automation_contents else json.dumps(automations_files, indent=2)
+            if 'entity_states' in active_types:
+                entity_states_result = await self.tools.get_entity_states()
+                entity_states_text = json.dumps(entity_states_result.get("states", []), indent=2)
+                context_sections.append(f"## Current entity states\n{entity_states_text}")
 
-            nodered_text = ""
-            try:
-                nodered_result = await self.tools.get_nodered_flows()
-                if nodered_result.get("success"):
-                    nodered_text = json.dumps(nodered_result.get("flows", []), indent=2)
-            except Exception:
-                pass
+            if 'automations' in active_types:
+                # Read all automation files (supports single-file and split-file setups).
+                # Search for 'alias' which is present in every YAML automation block.
+                automations_result = await self.tools.search_config_files(search_pattern="alias")
+                automations_files = automations_result.get("files", [])
+                automation_contents = [
+                    f"# {f['path']}\n{f.get('content', '')}"
+                    for f in automations_files
+                    if "automation" in f.get("path", "").lower()
+                ]
+                automations_text = "\n\n".join(automation_contents) if automation_contents else json.dumps(automations_files, indent=2)
+                context_sections.append(f"## Existing automations\n{automations_text}")
 
-            # 2. Inject memory context so the suggester knows device relationships etc.
-            memory_context = ""
-            if self.memory_manager:
+            if 'scenes' in active_types:
                 try:
-                    memory_context = await self.memory_manager.get_context()
+                    scenes_result = await self.tools.search_config_files(search_pattern="scene:")
+                    scenes_files = [
+                        f for f in scenes_result.get("files", [])
+                        if "scene" in f.get("path", "").lower()
+                    ]
+                    if scenes_files:
+                        scenes_text = "\n\n".join(f"# {f['path']}\n{f.get('content', '')}" for f in scenes_files)
+                        context_sections.append(f"## Existing scenes\n{scenes_text}")
                 except Exception:
                     pass
 
-            # 3. Build context sections
+            if 'scripts' in active_types:
+                try:
+                    scripts_result = await self.tools.search_config_files(search_pattern="sequence:")
+                    scripts_files = [
+                        f for f in scripts_result.get("files", [])
+                        if "script" in f.get("path", "").lower()
+                    ]
+                    if scripts_files:
+                        scripts_text = "\n\n".join(f"# {f['path']}\n{f.get('content', '')}" for f in scripts_files)
+                        context_sections.append(f"## Existing scripts\n{scripts_text}")
+                except Exception:
+                    pass
+
+            if 'dashboards' in active_types:
+                try:
+                    dashboards_result = await self.tools.list_dashboards()
+                    if dashboards_result.get("success"):
+                        dashboards_text = json.dumps(dashboards_result.get("dashboards", []), indent=2)
+                        context_sections.append(f"## Existing dashboards\n{dashboards_text}")
+                except Exception:
+                    pass
+
+            nodered_text = ""
+            if 'nodered' in active_types:
+                try:
+                    nodered_result = await self.tools.get_nodered_flows()
+                    if nodered_result.get("success"):
+                        nodered_text = json.dumps(nodered_result.get("flows", []), indent=2)
+                except Exception:
+                    pass
+                if nodered_text:
+                    context_sections.append(f"## Existing Node-RED flows\n{nodered_text}")
+
+            # 2. Inject memory context so the suggester knows device relationships etc.
+            if 'memory' in active_types and self.memory_manager:
+                try:
+                    memory_context = await self.memory_manager.get_context()
+                    if memory_context:
+                        context_sections.append(f"## Home context from memory\n{memory_context}")
+                except Exception:
+                    pass
+
+            # 3. Build remaining context
             suggestion_prompt_env = os.getenv("SUGGESTION_PROMPT", "").strip()
-            context_sections = [
-                f"## Current entity states\n{entity_states_text}",
-                f"## Existing automations\n{automations_text}",
-            ]
-            if nodered_text:
-                context_sections.append(f"## Existing Node-RED flows\n{nodered_text}")
-            if memory_context:
-                context_sections.append(f"## Home context from memory\n{memory_context}")
 
             # Inject dismissed suggestions so the AI won't re-suggest them
             dismissed = []

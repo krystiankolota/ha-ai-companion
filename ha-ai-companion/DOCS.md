@@ -205,6 +205,8 @@ When both values are set to non-zero, a `💰 $0.0000` cumulative session cost a
 | `max_tokens` | Integer | — | Global output token limit applied to all agent phases. |
 | `suggestion_max_tokens` | Integer | — | Override output token limit for the suggestion phase only. |
 | `config_max_tokens` | Integer | — | Override output token limit for the config-editing phase only. |
+| `suggestion_usage_tracking` | List | `default` | Token tracking for the suggestion phase. `default` inherits the global `usage_tracking` setting. |
+| `config_usage_tracking` | List | `default` | Token tracking for the config-editing phase. `default` inherits the global `usage_tracking` setting. |
 
 **Session management (optional)**
 
