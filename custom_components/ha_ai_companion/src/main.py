@@ -204,6 +204,24 @@ async def health_check():
         "openai_configured": bool(os.getenv('OPENAI_API_KEY'))
     }
 
+@app.get("/api/logs")
+async def get_logs(lines: int = 200, filter: str = "ha_ai_companion"):
+    """Return recent lines from home-assistant.log matching the filter."""
+    config_dir = os.getenv("HA_CONFIG_DIR", "/config")
+    log_path = os.path.join(config_dir, "home-assistant.log")
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            all_lines = f.readlines()
+        # Return last `lines` lines that contain the filter keyword (case-insensitive)
+        kw = filter.lower()
+        matched = [l.rstrip() for l in all_lines if kw in l.lower()] if kw else [l.rstrip() for l in all_lines]
+        return {"log_path": log_path, "total_matched": len(matched), "lines": matched[-lines:]}
+    except FileNotFoundError:
+        return {"error": f"Log file not found: {log_path}", "lines": []}
+    except Exception as e:
+        return {"error": str(e), "lines": []}
+
+
 # Root endpoint - will serve the UI
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
