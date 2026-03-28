@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2026-03-28
+
+### Improved
+- **Memory consolidation is skipped on short/trivial turns** — background LLM call no longer fires after every single message; only runs when the conversation has ≥2 user turns or tool activity happened
+- **Memory consolidation uses cheaper model** — background memory pass now uses the suggestion-phase model instead of the main model, reducing cost
+- **Tool results excluded from consolidation context** — large tool JSON blobs no longer sent to the memory pass, keeping the background call lean
+- **Timestamp comments stripped from injected memory** — `<!-- updated: ... -->` headers are removed before injection, saving a few tokens per file per request
+- **Stale memory files skipped** — files older than 180 days (configurable via `MEMORY_MAX_AGE_DAYS` env var) are no longer injected into prompts; still kept on disk for manual review
+
 ## [1.1.4] - 2026-03-28
 
 ### Added

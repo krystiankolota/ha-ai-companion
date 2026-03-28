@@ -1050,8 +1050,13 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 })
             }
 
-            # Fire-and-forget memory consolidation — runs after response is delivered
-            asyncio.ensure_future(self._run_memory_consolidation(messages + new_messages))
+            # Fire-and-forget memory consolidation — runs after response is delivered.
+            # Skip if the conversation was too short to contain durable facts.
+            all_messages = messages + new_messages
+            user_turns = sum(1 for m in all_messages if m.get("role") == "user")
+            has_tool_activity = any(m.get("role") == "tool" for m in all_messages)
+            if user_turns >= 2 or has_tool_activity:
+                asyncio.ensure_future(self._run_memory_consolidation(all_messages))
 
         except Exception as e:
             from openai import APIError
@@ -1328,18 +1333,22 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             if memory_context:
                 system_content += "\n\n" + memory_context
 
-            # Include only role/content pairs — strip any cache_control metadata
+            # Include only role/content pairs — strip tool results, cache_control, large blobs
             slim_history = []
             for m in conversation_messages:
+                role = m.get("role")
+                # Skip tool results (often large JSON) and system_info markers
+                if role in ("tool", "system_info"):
+                    continue
                 if isinstance(m.get("content"), str):
-                    slim_history.append({"role": m["role"], "content": m["content"]})
+                    slim_history.append({"role": role, "content": m["content"]})
                 elif isinstance(m.get("content"), list):
                     # Flatten content blocks to plain text
                     text = " ".join(
                         b.get("text", "") for b in m["content"] if isinstance(b, dict) and b.get("type") == "text"
                     )
                     if text:
-                        slim_history.append({"role": m["role"], "content": text})
+                        slim_history.append({"role": role, "content": text})
 
             messages = [{"role": "system", "content": system_content}] + slim_history
 
@@ -1350,9 +1359,12 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             if not memory_tools:
                 return
 
-            # Non-streaming, single pass, no retry loop
-            response = await self.client.chat.completions.create(
-                model=self.model,
+            # Non-streaming, single pass, no retry loop.
+            # Use suggestion model (cheaper) for background consolidation work.
+            consolidation_client = self.suggestion_client
+            consolidation_model = self.suggestion_model
+            response = await consolidation_client.chat.completions.create(
+                model=consolidation_model,
                 messages=messages,
                 tools=memory_tools,
                 tool_choice="auto",

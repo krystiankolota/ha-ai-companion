@@ -149,17 +149,28 @@ class MemoryManager:
             logger.error("MemoryManager.delete_file(%s) error: %s", filename, exc)
             return False
 
+    # Files older than this many days are skipped from context injection (still exist on disk)
+    MAX_CONTEXT_AGE_DAYS = int(os.environ.get("MEMORY_MAX_AGE_DAYS", "180"))
+
     async def get_context(self) -> str:
         """
         Return memory files sorted by most-recently-updated first, up to
         MAX_CONTEXT_CHARS (~1500 tokens).  Newer memories take priority.
+        Files older than MAX_CONTEXT_AGE_DAYS are skipped.
         """
+        from datetime import timezone as _tz
+        now = datetime.now(_tz.utc)
         try:
             paths = sorted(
                 (p for p in self.memory_dir.glob("*.md") if p.is_file()),
                 key=lambda p: p.stat().st_mtime,
                 reverse=True,  # newest first
             )
+            # Filter out very stale files — they waste tokens on irrelevant old facts
+            paths = [
+                p for p in paths
+                if (now - datetime.fromtimestamp(p.stat().st_mtime, tz=_tz.utc)).days <= self.MAX_CONTEXT_AGE_DAYS
+            ]
             files = [p.name for p in paths]
         except Exception:
             files = await self.list_files()
@@ -170,7 +181,11 @@ class MemoryManager:
         total_chars = 0
 
         for fname in files:
-            content = await self.read_file(fname)
+            raw = await self.read_file(fname)
+            if not raw:
+                continue
+            # Strip the HTML timestamp comment — it's noise in the AI's context
+            content = re.sub(r"<!--.*?-->\n?", "", raw, flags=re.DOTALL).strip()
             if not content:
                 continue
             section = f"### {fname}\n{content}"
