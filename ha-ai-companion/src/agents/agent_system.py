@@ -728,6 +728,9 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             # Initialize status queue for streaming tool progress events
             self._tool_status_queue = asyncio.Queue()
 
+            # Pre-declare so outer except can access partial content on stream errors
+            accumulated_content = ""
+
             while iteration < max_iterations:
                 iteration += 1
                 logger.info(f"[ITERATION {iteration}] Calling OpenAI streaming API")
@@ -1051,11 +1054,26 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             asyncio.ensure_future(self._run_memory_consolidation(messages + new_messages))
 
         except Exception as e:
-            logger.error(f"Agent streaming error: {e}", exc_info=True)
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": str(e)})
-            }
+            from openai import APIError
+            if isinstance(e, APIError) and accumulated_content:
+                # Stream closed mid-response (e.g. "JSON error injected into SSE stream")
+                # but we already have content — deliver what we received rather than erroring.
+                logger.warning(f"Stream interrupted with partial content, delivering as-is: {e}")
+                assistant_message = {"role": "assistant", "content": accumulated_content}
+                yield {
+                    "event": "message_complete",
+                    "data": json.dumps({"message": assistant_message, "usage": {}})
+                }
+                yield {
+                    "event": "complete",
+                    "data": json.dumps({"messages": [assistant_message], "iterations": iteration, "usage": {}})
+                }
+            else:
+                logger.error(f"Agent streaming error: {e}", exc_info=True)
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": str(e)})
+                }
 
     @staticmethod
     def _strip_excess_cache_control(messages: List[Dict[str, Any]], max_blocks: int = 3) -> List[Dict[str, Any]]:

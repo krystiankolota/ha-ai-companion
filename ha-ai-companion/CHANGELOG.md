@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-03-28
+
+### Fixed
+- **SSE stream interruption**: `openai.APIError: JSON error injected into SSE stream` no longer causes a hard `❌ Error` to the user — if the stream was interrupted after content was already received the partial response is delivered normally; only errors with no content at all show an error message
+
 ## [1.1.2] - 2026-03-28
 
 ### Fixed
