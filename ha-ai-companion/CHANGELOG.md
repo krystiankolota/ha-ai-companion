@@ -5,6 +5,16 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2026-03-28
+
+### Added
+- **Applied suggestions tracking** — "✓ Applied" button on each suggestion card marks it as implemented; applied suggestions are hidden from future generations and filtered from the current list (saved in `.ai_agent_suggestions_applied.json`)
+- **"Fix all in chat" button** — naming issues section now has a single button that sends all rename requests to the AI at once instead of one-by-one
+- **Config changes in session history** — when changes are approved and applied, a `✅ Config changes applied to: <files>` record is saved to conversation history and shown when the session is replayed
+
+### Fixed
+- **Sessions list sometimes empty** — if the first `api/sessions` load returns empty (server still initializing), it auto-retries once after 2 seconds
+
 ## [1.1.3] - 2026-03-28
 
 ### Fixed

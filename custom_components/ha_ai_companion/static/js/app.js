@@ -790,6 +790,14 @@ async function handleApproval(changesetId, approved) {
                 }
 
                 addSystemMessage(message);
+
+                // Record applied change in conversation history so it shows on session replay
+                const fileList = (data.applied_files || []).join(', ') || 'unknown files';
+                conversationHistory.push({
+                    role: 'system_info',
+                    content: `✅ Config changes applied to: ${fileList}`
+                });
+
                 return true;
             } else {
                 addSystemMessage(`⚠️ ${data.message || 'Changes not applied'}`);
@@ -871,13 +879,18 @@ function closeSidebar() {
     document.body.style.overflow = '';
 }
 
-async function loadSessions() {
+async function loadSessions(retryOnEmpty = true) {
     if (!sessionsList) return;
     try {
         const response = await fetch('api/sessions');
         if (!response.ok) return;
         const data = await response.json();
-        renderSessionsList(data.sessions || data);
+        const sessions = data.sessions || data;
+        renderSessionsList(sessions);
+        // If empty on first load, retry once after 2s (server may still be initializing)
+        if (retryOnEmpty && (!sessions || sessions.length === 0)) {
+            setTimeout(() => loadSessions(false), 2000);
+        }
     } catch (e) {
         console.error('Failed to load sessions:', e);
     }
@@ -937,6 +950,8 @@ window.switchSession = async function(sessionId) {
             } else if (msg.role === 'assistant') {
                 if (msg.content) addAssistantMessage(msg.content);
                 if (msg.tool_calls) addToolCallMessage(msg.tool_calls);
+            } else if (msg.role === 'system_info') {
+                addSystemMessage(msg.content);
             }
         }
 

@@ -51,6 +51,35 @@ function formatGeneratedAt(iso) {
 }
 
 let dismissedTitles = new Set();
+let appliedTitles = new Set();
+
+async function loadApplied() {
+    try {
+        const resp = await fetch('api/suggestions/applied');
+        if (resp.ok) {
+            const data = await resp.json();
+            appliedTitles = new Set(data.applied || []);
+        }
+    } catch (e) {
+        console.warn('Failed to load applied suggestions:', e);
+    }
+}
+
+async function markSuggestionApplied(title, card) {
+    try {
+        await fetch('api/suggestions/applied', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title })
+        });
+        appliedTitles.add(title);
+        card.style.transition = 'opacity 0.3s';
+        card.style.opacity = '0';
+        setTimeout(() => { card.remove(); }, 300);
+    } catch (e) {
+        console.warn('Failed to mark suggestion applied:', e);
+    }
+}
 
 async function loadDismissed() {
     try {
@@ -225,11 +254,11 @@ function renderSuggestions(data) {
     const list = document.getElementById('suggestionsList');
     const status = document.getElementById('suggestionsStatus');
     const allSuggestions = data.suggestions || [];
-    const suggestions = allSuggestions.filter(s => !dismissedTitles.has(s.title));
+    const suggestions = allSuggestions.filter(s => !dismissedTitles.has(s.title) && !appliedTitles.has(s.title));
 
     if (data.generated_at) {
-        const dismissedCount = allSuggestions.length - suggestions.length;
-        const extra = dismissedCount > 0 ? ` (${dismissedCount} dismissed)` : '';
+        const hiddenCount = allSuggestions.length - suggestions.length;
+        const extra = hiddenCount > 0 ? ` (${hiddenCount} hidden)` : '';
         status.textContent = `Last generated: ${formatGeneratedAt(data.generated_at)}${extra}`;
         status.style.display = 'block';
     }
@@ -266,7 +295,10 @@ function renderSuggestions(data) {
             <p class="suggestion-description">${escapeHtml(s.description)}</p>
             ${entities ? `<div class="suggestion-entities">${entities}</div>` : ''}
             ${yamlBlock}
-            <button class="btn btn-secondary btn-add-to-chat" data-index="${i}">Add to chat</button>
+            <div class="suggestion-actions">
+                <button class="btn btn-secondary btn-add-to-chat" data-index="${i}">Add to chat</button>
+                <button class="btn btn-applied btn-mark-applied" data-index="${i}" title="Mark as implemented">✓ Applied</button>
+            </div>
         </div>`;
     }).join('');
 
@@ -283,6 +315,15 @@ function renderSuggestions(data) {
             const card = btn.closest('.suggestion-card');
             const title = card.dataset.title;
             dismissSuggestion(title, card);
+        });
+    });
+
+    list.querySelectorAll('.btn-mark-applied').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const s = suggestions[parseInt(btn.dataset.index)];
+            if (!s) return;
+            const card = btn.closest('.suggestion-card');
+            markSuggestionApplied(s.title, card);
         });
     });
 
@@ -416,7 +457,10 @@ function renderNamingIssues(issues) {
     const section = document.createElement('div');
     section.className = 'naming-issues-section';
     section.innerHTML = `
-        <h3 class="naming-issues-title">🏷️ Unclear entity names (${issues.length})</h3>
+        <div class="naming-issues-header">
+            <h3 class="naming-issues-title">🏷️ Unclear entity names (${issues.length})</h3>
+            <button class="btn btn-primary btn-fix-all-names">Fix all in chat</button>
+        </div>
         <p class="naming-issues-intro">These entity names may be confusing. Click "Fix in chat" to rename them.</p>
         ${issues.map(i => `
         <div class="naming-issue-card">
@@ -439,10 +483,20 @@ function renderNamingIssues(issues) {
             }
         });
     });
+
+    section.querySelector('.btn-fix-all-names').addEventListener('click', () => {
+        document.querySelector('.tab-btn[data-tab="chat"]').click();
+        const input = document.getElementById('messageInput');
+        if (input) {
+            const lines = issues.map(i => `- ${i.entity_id}: rename to "${i.suggested_name}"`).join('\n');
+            input.value = `Please rename all these entities to have clearer friendly names:\n${lines}`;
+            input.focus();
+        }
+    });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    await loadDismissed();
+    await Promise.all([loadDismissed(), loadApplied()]);
     initTabs();
 
     // Restore saved focus prompt from localStorage

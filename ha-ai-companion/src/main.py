@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.3"
+version = "1.1.4"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -499,6 +499,51 @@ async def get_dismissed():
 async def get_suggestions_history():
     """Return past suggestion sets (newest first)."""
     return {"history": _read_suggestions_history()}
+
+
+APPLIED_FILE_KEY = ".ai_agent_suggestions_applied.json"
+
+def _applied_path() -> str:
+    config_dir = os.getenv("HA_CONFIG_DIR", "/config")
+    return os.path.join(config_dir, APPLIED_FILE_KEY)
+
+def _read_applied() -> list:
+    path = _applied_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json_lib.load(f)
+        except Exception:
+            pass
+    return []
+
+def _write_applied(titles: list):
+    with open(_applied_path(), "w") as f:
+        json_lib.dump(titles, f, indent=2)
+
+@app.post("/api/suggestions/applied")
+async def mark_suggestion_applied(request: Request):
+    """Mark a suggestion title as applied."""
+    body = await request.json()
+    title = body.get("title", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    applied = _read_applied()
+    if title not in applied:
+        applied.append(title)
+        _write_applied(applied)
+    return {"applied": applied}
+
+@app.get("/api/suggestions/applied")
+async def get_applied():
+    """Return the list of applied suggestion titles."""
+    return {"applied": _read_applied()}
+
+@app.delete("/api/suggestions/applied")
+async def clear_applied():
+    """Clear all applied suggestions."""
+    _write_applied([])
+    return {"applied": []}
 
 
 @app.post("/api/suggestions/generate")

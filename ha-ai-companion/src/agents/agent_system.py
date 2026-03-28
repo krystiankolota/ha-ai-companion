@@ -1651,6 +1651,19 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 dismissed_list = "\n".join(f"- {t}" for t in dismissed)
                 context_sections.append(f"## User has dismissed these suggestions — do NOT suggest them again\n{dismissed_list}")
 
+            # Inject applied suggestions so the AI won't re-suggest them
+            applied = []
+            try:
+                applied_path = os.path.join(config_dir, ".ai_agent_suggestions_applied.json")
+                if os.path.exists(applied_path):
+                    with open(applied_path, "r") as f:
+                        applied = json.load(f)
+            except Exception:
+                pass
+            if applied:
+                applied_list = "\n".join(f"- {t}" for t in applied)
+                context_sections.append(f"## User has already applied these suggestions — do NOT suggest them again\n{applied_list}")
+
             # Per-request extra_prompt (from UI textarea) takes priority over env var
             active_extra = (extra_prompt or "").strip() or suggestion_prompt_env
             if active_extra:

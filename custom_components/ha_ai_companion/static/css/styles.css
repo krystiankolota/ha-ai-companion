@@ -1791,7 +1791,8 @@ footer p {
 
 /* Naming issues section (FEAT-8) */
 .naming-issues-section { margin-bottom: 20px; }
-.naming-issues-title { font-size: 0.95rem; margin: 0 0 4px; color: var(--text-color, #e0e0e0); }
+.naming-issues-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.naming-issues-title { font-size: 0.95rem; margin: 0; color: var(--text-color, #e0e0e0); }
 .naming-issues-intro { font-size: 0.82rem; color: var(--text-secondary, #888); margin: 0 0 10px; }
 .naming-issue-card {
     display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
@@ -1806,6 +1807,28 @@ footer p {
 .naming-issue-suggested { color: var(--success-color, #2ecc71); font-weight: 600; }
 .naming-issue-reason { color: var(--text-secondary, #888); font-size: 0.8rem; flex: 1 1 100%; }
 .btn-fix-name { margin-left: auto; }
+
+/* Suggestion action buttons row */
+.suggestion-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.btn-applied {
+    background: rgba(39, 174, 96, 0.15);
+    border: 1px solid var(--success-color, #27ae60);
+    color: var(--success-color, #27ae60);
+    padding: 6px 14px;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.btn-applied:hover {
+    background: rgba(39, 174, 96, 0.3);
+}
 
 /* Dismissed suggestions section */
 .dismissed-section { margin-top: 24px; border-top: 1px solid var(--border-color, #444); padding-top: 12px; }
