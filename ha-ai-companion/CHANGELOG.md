@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-03-28
+
+### Fixed
+- **Critical**: `asyncio` scoping bug — `import asyncio` inside `chat_stream` shadowed the module-level import, causing `UnboundLocalError` on every prompt
+
+### Added
+- **Tool execution status streaming** — loading indicator now shows live per-file progress during `search_config_files` ("Reading automation.yaml", "Checking device registry…", etc.) via a new `tool_status` WebSocket event
+- **Compact entity states in suggestions** — `generate_suggestions()` now sends `domain: entity=state` lines instead of full JSON, reducing context size ~80% for large HA instances
+- **Old tool result pruning** — conversation keeps only the last 2 tool call/result blocks, dropping older ones to save input tokens on multi-step operations
+- **Deletion guard override** — `propose_config_changes` now accepts `confirm_delete=true` to bypass the safety guard when user explicitly wants to remove automations/scripts/scenes; guard stays active by default
+
 ## [1.1.1] - 2026-03-27
 
 ### Added

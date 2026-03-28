@@ -178,6 +178,9 @@ class AgentSystem:
         self._topology_cache: Optional[str] = None
         self._topology_cache_time: Optional[datetime] = None
 
+        # Status queue for streaming tool execution progress events to the frontend
+        self._tool_status_queue: Optional[asyncio.Queue] = None
+
         # System prompt for the configuration agent
         base_prompt = system_prompt or self._get_default_system_prompt()
 
@@ -233,6 +236,7 @@ Dashboard Guidelines:
 
 Important Guidelines:
 - NEVER suggest changes directly - always use propose_config_changes
+- To intentionally delete automations/scripts/scenes, pass confirm_delete=true — only do this when the user explicitly asks to delete them
 - Always read the current configuration before proposing changes using search_config_files
 - Explain your reasoning in your response when calling propose_config_changes
 - The user can accept or reject your proposed config changes through their own UI
@@ -308,6 +312,96 @@ Response Style:
 - Ask clarifying questions if request is ambiguous
 
 Remember: You're helping manage a production Home Assistant system. Safety and clarity are paramount."""
+
+    @staticmethod
+    def _format_entity_states_compact(states: list) -> str:
+        """Compact entity state format: one line per domain, entity_id=state pairs."""
+        from collections import defaultdict
+        by_domain: Dict[str, list] = defaultdict(list)
+        for s in states:
+            eid = s.get("entity_id", "")
+            domain = eid.split(".")[0] if "." in eid else "other"
+            state = s.get("state", "?")
+            by_domain[domain].append(f"{eid}={state}")
+        return "\n".join(
+            f"{d}: " + ", ".join(entries)
+            for d, entries in sorted(by_domain.items())
+        )
+
+    @staticmethod
+    def _prune_old_tool_messages(messages: list, keep_blocks: int = 2) -> list:
+        """Remove oldest tool call+result blocks beyond keep_blocks to keep context lean."""
+        blocks = []  # [(assistant_idx, [tool_indices...])]
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                block_start = i
+                tool_idxs = []
+                j = i + 1
+                while j < len(messages) and messages[j].get("role") == "tool":
+                    tool_idxs.append(j)
+                    j += 1
+                if tool_idxs:
+                    blocks.append((block_start, tool_idxs))
+                i = j
+            else:
+                i += 1
+        if len(blocks) <= keep_blocks:
+            return messages
+        to_remove: set = set()
+        for block_start, tool_idxs in blocks[:-keep_blocks]:
+            to_remove.add(block_start)
+            to_remove.update(tool_idxs)
+        pruned = [m for k, m in enumerate(messages) if k not in to_remove]
+        logger.debug(f"Pruned {len(messages) - len(pruned)} old tool messages (kept last {keep_blocks} blocks)")
+        return pruned
+
+    async def _dispatch_tool(self, function_name: str, function_args: dict) -> dict:
+        """Execute a named tool and return its result dict."""
+        if function_name == "search_config_files":
+            try:
+                return await asyncio.wait_for(self.tools.search_config_files(**function_args), timeout=60.0)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Tool execution timed out after 60 seconds"}
+        elif function_name == "propose_config_changes":
+            if "changes" not in function_args or not isinstance(function_args["changes"], list):
+                error_msg = (
+                    "ERROR: propose_config_changes requires a 'changes' parameter with a list of file changes. "
+                    "Each change must have 'file_path' and 'new_content'. "
+                    "You MUST first read files with search_config_files, then provide all modified content. "
+                    f"Received args: {function_args}"
+                )
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+            return await self.tools.propose_config_changes(**function_args)
+        elif function_name == "list_dashboards":
+            return await self.tools.list_dashboards()
+        elif function_name == "create_dashboard":
+            return await self.tools.create_dashboard(**function_args)
+        elif function_name == "delete_dashboard":
+            return await self.tools.delete_dashboard(**function_args)
+        elif function_name == "get_nodered_flows":
+            try:
+                return await asyncio.wait_for(self.tools.get_nodered_flows(), timeout=60.0)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Tool execution timed out after 60 seconds"}
+        elif function_name == "get_entity_states":
+            try:
+                return await asyncio.wait_for(self.tools.get_entity_states(**function_args), timeout=60.0)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Tool execution timed out after 60 seconds"}
+        elif function_name == "read_memories":
+            return await self.tools.read_memories(**function_args)
+        elif function_name == "save_memory":
+            return await self.tools.save_memory(**function_args)
+        elif function_name == "delete_memory":
+            return await self.tools.delete_memory(**function_args)
+        elif function_name == "list_memory_stats":
+            return await self.tools.list_memory_stats()
+        else:
+            logger.error(f"Unknown tool requested: {function_name}")
+            return {"success": False, "error": f"Unknown tool: {function_name}"}
 
     async def chat_stream(
         self,
@@ -426,6 +520,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                                     },
                                     "required": ["file_path", "new_content"]
                                 }
+                            },
+                            "confirm_delete": {
+                                "type": "boolean",
+                                "description": "Set to true only when the user explicitly wants to delete automations/scripts/scenes. Bypasses the deletion safety guard. Default false."
                             },
                         },
                         "required": ["changes"]
@@ -627,9 +725,16 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             total_output_tokens = 0
             total_cached_tokens = 0
 
+            # Initialize status queue for streaming tool progress events
+            self._tool_status_queue = asyncio.Queue()
+
             while iteration < max_iterations:
                 iteration += 1
                 logger.info(f"[ITERATION {iteration}] Calling OpenAI streaming API")
+
+                # Prune old tool exchange blocks after the first round to keep context lean
+                if iteration > 1:
+                    messages = self._prune_old_tool_messages(messages)
 
                 # Select client+model: config once tool results exist, suggestion before that.
                 has_tool_results = any(m.get("role") == "tool" for m in messages)
@@ -861,62 +966,20 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         })
                     }
 
-                    # Execute the tool function
-                    if function_name == "search_config_files":
-                        try:
-                            result = await asyncio.wait_for(self.tools.search_config_files(**function_args), timeout=60.0)
-                        except asyncio.TimeoutError:
-                            result = {"success": False, "error": "Tool execution timed out after 60 seconds"}
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, file_count={result.get('count')}")
-                    elif function_name == "propose_config_changes":
-                        if "changes" not in function_args or not isinstance(function_args["changes"], list):
-                            error_msg = (
-                                "ERROR: propose_config_changes requires a 'changes' parameter with a list of file changes. "
-                                "Each change must have 'file_path' and 'new_content'. "
-                                "You MUST first read files with search_config_files, then provide all modified content. "
-                                f"Received args: {function_args}"
-                            )
-                            logger.error(error_msg)
-                            result = {"success": False, "error": error_msg}
-                        else:
-                            result = await self.tools.propose_config_changes(**function_args)
-                            logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, changeset_id={result.get('changeset_id')}")
-                    elif function_name == "list_dashboards":
-                        result = await self.tools.list_dashboards()
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
-                    elif function_name == "create_dashboard":
-                        result = await self.tools.create_dashboard(**function_args)
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, url_path={result.get('url_path')}")
-                    elif function_name == "delete_dashboard":
-                        result = await self.tools.delete_dashboard(**function_args)
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}")
-                    elif function_name == "get_nodered_flows":
-                        try:
-                            result = await asyncio.wait_for(self.tools.get_nodered_flows(), timeout=60.0)
-                        except asyncio.TimeoutError:
-                            result = {"success": False, "error": "Tool execution timed out after 60 seconds"}
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
-                    elif function_name == "get_entity_states":
-                        try:
-                            result = await asyncio.wait_for(self.tools.get_entity_states(**function_args), timeout=60.0)
-                        except asyncio.TimeoutError:
-                            result = {"success": False, "error": "Tool execution timed out after 60 seconds"}
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
-                    elif function_name == "read_memories":
-                        result = await self.tools.read_memories(**function_args)
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, count={result.get('count')}")
-                    elif function_name == "save_memory":
-                        result = await self.tools.save_memory(**function_args)
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}, filename={result.get('filename')}")
-                    elif function_name == "delete_memory":
-                        result = await self.tools.delete_memory(**function_args)
-                        logger.info(f"[ITERATION {iteration}] Tool result: success={result.get('success')}")
-                    elif function_name == "list_memory_stats":
-                        result = await self.tools.list_memory_stats()
-                        logger.info(f"[ITERATION {iteration}] Tool result: total={result.get('total')}")
-                    else:
-                        result = {"success": False, "error": f"Unknown tool: {function_name}"}
-                        logger.error(f"[ITERATION {iteration}] Unknown tool requested: {function_name}")
+                    # Execute the tool via a task, yielding status events while waiting
+                    tool_task = asyncio.create_task(self._dispatch_tool(function_name, function_args))
+                    while not tool_task.done():
+                        while not self._tool_status_queue.empty():
+                            yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
+                        await asyncio.sleep(0.05)
+                    # Drain any remaining status events before announcing the result
+                    while not self._tool_status_queue.empty():
+                        yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
+                    try:
+                        result = tool_task.result()
+                    except Exception as e:
+                        result = {"success": False, "error": str(e)}
+                    logger.info(f"[ITERATION {iteration}] Tool '{function_name}' done: success={result.get('success')}")
 
                     # Add tool result to messages with cache control on the last tool result
                     is_last_tool = (tool_idx == len(accumulated_tool_calls) - 1)
@@ -985,7 +1048,6 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             }
 
             # Fire-and-forget memory consolidation — runs after response is delivered
-            import asyncio
             asyncio.ensure_future(self._run_memory_consolidation(messages + new_messages))
 
         except Exception as e:
@@ -1483,7 +1545,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
             if 'entity_states' in active_types:
                 entity_states_result = await self.tools.get_entity_states()
-                entity_states_text = json.dumps(entity_states_result.get("states", []), indent=2)
+                entity_states_text = self._format_entity_states_compact(entity_states_result.get("states", []))
                 context_sections.append(f"## Current entity states\n{entity_states_text}")
 
             if 'automations' in active_types:

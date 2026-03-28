@@ -214,6 +214,12 @@ function handleWebSocketMessage(message) {
             // Show individual tool execution start
             addSystemMessage(`▶️ Executing: ${data.function}...`);
 
+        } else if (eventType === 'tool_status') {
+            // Streaming progress update from within a running tool
+            if (typeof updateLoadingStatus === 'function') {
+                updateLoadingStatus(data.message);
+            }
+
         } else if (eventType === 'tool_result') {
             console.log('Tool result received:', data.function, 'success:', data.result?.success);
 

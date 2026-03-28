@@ -57,6 +57,12 @@ class AgentTools:
         self._lovelace_lock = asyncio.Lock()
         logger.info("AgentTools initialized")
 
+    def _push_status(self, message: str) -> None:
+        """Push a progress event to the agent's streaming queue (no-op if not streaming)."""
+        q = getattr(self.agent_system, '_tool_status_queue', None)
+        if q is not None:
+            q.put_nowait({"message": message})
+
     async def _get_lovelace_config(self, url_path: Optional[str] = None) -> Optional[str]:
         """
         Internal helper to retrieve Lovelace config for one dashboard.
@@ -407,8 +413,12 @@ class AgentTools:
 
             # Read files and optionally filter by content search
             files = []
+            total_yaml = len(matched_paths)
+            if total_yaml > 0:
+                self._push_status(f"Scanning {total_yaml} YAML files…")
             for path in matched_paths:
                 relative_path = str(path.relative_to(config_dir))
+                self._push_status(f"Reading {relative_path}")
                 try:
                     content = await self.config_manager.read_file_raw(relative_path)
 
@@ -458,6 +468,7 @@ class AgentTools:
             # Handle individual device files
             if search_pattern:
                 try:
+                    self._push_status("Checking device registry…")
                     devices = await self._get_all_devices()
                     device_count = 0
                     for device in devices:
@@ -485,6 +496,7 @@ class AgentTools:
             # Handle individual entity files
             if search_pattern:
                 try:
+                    self._push_status("Checking entity registry…")
                     entities = await self._get_all_entities()
                     entity_count = 0
                     for entity in entities:
@@ -512,6 +524,7 @@ class AgentTools:
             # Handle individual area files
             if search_pattern:
                 try:
+                    self._push_status("Checking area registry…")
                     areas = await self._get_all_areas()
                     area_count = 0
                     for area in areas:
@@ -538,6 +551,7 @@ class AgentTools:
 
             # Handle Lovelace dashboards (default + all custom)
             try:
+                self._push_status("Reading dashboards…")
                 all_dashboards = await self._get_all_dashboards()
                 # Always include the default dashboard
                 default_paths = {None, 'lovelace'}
@@ -587,7 +601,8 @@ class AgentTools:
 
     async def propose_config_changes(
         self,
-        changes: List[Dict[str, str]]
+        changes: List[Dict[str, str]],
+        confirm_delete: bool = False,
     ) -> Dict[str, Any]:
         """
         Propose changes to one or more configuration files using new content.
@@ -735,7 +750,7 @@ class AgentTools:
                         any(file_path.endswith(g) for g in _GUARDED_FILES) or
                         any(f'/{d}/' in f'/{file_path}' for d in _GUARDED_DIRS)
                     )
-                    if _is_guarded and current_content and current_content.strip():
+                    if _is_guarded and not confirm_delete and current_content and current_content.strip():
                         try:
                             _ry = YAML()
                             _current_list = _ry.load(StringIO(current_content))
