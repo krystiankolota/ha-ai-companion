@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.6] - 2026-03-28
+
+### Improved
+- **Relevance-based memory injection** — memory files are now scored and ranked before being injected into each prompt instead of always dumping the N most-recent files:
+  - **Category priority**: `identity_` and `preference_` files always included (home layout and user prefs are almost always relevant); `correction_` files close behind
+  - **Keyword matching**: words from the user's message are extracted and matched against memory filenames and content; files with matching keywords score significantly higher
+  - **Recency boost**: recently modified files get a small bonus over older ones
+  - **Relevance threshold**: files that score below a minimum threshold are skipped when a query is present (typically saves 20–60% of injected memory tokens on focused queries)
+  - **Suggestions tab**: memory is now filtered by the focus prompt if one is set; without a focus prompt all memory is included as before
+  - Configurable staleness cutoff via `MEMORY_MAX_AGE_DAYS` env var (default: 180 days); stale files are skipped from injection but kept on disk
+
 ## [1.1.5] - 2026-03-28
 
 ### Improved

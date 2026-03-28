@@ -13,14 +13,56 @@ Design goals:
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Filename sanitisation: allow only safe chars
 _SAFE_FILENAME = re.compile(r'[^a-zA-Z0-9_\-]')
+
+# Generic English stop-words that carry no topic signal for HA queries
+_STOP_WORDS: FrozenSet[str] = frozenset({
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+    "her", "was", "one", "our", "out", "his", "how", "did", "has", "got",
+    "him", "its", "let", "put", "say", "she", "too", "use", "will", "with",
+    "that", "this", "they", "from", "have", "been", "also", "when", "what",
+    "make", "like", "time", "just", "know", "into", "your", "good", "some",
+    "than", "them", "want", "look", "more", "well", "please", "could",
+    "would", "should", "about", "there", "here", "their", "then", "been",
+    "were", "very", "only", "over", "such", "need", "which", "each", "both",
+    "does", "done", "much", "many", "other", "while", "same",
+})
+
+# Category priority scores — controls which files are always included
+_CATEGORY_PRIORITY: Dict[str, float] = {
+    "identity_":    8.0,   # Home layout/rooms — always relevant
+    "preference_":  7.0,   # User preferences — almost always relevant
+    "correction_":  6.0,   # Corrections to facts — should always override stale info
+    "ecosystem_":   3.0,   # Device relationships / integration facts
+    "device_":      2.5,   # Device nicknames / roles
+    "user_":        2.0,   # User patterns
+    "pattern_":     1.5,   # Recurring schedules
+    "baseline_":    1.0,   # Sensor ranges
+}
+
+# Score threshold: files below this are excluded when a non-empty query is given.
+# Files with a category priority that already meets the threshold are always kept.
+_RELEVANCE_THRESHOLD = 2.5
+
+
+def _extract_keywords(text: str) -> FrozenSet[str]:
+    """
+    Extract meaningful words from text for relevance scoring.
+    Returns lowercase words of 3–30 chars, minus stop-words.
+    """
+    words = re.split(r'\W+', text.lower())
+    return frozenset(
+        w for w in words
+        if 3 <= len(w) <= 30 and w not in _STOP_WORDS
+    )
 
 
 def _sanitise(filename: str) -> str:
@@ -53,8 +95,8 @@ class MemoryManager:
     """
 
     MAX_CONTEXT_CHARS = 6000   # ~1500 tokens — keep memory injection lean
-    MAX_FILES = 25          # Hard cap on total memory files
-    MAX_FILE_CHARS = 800    # Max content chars per file (excluding metadata header)
+    MAX_FILES = 25             # Hard cap on total memory files
+    MAX_FILE_CHARS = 800       # Max content chars per file (excluding metadata header)
 
     def __init__(self, memory_dir: str):
         self.memory_dir = Path(memory_dir)
@@ -152,58 +194,146 @@ class MemoryManager:
     # Files older than this many days are skipped from context injection (still exist on disk)
     MAX_CONTEXT_AGE_DAYS = int(os.environ.get("MEMORY_MAX_AGE_DAYS", "180"))
 
-    async def get_context(self) -> str:
+    @staticmethod
+    def _score_file(
+        filename: str,
+        content: str,
+        keywords: FrozenSet[str],
+        age_days: float,
+    ) -> float:
         """
-        Return memory files sorted by most-recently-updated first, up to
-        MAX_CONTEXT_CHARS (~1500 tokens).  Newer memories take priority.
-        Files older than MAX_CONTEXT_AGE_DAYS are skipped.
+        Score a memory file for relevance to a query.
+
+        Scoring factors:
+        - Category priority: identity/preference files always get a high base score
+        - Keyword match: words from the query appearing in filename or content
+        - Recency: recently modified files get a small bonus
+
+        Higher score = inject first.
         """
-        from datetime import timezone as _tz
-        now = datetime.now(_tz.utc)
+        score = 0.0
+        stem = filename.lower()
+
+        # Category-based base score
+        for prefix, priority in _CATEGORY_PRIORITY.items():
+            if stem.startswith(prefix):
+                score += priority
+                break  # only first matching prefix counts
+
+        # Keyword relevance — keywords extracted from the user's query
+        if keywords:
+            # Extract searchable text from filename (e.g. "device_pump.md" → "device pump")
+            fname_words = set(re.split(r'[_.\-]+', stem.replace(".md", "")))
+            content_lower = content.lower()
+            for kw in keywords:
+                if kw in fname_words:
+                    score += 4.0   # Strong signal: keyword matches the file's topic slug
+                elif kw in content_lower:
+                    score += 1.5   # Weaker: keyword appears somewhere in content
+
+        # Recency bonus (decays over 60 days)
+        if age_days <= 7:
+            score += 2.0
+        elif age_days <= 30:
+            score += 1.0
+        elif age_days <= 60:
+            score += 0.5
+
+        return score
+
+    async def get_context(self, query: str = "") -> str:
+        """
+        Return relevant memory files for the given query, up to MAX_CONTEXT_CHARS.
+
+        When *query* is provided the files are scored by relevance (keyword
+        match + category priority + recency).  Files that score below
+        _RELEVANCE_THRESHOLD are excluded unless they have high category
+        priority (identity_, preference_, correction_).
+
+        When *query* is empty all non-stale files are returned ordered by
+        recency (backward-compatible behaviour for consolidation pass).
+        """
+        now_ts = time.time()
+
+        # Collect all candidate paths with their metadata
         try:
-            paths = sorted(
-                (p for p in self.memory_dir.glob("*.md") if p.is_file()),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,  # newest first
-            )
-            # Filter out very stale files — they waste tokens on irrelevant old facts
-            paths = [
-                p for p in paths
-                if (now - datetime.fromtimestamp(p.stat().st_mtime, tz=_tz.utc)).days <= self.MAX_CONTEXT_AGE_DAYS
-            ]
-            files = [p.name for p in paths]
+            raw_paths = [p for p in self.memory_dir.glob("*.md") if p.is_file()]
         except Exception:
-            files = await self.list_files()
-        if not files:
+            raw_paths = []
+
+        if not raw_paths:
             return ""
 
-        sections: List[str] = []
-        total_chars = 0
+        keywords = _extract_keywords(query) if query else frozenset()
+        has_query = bool(keywords)
 
-        for fname in files:
-            raw = await self.read_file(fname)
-            if not raw:
+        # Build scored list: (score, path, stripped_content)
+        scored: List[Tuple[float, Path, str]] = []
+        for p in raw_paths:
+            try:
+                stat = p.stat()
+                age_days = (now_ts - stat.st_mtime) / 86400.0
+            except Exception:
+                age_days = 999.0
+
+            # Hard cap: skip very stale files regardless of query
+            if age_days > self.MAX_CONTEXT_AGE_DAYS:
                 continue
-            # Strip the HTML timestamp comment — it's noise in the AI's context
+
+            # Read content for scoring (needed even for non-query case for filtering)
+            raw = None
+            try:
+                raw = p.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            # Strip timestamp comment before scoring and injection
             content = re.sub(r"<!--.*?-->\n?", "", raw, flags=re.DOTALL).strip()
             if not content:
                 continue
-            section = f"### {fname}\n{content}"
+
+            score = self._score_file(p.name, content, keywords, age_days)
+
+            # When a query is present, skip low-relevance files
+            if has_query and score < _RELEVANCE_THRESHOLD:
+                logger.debug("Memory skip (score=%.1f): %s", score, p.name)
+                continue
+
+            scored.append((score, p, content))
+
+        if not scored:
+            return ""
+
+        # Sort: highest score first; tie-break by most recently modified
+        scored.sort(key=lambda t: (t[0], t[1].stat().st_mtime), reverse=True)
+
+        included_count = 0
+        sections: List[str] = []
+        total_chars = 0
+
+        for score, p, content in scored:
+            section = f"### {p.name}\n{content}"
             section_chars = len(section)
 
             if total_chars + section_chars > self.MAX_CONTEXT_CHARS:
-                # Try to fit a truncated version
-                remaining = self.MAX_CONTEXT_CHARS - total_chars - len(f"### {fname}\n") - 50
+                remaining = self.MAX_CONTEXT_CHARS - total_chars - len(f"### {p.name}\n") - 50
                 if remaining > 200:
-                    section = f"### {fname}\n{content[:remaining]}\n*(truncated)*"
+                    section = f"### {p.name}\n{content[:remaining]}\n*(truncated)*"
                     sections.append(section)
                 break
 
             sections.append(section)
             total_chars += section_chars
+            included_count += 1
 
         if not sections:
             return ""
+
+        if has_query:
+            logger.debug(
+                "Memory context: %d/%d files included (query keywords: %s)",
+                included_count, len(raw_paths), ", ".join(sorted(keywords)[:10])
+            )
 
         return (
             "## Agent Memory (persistent knowledge from previous sessions)\n\n"

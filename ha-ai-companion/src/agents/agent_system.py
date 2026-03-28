@@ -445,7 +445,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             system_content = self.system_prompt + f"\n\nCurrent date/time: {now_str}"
             if self.memory_manager:
                 try:
-                    memory_context = await self.memory_manager.get_context()
+                    memory_context = await self.memory_manager.get_context(query=user_message)
                     if memory_context:
                         system_content = system_content + "\n\n" + memory_context
                 except Exception as mem_err:
@@ -1300,7 +1300,8 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         try:
             import json
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-            memory_context = await self.memory_manager.get_context()
+            # Pass empty query so consolidation sees all non-stale memory files
+            memory_context = await self.memory_manager.get_context(query="")
             system_content = (
                 "You are a memory consolidation assistant for a Home Assistant AI companion.\n"
                 "Review the conversation and update persistent memory ONLY if clearly warranted.\n\n"
@@ -1638,9 +1639,11 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     context_sections.append(f"## Existing Node-RED flows\n{nodered_text}")
 
             # 2. Inject memory context so the suggester knows device relationships etc.
+            # Use the focus prompt (if any) as the relevance query; fall back to empty
+            # so all non-stale memory is included when no specific focus is given.
             if 'memory' in active_types and self.memory_manager:
                 try:
-                    memory_context = await self.memory_manager.get_context()
+                    memory_context = await self.memory_manager.get_context(query=extra_prompt or "")
                     if memory_context:
                         context_sections.append(f"## Home context from memory\n{memory_context}")
                 except Exception:
