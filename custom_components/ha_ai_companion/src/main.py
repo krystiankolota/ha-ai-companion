@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.2"
+version = "1.1.3"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
