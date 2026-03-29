@@ -2,6 +2,35 @@
  * Suggestions tab — load and generate AI automation suggestions.
  */
 
+const ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'dashboards', 'nodered', 'memory'];
+
+function getSelectedResourceTypes() {
+    const checkboxes = document.querySelectorAll('.resource-type-cb');
+    if (!checkboxes.length) return ALL_RESOURCE_TYPES;
+    const selected = [];
+    checkboxes.forEach(cb => { if (cb.checked) selected.push(cb.value); });
+    return selected.length ? selected : ALL_RESOURCE_TYPES;
+}
+
+function saveResourceTypes() {
+    try {
+        const selected = getSelectedResourceTypes();
+        localStorage.setItem('suggestionResourceTypes', JSON.stringify(selected));
+    } catch (_) {}
+}
+
+function loadResourceTypes() {
+    try {
+        const saved = localStorage.getItem('suggestionResourceTypes');
+        if (saved) {
+            const types = JSON.parse(saved);
+            document.querySelectorAll('.resource-type-cb').forEach(cb => {
+                cb.checked = types.includes(cb.value);
+            });
+        }
+    } catch (_) {}
+}
+
 const CATEGORY_ICONS = {
     lighting: '💡',
     climate: '🌡️',
@@ -22,6 +51,35 @@ function formatGeneratedAt(iso) {
 }
 
 let dismissedTitles = new Set();
+let appliedTitles = new Set();
+
+async function loadApplied() {
+    try {
+        const resp = await fetch('api/suggestions/applied');
+        if (resp.ok) {
+            const data = await resp.json();
+            appliedTitles = new Set(data.applied || []);
+        }
+    } catch (e) {
+        console.warn('Failed to load applied suggestions:', e);
+    }
+}
+
+async function markSuggestionApplied(title, card) {
+    try {
+        await fetch('api/suggestions/applied', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title })
+        });
+        appliedTitles.add(title);
+        card.style.transition = 'opacity 0.3s';
+        card.style.opacity = '0';
+        setTimeout(() => { card.remove(); }, 300);
+    } catch (e) {
+        console.warn('Failed to mark suggestion applied:', e);
+    }
+}
 
 async function loadDismissed() {
     try {
@@ -70,6 +128,76 @@ function renderDismissedSection() {
     });
 }
 
+async function loadSuggestionsHistory() {
+    try {
+        const resp = await fetch('api/suggestions/history');
+        if (resp.ok) {
+            const data = await resp.json();
+            renderHistorySection(data.history || []);
+        }
+    } catch (e) {
+        console.warn('Failed to load suggestions history:', e);
+    }
+}
+
+function renderHistorySection(history) {
+    const section = document.getElementById('historySection');
+    if (!section) return;
+    // Filter out the first entry (current, already shown) if same as what's displayed
+    // Show from index 1 onwards
+    const past = history.slice(1);
+    if (past.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+    section.style.display = 'block';
+    const countEl = document.getElementById('historyCount');
+    if (countEl) countEl.textContent = `(${past.length})`;
+
+    const listEl = document.getElementById('historyList');
+    if (!listEl) return;
+    listEl.innerHTML = past.map((entry, i) => {
+        const date = formatGeneratedAt(entry.generated_at);
+        const count = (entry.suggestions || []).length;
+        return `
+        <div class="history-entry">
+            <button class="btn-history-entry" data-index="${i}">
+                <span class="history-entry-date">${escapeHtml(date)}</span>
+                <span class="history-entry-count">${count} suggestion${count !== 1 ? 's' : ''}</span>
+                <span class="history-entry-chevron">▶</span>
+            </button>
+            <div class="history-entry-suggestions" id="history-suggestions-${i}" style="display:none;"></div>
+        </div>`;
+    }).join('');
+
+    listEl.querySelectorAll('.btn-history-entry').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = parseInt(btn.dataset.index);
+            const suggestionsEl = document.getElementById(`history-suggestions-${idx}`);
+            const chevron = btn.querySelector('.history-entry-chevron');
+            const isOpen = suggestionsEl.style.display !== 'none';
+            suggestionsEl.style.display = isOpen ? 'none' : 'block';
+            chevron.textContent = isOpen ? '▶' : '▼';
+            if (!isOpen && suggestionsEl.innerHTML === '') {
+                const entry = past[idx];
+                const subs = (entry.suggestions || []).filter(s => !dismissedTitles.has(s.title));
+                suggestionsEl.innerHTML = subs.length === 0
+                    ? '<p class="suggestions-empty" style="padding:8px">No suggestions</p>'
+                    : subs.map(s => {
+                        const icon = CATEGORY_ICONS[s.category] || CATEGORY_ICONS.other;
+                        return `<div class="suggestion-card suggestion-card--compact">
+                            <div class="suggestion-card-header">
+                                <span class="suggestion-icon">${icon}</span>
+                                <span class="suggestion-title">${escapeHtml(s.title)}</span>
+                            </div>
+                            <p class="suggestion-description">${escapeHtml(s.description)}</p>
+                        </div>`;
+                    }).join('');
+            }
+        });
+    });
+}
+
 async function clearAllDismissed() {
     try {
         await fetch('api/suggestions/dismissed', { method: 'DELETE' });
@@ -88,16 +216,16 @@ async function clearAllDismissed() {
 
 async function restoreDismissed(title) {
     try {
-        // Remove from server list by clearing and re-adding all except this one
         const remaining = [...dismissedTitles].filter(t => t !== title);
         await fetch('api/suggestions/dismissed', { method: 'DELETE' });
-        for (const t of remaining) {
-            await fetch('api/suggestions/dismiss', {
+        // Re-add remaining in parallel instead of serially
+        await Promise.all(remaining.map(t =>
+            fetch('api/suggestions/dismiss', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ title: t })
-            });
-        }
+            })
+        ));
         dismissedTitles = new Set(remaining);
         renderDismissedSection();
         await loadSuggestions();
@@ -126,11 +254,11 @@ function renderSuggestions(data) {
     const list = document.getElementById('suggestionsList');
     const status = document.getElementById('suggestionsStatus');
     const allSuggestions = data.suggestions || [];
-    const suggestions = allSuggestions.filter(s => !dismissedTitles.has(s.title));
+    const suggestions = allSuggestions.filter(s => !dismissedTitles.has(s.title) && !appliedTitles.has(s.title));
 
     if (data.generated_at) {
-        const dismissedCount = allSuggestions.length - suggestions.length;
-        const extra = dismissedCount > 0 ? ` (${dismissedCount} dismissed)` : '';
+        const hiddenCount = allSuggestions.length - suggestions.length;
+        const extra = hiddenCount > 0 ? ` (${hiddenCount} hidden)` : '';
         status.textContent = `Last generated: ${formatGeneratedAt(data.generated_at)}${extra}`;
         status.style.display = 'block';
     }
@@ -167,7 +295,10 @@ function renderSuggestions(data) {
             <p class="suggestion-description">${escapeHtml(s.description)}</p>
             ${entities ? `<div class="suggestion-entities">${entities}</div>` : ''}
             ${yamlBlock}
-            <button class="btn btn-secondary btn-add-to-chat" data-index="${i}">Add to chat</button>
+            <div class="suggestion-actions">
+                <button class="btn btn-secondary btn-add-to-chat" data-index="${i}">Add to chat</button>
+                <button class="btn btn-applied btn-mark-applied" data-index="${i}" title="Mark as implemented">✓ Applied</button>
+            </div>
         </div>`;
     }).join('');
 
@@ -184,6 +315,15 @@ function renderSuggestions(data) {
             const card = btn.closest('.suggestion-card');
             const title = card.dataset.title;
             dismissSuggestion(title, card);
+        });
+    });
+
+    list.querySelectorAll('.btn-mark-applied').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const s = suggestions[parseInt(btn.dataset.index)];
+            if (!s) return;
+            const card = btn.closest('.suggestion-card');
+            markSuggestionApplied(s.title, card);
         });
     });
 
@@ -249,7 +389,11 @@ async function generateSuggestions() {
     const list = document.getElementById('suggestionsList');
     const focusInput = document.getElementById('suggestionFocusInput');
 
-    const extraPrompt = focusInput ? focusInput.value.trim() : '';
+    let extraPrompt = focusInput ? focusInput.value.trim() : '';
+    if (extraPrompt.length > 500) {
+        extraPrompt = extraPrompt.substring(0, 500);
+        if (focusInput) focusInput.value = extraPrompt;
+    }
     // Persist textarea value in localStorage
     if (focusInput) {
         try { localStorage.setItem('suggestionFocusPrompt', focusInput.value); } catch (_) {}
@@ -262,7 +406,9 @@ async function generateSuggestions() {
     list.innerHTML = '';
 
     try {
-        const body = extraPrompt ? { extra_prompt: extraPrompt } : {};
+        const resourceTypes = getSelectedResourceTypes();
+        const body = { resource_types: resourceTypes };
+        if (extraPrompt) body.extra_prompt = extraPrompt;
         const resp = await fetch('api/suggestions/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -299,6 +445,7 @@ function initTabs() {
             // Load suggestions when switching to that tab
             if (target === 'suggestions') {
                 loadSuggestions();
+                loadSuggestionsHistory();
             }
         });
     });
@@ -310,7 +457,10 @@ function renderNamingIssues(issues) {
     const section = document.createElement('div');
     section.className = 'naming-issues-section';
     section.innerHTML = `
-        <h3 class="naming-issues-title">🏷️ Unclear entity names (${issues.length})</h3>
+        <div class="naming-issues-header">
+            <h3 class="naming-issues-title">🏷️ Unclear entity names (${issues.length})</h3>
+            <button class="btn btn-primary btn-fix-all-names">Fix all in chat</button>
+        </div>
         <p class="naming-issues-intro">These entity names may be confusing. Click "Fix in chat" to rename them.</p>
         ${issues.map(i => `
         <div class="naming-issue-card">
@@ -333,10 +483,20 @@ function renderNamingIssues(issues) {
             }
         });
     });
+
+    section.querySelector('.btn-fix-all-names').addEventListener('click', () => {
+        document.querySelector('.tab-btn[data-tab="chat"]').click();
+        const input = document.getElementById('messageInput');
+        if (input) {
+            const lines = issues.map(i => `- ${i.entity_id}: rename to "${i.suggested_name}"`).join('\n');
+            input.value = `Please rename all these entities to have clearer friendly names:\n${lines}`;
+            input.focus();
+        }
+    });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    await loadDismissed();
+    await Promise.all([loadDismissed(), loadApplied()]);
     initTabs();
 
     // Restore saved focus prompt from localStorage
@@ -351,6 +511,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // Load resource types from localStorage
+    loadResourceTypes();
+    document.querySelectorAll('.resource-type-cb').forEach(cb => {
+        cb.addEventListener('change', saveResourceTypes);
+    });
+
     const genBtn = document.getElementById('generateSuggestionsBtn');
     if (genBtn) genBtn.addEventListener('click', generateSuggestions);
 
@@ -362,6 +528,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             const open = listEl.style.display === 'none';
             listEl.style.display = open ? 'block' : 'none';
             label.textContent = open ? 'Hide dismissed' : 'Show dismissed';
+        });
+    }
+
+    // Load suggestions history
+    await loadSuggestionsHistory();
+
+    const historyToggle = document.getElementById('historyToggle');
+    if (historyToggle) {
+        historyToggle.addEventListener('click', () => {
+            const listEl = document.getElementById('historyList');
+            listEl.style.display = listEl.style.display === 'none' ? 'flex' : 'none';
         });
     }
 });

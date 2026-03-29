@@ -93,18 +93,18 @@
                             <div class="suggestions-toolbar">
                                 <p class="suggestions-intro">AI-generated automation ideas based on your devices and existing automations.</p>
                                 <textarea id="suggestionFocusInput" class="suggestion-focus-input" rows="2" placeholder="Optional: focus area (e.g. 'focus on bedroom lights and energy saving')"></textarea>
-                                <details class="resource-types-details" id="resourceTypesDetails">
-                                    <summary class="resource-types-summary">Context sources</summary>
+                                <div class="context-sources-row">
+                                    <span class="context-sources-label">Context:</span>
                                     <div class="resource-types-grid" id="resourceTypesGrid">
                                         <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="entity_states" checked> Entity states</label>
                                         <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="automations" checked> Automations</label>
                                         <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="scenes" checked> Scenes</label>
                                         <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="scripts" checked> Scripts</label>
                                         <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="dashboards" checked> Dashboards</label>
-                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="nodered" checked> Node-RED flows</label>
-                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="memory" checked> Memory context</label>
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="nodered" checked> Node-RED</label>
+                                        <label class="resource-type-label"><input type="checkbox" class="resource-type-cb" value="memory" checked> Memory</label>
                                     </div>
-                                </details>
+                                </div>
                                 <button id="generateSuggestionsBtn" class="btn btn-primary">Generate suggestions</button>
                             </div>
                             <div id="suggestionsStatus" class="suggestions-status" style="display:none;"></div>

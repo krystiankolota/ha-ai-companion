@@ -49,11 +49,11 @@ document.addEventListener('DOMContentLoaded', () => {
     sidebarBackdrop = document.getElementById('sidebarBackdrop');
 
     // Set up event listeners
-    sendBtn.addEventListener('click', sendMessage);
+    sendBtn.addEventListener('click', sendMessageWebSocket);
     messageInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            sendMessage();
+            sendMessageWebSocket();
         }
     });
 
@@ -69,6 +69,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Check health
     checkHealth();
+
+    // Reload sessions when tab/app comes back into focus (fixes mobile HA app reload issue)
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            loadSessions();
+        }
+    });
 
     // Save session before the user navigates away / refreshes
     window.addEventListener('beforeunload', () => {
@@ -104,249 +111,6 @@ async function checkHealth() {
     }
 }
 
-
-// Send message to agent using SSE
-async function sendMessage() {
-    const message = messageInput.value.trim();
-    if (!message) return;
-
-    console.log('Sending message:', message);
-
-    // Add user message to chat
-    addUserMessage(message);
-
-    // Add user message to conversation history
-    conversationHistory.push({
-        role: 'user',
-        content: message
-    });
-
-    // Clear input
-    messageInput.value = '';
-    messageInput.style.height = 'auto';
-
-    // Disable send button and show loading indicator
-    sendBtn.disabled = true;
-    let currentAssistantMessage = null;
-    let currentMessageContent = '';
-    let loadingIndicator = addLoadingIndicator();
-
-    try {
-        // Reset per-request tool call dedupe tracker
-        toolCallIterationsShown = new Set();
-        // Use fetch with streaming instead of EventSource for POST support
-        const response = await fetch('api/chat', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'text/event-stream'
-            },
-            body: JSON.stringify({
-                message: message,
-                conversation_history: conversationHistory.slice(0, -1) // Exclude the message we just added
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        // Parse SSE stream (robust SSE parser)
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        // SSE state
-        let eventName = null; // defaults to 'message' per spec
-        let dataLines = [];
-
-        const dispatchEvent = (name, dataStr) => {
-            if (!name) name = 'message';
-            if (!dataStr) dataStr = '';
-
-            // Defensive: remove spinner on first delivered event of any type
-            if (loadingIndicator && loadingIndicator.parentNode) {
-                removeLoadingIndicator(loadingIndicator);
-                loadingIndicator = null;
-            }
-
-            try {
-                const data = dataStr ? JSON.parse(dataStr) : {};
-
-                if (name === 'token') {
-                    // Accumulate content
-                    currentMessageContent += data.content || '';
-
-                    // Update or create assistant message element
-                    if (!currentAssistantMessage) {
-                        currentAssistantMessage = addAssistantMessageStreaming('');
-                    }
-                    updateAssistantMessageStreaming(currentAssistantMessage, currentMessageContent);
-
-                } else if (name === 'message_complete') {
-                    conversationHistory.push(data.message);
-                    if (currentAssistantMessage) {
-                        finalizeAssistantMessageStreaming(currentAssistantMessage);
-                        // Update floating token counter if available
-                        if (data.usage) {
-                            updateTokenCounter(
-                                data.usage.input_tokens || 0,
-                                data.usage.output_tokens || 0,
-                                data.usage.cached_tokens || 0
-                            );
-                        }
-                    }
-                    currentMessageContent = '';
-                    currentAssistantMessage = null;
-
-                } else if (name === 'tool_call') {
-                    // Dedupe tool_call announcements per iteration
-                    if (typeof data.iteration !== 'undefined') {
-                        if (toolCallIterationsShown.has(data.iteration)) {
-                            return; // skip duplicate
-                        }
-                        toolCallIterationsShown.add(data.iteration);
-                    }
-
-                    // Finalize current streaming message before tool execution UI
-                    if (currentAssistantMessage) {
-                        finalizeAssistantMessageStreaming(currentAssistantMessage);
-                        currentAssistantMessage = null;
-                    }
-
-                    // Add assistant message with tool calls to history
-                    conversationHistory.push({
-                        role: 'assistant',
-                        content: currentMessageContent,
-                        tool_calls: data.tool_calls
-                    });
-                    currentMessageContent = '';
-
-                    // Show tool execution indicator summary with expandable arguments
-                    addToolCallMessage(data.tool_calls);
-
-                } else if (name === 'tool_start') {
-                    addSystemMessage(`▶️ Executing: ${data.function}...`);
-
-                } else if (name === 'tool_result') {
-                    conversationHistory.push({
-                        role: 'tool',
-                        tool_call_id: data.tool_call_id,
-                        content: JSON.stringify(data.result)
-                    });
-                    addToolResultMessage(data.function, data.result);
-
-                    if (data.function === 'propose_config_changes' && data.result.success) {
-                        const changesetData = {
-                            changeset_id: data.result.changeset_id,
-                            total_files: data.result.total_files,
-                            files: data.result.files
-                        };
-                        const assistantMsg = conversationHistory
-                            .slice()
-                            .reverse()
-                            .find(m => m.role === 'assistant' && m.tool_calls);
-                        if (assistantMsg) {
-                            const toolCall = assistantMsg.tool_calls.find(tc => tc.id === data.tool_call_id);
-                            if (toolCall) {
-                                const args = JSON.parse(toolCall.function.arguments);
-                                changesetData.file_changes_detail = args.changes;
-                                changesetData.original_contents = extractOriginalContents(conversationHistory, args.changes);
-                            }
-                        }
-                        addApprovalCard(changesetData);
-                    }
-
-                } else if (name === 'complete') {
-                    console.log('Stream complete:', data);
-
-                    // Update floating token counter with final totals
-                    if (data.usage) {
-                        updateTokenCounter(
-                            data.usage.input_tokens || 0,
-                            data.usage.output_tokens || 0,
-                            data.usage.cached_tokens || 0
-                        );
-                    }
-
-                    // Auto-save conversation
-                    autoSaveSession();
-
-                } else if (name === 'error') {
-                    addSystemMessage(`❌ Error: ${data.error}`);
-                }
-            } catch (e) {
-                console.error('Error parsing SSE event:', name, dataStr, e);
-            }
-        };
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            // As soon as any bytes arrive, remove the spinner (defensive)
-            if (value && value.byteLength && loadingIndicator && loadingIndicator.parentNode) {
-                removeLoadingIndicator(loadingIndicator);
-                loadingIndicator = null;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (let raw of lines) {
-                // Normalize line endings and trim trailing CR
-                const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-
-                if (line === '') {
-                    // Blank line indicates dispatch
-                    const dataStr = dataLines.length ? dataLines.join('\n') : '';
-                    dispatchEvent(eventName, dataStr);
-                    // Reset state
-                    eventName = null;
-                    dataLines = [];
-                    continue;
-                }
-
-                if (line.startsWith(':')) {
-                    // Comment/heartbeat, ignore
-                    continue;
-                }
-
-                if (line.startsWith('event:')) {
-                    eventName = line.substring(6).trim();
-                    continue;
-                }
-
-                if (line.startsWith('data:')) {
-                    dataLines.push(line.substring(5).trimStart());
-                    continue;
-                }
-                // Ignore other fields (id, retry) for now
-            }
-        }
-
-        // Flush any remaining event if buffer ended without trailing blank line
-        if (dataLines.length) {
-            const dataStr = dataLines.join('\n');
-            dispatchEvent(eventName, dataStr);
-        }
-
-        // Final cleanup
-        if (loadingIndicator && loadingIndicator.parentNode) {
-            removeLoadingIndicator(loadingIndicator);
-        }
-        sendBtn.disabled = false;
-        messageInput.focus();
-
-    } catch (error) {
-        console.error('Send message error:', error);
-        removeLoadingIndicator(loadingIndicator);
-        addSystemMessage(`❌ Error: ${error.message}`);
-        sendBtn.disabled = false;
-        messageInput.focus();
-    }
-}
 
 // Process messages and display them
 function processMessages(messages) {
@@ -445,7 +209,7 @@ function addAssistantMessage(content) {
 
     // Use marked.js to parse markdown
     if (typeof marked !== 'undefined') {
-        messageDiv.innerHTML = marked.parse(content);
+        messageDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
     } else {
         messageDiv.textContent = content;
     }
@@ -478,7 +242,7 @@ function finalizeAssistantMessageStreaming(messageDiv) {
 
     // Apply markdown rendering
     if (typeof marked !== 'undefined') {
-        messageDiv.innerHTML = marked.parse(content);
+        messageDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
     }
     scrollToBottom();
 }
@@ -1026,6 +790,14 @@ async function handleApproval(changesetId, approved) {
                 }
 
                 addSystemMessage(message);
+
+                // Record applied change in conversation history so it shows on session replay
+                const fileList = (data.applied_files || []).join(', ') || 'unknown files';
+                conversationHistory.push({
+                    role: 'system_info',
+                    content: `✅ Config changes applied to: ${fileList}`
+                });
+
                 return true;
             } else {
                 addSystemMessage(`⚠️ ${data.message || 'Changes not applied'}`);
@@ -1107,13 +879,18 @@ function closeSidebar() {
     document.body.style.overflow = '';
 }
 
-async function loadSessions() {
+async function loadSessions(retryOnEmpty = true) {
     if (!sessionsList) return;
     try {
         const response = await fetch('api/sessions');
         if (!response.ok) return;
         const data = await response.json();
-        renderSessionsList(data.sessions || data);
+        const sessions = data.sessions || data;
+        renderSessionsList(sessions);
+        // If empty on first load, retry once after 2s (server may still be initializing)
+        if (retryOnEmpty && (!sessions || sessions.length === 0)) {
+            setTimeout(() => loadSessions(false), 2000);
+        }
     } catch (e) {
         console.error('Failed to load sessions:', e);
     }
@@ -1173,6 +950,8 @@ window.switchSession = async function(sessionId) {
             } else if (msg.role === 'assistant') {
                 if (msg.content) addAssistantMessage(msg.content);
                 if (msg.tool_calls) addToolCallMessage(msg.tool_calls);
+            } else if (msg.role === 'system_info') {
+                addSystemMessage(msg.content);
             }
         }
 

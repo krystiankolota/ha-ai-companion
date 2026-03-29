@@ -5,6 +5,21 @@ let currentAssistantMessage = null;
 let currentMessageContent = '';
 let loadingIndicator = null;
 let toolCallArguments = {}; // Store arguments from tool_start events, keyed by tool_call_id
+let _reconnectAttempts = 0;
+let _reconnectTimer = null;
+
+function scheduleReconnect() {
+    if (_reconnectTimer) return; // already scheduled
+    const delay = Math.min(1000 * Math.pow(2, _reconnectAttempts), 30000);
+    _reconnectAttempts++;
+    _reconnectTimer = setTimeout(() => {
+        _reconnectTimer = null;
+        if (!ws || ws.readyState === WebSocket.CLOSED) {
+            console.log(`Reconnecting (attempt ${_reconnectAttempts})…`);
+            connectWebSocket();
+        }
+    }, delay);
+}
 
 function connectWebSocket() {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -64,6 +79,11 @@ async function sendMessageWebSocket() {
         role: 'user',
         content: message
     });
+
+    // Cap client-side history to prevent memory growth on mobile
+    if (conversationHistory.length > 200) {
+        conversationHistory = conversationHistory.slice(-200);
+    }
 
     // Clear input
     messageInput.value = '';
@@ -193,6 +213,12 @@ function handleWebSocketMessage(message) {
 
             // Show individual tool execution start
             addSystemMessage(`▶️ Executing: ${data.function}...`);
+
+        } else if (eventType === 'tool_status') {
+            // Streaming progress update from within a running tool
+            if (typeof updateLoadingStatus === 'function') {
+                updateLoadingStatus(data.message);
+            }
 
         } else if (eventType === 'tool_result') {
             console.log('Tool result received:', data.function, 'success:', data.result?.success);
