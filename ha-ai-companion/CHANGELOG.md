@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.7] - 2026-03-29
+
+### Fixed
+- **Config changes being silently rejected** — `_prune_old_tool_messages` was removing file-read tool results after just 2 tool blocks, causing the AI to propose config changes without the current file content in context; deletion guard then blocked proposals that appeared to remove >20% of items. Fix: pruning now only starts when a conversation exceeds 30 messages AND keeps the last 6 tool blocks (up from 2), so normal multi-step operations (read 3 files → propose changes) are never affected
+
+### Reverted
+- **Relevance-based memory injection (1.1.6)** — rolled back while investigating interaction with the above bug; recency-only injection (from 1.1.5) restored
+
 ## [1.1.6] - 2026-03-28
 
 ### Improved

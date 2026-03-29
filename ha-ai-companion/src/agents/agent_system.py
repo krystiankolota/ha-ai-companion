@@ -329,8 +329,13 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         )
 
     @staticmethod
-    def _prune_old_tool_messages(messages: list, keep_blocks: int = 2) -> list:
-        """Remove oldest tool call+result blocks beyond keep_blocks to keep context lean."""
+    def _prune_old_tool_messages(messages: list, keep_blocks: int = 6) -> list:
+        """Remove oldest tool call+result blocks beyond keep_blocks to keep context lean.
+
+        keep_blocks=6 allows up to 6 read/write iterations before pruning starts.
+        Pruning only applies when there are already more blocks than keep_blocks —
+        short single-turn operations (3–4 tool calls) are never affected.
+        """
         blocks = []  # [(assistant_idx, [tool_indices...])]
         i = 0
         while i < len(messages):
@@ -445,7 +450,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             system_content = self.system_prompt + f"\n\nCurrent date/time: {now_str}"
             if self.memory_manager:
                 try:
-                    memory_context = await self.memory_manager.get_context(query=user_message)
+                    memory_context = await self.memory_manager.get_context()
                     if memory_context:
                         system_content = system_content + "\n\n" + memory_context
                 except Exception as mem_err:
@@ -735,8 +740,9 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 iteration += 1
                 logger.info(f"[ITERATION {iteration}] Calling OpenAI streaming API")
 
-                # Prune old tool exchange blocks after the first round to keep context lean
-                if iteration > 1:
+                # Prune old tool exchange blocks only in long conversations to keep context lean.
+                # Don't prune in short single-turn operations — AI needs file content it just read.
+                if iteration > 1 and len(messages) > 30:
                     messages = self._prune_old_tool_messages(messages)
 
                 # Select client+model: config once tool results exist, suggestion before that.
@@ -1300,8 +1306,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         try:
             import json
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-            # Pass empty query so consolidation sees all non-stale memory files
-            memory_context = await self.memory_manager.get_context(query="")
+            memory_context = await self.memory_manager.get_context()
             system_content = (
                 "You are a memory consolidation assistant for a Home Assistant AI companion.\n"
                 "Review the conversation and update persistent memory ONLY if clearly warranted.\n\n"
@@ -1643,7 +1648,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             # so all non-stale memory is included when no specific focus is given.
             if 'memory' in active_types and self.memory_manager:
                 try:
-                    memory_context = await self.memory_manager.get_context(query=extra_prompt or "")
+                    memory_context = await self.memory_manager.get_context()
                     if memory_context:
                         context_sections.append(f"## Home context from memory\n{memory_context}")
                 except Exception:
