@@ -928,8 +928,22 @@ function formatSessionDate(iso) {
     } catch (e) { return ''; }
 }
 
+function _findToolName(messages, toolCallId) {
+    for (const m of messages) {
+        if (m.role === 'assistant' && m.tool_calls) {
+            const tc = m.tool_calls.find(t => t.id === toolCallId);
+            if (tc) return tc.function.name;
+        }
+    }
+    return 'tool';
+}
+
 window.switchSession = async function(sessionId) {
     if (sessionId === currentSessionId) return;
+
+    // Abort any in-flight WebSocket request so the old response doesn't land in the new session
+    if (typeof window.resetWebSocket === 'function') window.resetWebSocket();
+
     try {
         const response = await fetch(`api/sessions/${sessionId}`);
         if (!response.ok) { addSystemMessage('❌ Failed to load conversation.'); return; }
@@ -942,7 +956,10 @@ window.switchSession = async function(sessionId) {
         cumulativeInputTokens = 0;
         cumulativeOutputTokens = 0;
         cumulativeCachedTokens = 0;
+        cumulativeCostUsd = 0;
         if (tokenCounter) tokenCounter.style.display = 'none';
+        const costEl = document.getElementById('sessionCost');
+        if (costEl) costEl.style.display = 'none';
 
         for (const msg of conversationHistory) {
             if (msg.role === 'user') {
@@ -950,6 +967,17 @@ window.switchSession = async function(sessionId) {
             } else if (msg.role === 'assistant') {
                 if (msg.content) addAssistantMessage(msg.content);
                 if (msg.tool_calls) addToolCallMessage(msg.tool_calls);
+            } else if (msg.role === 'tool') {
+                const toolName = _findToolName(conversationHistory, msg.tool_call_id);
+                try {
+                    const result = JSON.parse(msg.content);
+                    addToolResultMessage(toolName, result);
+                    if (toolName === 'propose_config_changes' && result.success) {
+                        addSystemMessage(`📝 Config change proposed (${result.total_files} file(s)) — changeset expired`);
+                    }
+                } catch (e) {
+                    // Malformed tool result — skip rendering
+                }
             } else if (msg.role === 'system_info') {
                 addSystemMessage(msg.content);
             }

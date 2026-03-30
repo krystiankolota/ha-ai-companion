@@ -114,11 +114,11 @@ async function sendMessageWebSocket() {
             handleWebSocketMessage(message);
         };
 
-        // Send the chat request
+        // Send the chat request — filter system_info (display-only) so it's never forwarded to the LLM API
         ws.send(JSON.stringify({
             type: 'chat',
             message: message,
-            conversation_history: conversationHistory.slice(0, -1)
+            conversation_history: conversationHistory.slice(0, -1).filter(m => m.role !== 'system_info')
         }));
 
     } catch (error) {
@@ -254,6 +254,14 @@ function handleWebSocketMessage(message) {
                 addApprovalCard(changesetData);
             }
 
+            // Re-add loading indicator so there's visual feedback while the AI processes tool results
+            if (sendBtn && sendBtn.disabled && (!loadingIndicator || !loadingIndicator.parentNode)) {
+                loadingIndicator = addLoadingIndicator();
+                if (typeof updateLoadingStatus === 'function') {
+                    updateLoadingStatus('AI is thinking…');
+                }
+            }
+
             // Incrementally save after each tool result so progress survives a refresh
             if (typeof window.autoSaveSession === 'function') {
                 window.autoSaveSession();
@@ -308,5 +316,29 @@ function handleWebSocketMessage(message) {
     }
 }
 
+// Abort any in-flight WebSocket request and reset UI state.
+// Called when switching sessions so the old response doesn't bleed into the new session.
+function resetWebSocket() {
+    if (ws) {
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        try { ws.close(); } catch (e) {}
+        ws = null;
+    }
+    if (loadingIndicator && loadingIndicator.parentNode) {
+        removeLoadingIndicator(loadingIndicator);
+        loadingIndicator = null;
+    }
+    if (sendBtn && sendBtn.disabled) {
+        sendBtn.disabled = false;
+        if (messageInput) messageInput.focus();
+    }
+    currentAssistantMessage = null;
+    currentMessageContent = '';
+    toolCallArguments = {};
+}
+
 // Export for use in main app
 window.sendMessageWebSocket = sendMessageWebSocket;
+window.resetWebSocket = resetWebSocket;

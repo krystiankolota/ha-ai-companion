@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.10] - 2026-03-29
+
+### Fixed
+- **Session history missing tool results** — `switchSession` now renders `tool` role messages as expandable result cards; expired `propose_config_changes` changesets shown with a notice instead of an interactive approval card
+- **Cross-session response contamination** — switching sessions while a response is in-flight now calls `resetWebSocket()` to abort the old connection; the old response can no longer land in the new session
+- **API error when sending to historical session** — `system_info` role messages (display-only) are now filtered from the conversation history before it is sent to the backend, preventing unknown-role errors from the LLM API
+- **Loading indicator gap** — after a tool result and before the next AI iteration there is now a persistent loading indicator; previously the UI went silent for several seconds between the last tool result and the approval card appearing
+- **Mobile overflow** — assistant message bubbles, code blocks, context-source chip row, and naming-issue cards no longer extend beyond the viewport width on narrow screens
+
 ## [1.1.9] - 2026-03-30
 
 ### Fixed
