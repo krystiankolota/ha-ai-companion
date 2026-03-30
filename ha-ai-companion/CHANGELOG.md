@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.14] - 2026-03-30
+
+### Fixed
+- **No loading indicator between text response and tool execution** — after `message_complete` (the LLM finishes streaming its planning text) there was a silent gap before the next `tool_call` event while the backend prepares the config change. A "Preparing…" loading indicator is now shown immediately after `message_complete` if the send button is still disabled, closing the gap.
+
 ## [1.1.13] - 2026-03-30
 
 ### Fixed

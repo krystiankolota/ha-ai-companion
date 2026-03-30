@@ -173,6 +173,15 @@ function handleWebSocketMessage(message) {
                 );
             }
 
+            // If send button is still disabled the agent loop is continuing (tool calls coming next).
+            // Re-add a loading indicator so there's no silent gap between text and tool execution.
+            if (sendBtn && sendBtn.disabled && (!loadingIndicator || !loadingIndicator.parentNode)) {
+                loadingIndicator = addLoadingIndicator();
+                if (typeof updateLoadingStatus === 'function') {
+                    updateLoadingStatus('Preparing…');
+                }
+            }
+
         } else if (eventType === 'tool_call') {
             // Finalize current message if any
             if (currentAssistantMessage) {
