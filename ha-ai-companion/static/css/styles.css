@@ -457,7 +457,6 @@ footer {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
-  overflow-x: hidden;
   overflow-y: auto;
   padding: 14px 12px;
   scroll-behavior: smooth;
@@ -493,7 +492,6 @@ footer {
   border: 1px solid var(--border);
   border-bottom-left-radius: 3px;
   max-width: 96%;
-  overflow-x: hidden;
   overflow-wrap: break-word;
   word-break: break-word;
 }
@@ -516,6 +514,7 @@ footer {
   background: rgba(0, 0, 0, 0.35);
   border-radius: 6px;
   margin: 8px 0;
+  max-width: 100%;
   overflow-x: auto;
   padding: 10px 12px;
 }

@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.13] - 2026-03-30
+
+### Fixed
+- **LLM responses collapsed to one line** — `overflow-x: hidden` on `.assistant-message` implicitly forced `overflow-y` from `visible` to `auto` (per CSS spec), causing the bubble to behave as a scrollable box with only one line visible. Removed `overflow-x: hidden` from both `.assistant-message` and `.chat-messages`; horizontal overflow on code blocks is handled correctly by the existing `pre { overflow-x: auto; max-width: 100% }` rules and `word-break: break-word`.
+
 ## [1.1.12] - 2026-03-30
 
 ### Fixed
