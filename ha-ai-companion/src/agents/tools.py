@@ -117,6 +117,8 @@ class AgentTools:
 
                     yaml = YAML()
                     yaml.default_flow_style = False
+                    yaml.preserve_quotes = True
+                    yaml.indent(mapping=2, sequence=2, offset=2)
                     from io import StringIO
                     stream = StringIO()
                     yaml.dump(config, stream)

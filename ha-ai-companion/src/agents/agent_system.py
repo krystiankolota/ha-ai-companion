@@ -1530,6 +1530,14 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     )
                     applied_files.append(file_path)
                     logger.info(f"Applied changes to {file_path}")
+
+                    # Invalidate lovelace cache so the next read gets fresh content
+                    if file_path == "lovelace.yaml":
+                        self.tools._lovelace_cache.pop(None, None)
+                    elif file_path.startswith("lovelace/") and file_path.endswith(".yaml"):
+                        _lv_url = file_path[len("lovelace/"):-len(".yaml")] or None
+                        self.tools._lovelace_cache.pop(_lv_url, None)
+
                 except Exception as e:
                     logger.error(f"Failed to apply changes to {file_path}: {e}")
                     failed_files.append({"file_path": file_path, "error": str(e)})

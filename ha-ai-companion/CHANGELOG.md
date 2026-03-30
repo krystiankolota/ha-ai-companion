@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.11] - 2026-03-30
+
+### Fixed
+- **Dashboard editing: stale content after approved edit** — `_lovelace_cache` in `AgentTools` was never cleared after a dashboard write; if the AI read a dashboard, the user approved changes, and the AI tried to read it again in the same session, it got the pre-edit cached YAML and proposed wrong edits. Cache is now invalidated per-dashboard immediately after a successful write in `process_approval`.
+- **Dashboard YAML formatting inconsistency** — the YAML dump in `_get_lovelace_config` now uses the same ruamel.yaml settings as `ConfigurationManager` (`preserve_quotes`, `indent mapping=2 sequence=2 offset=2`), so the YAML shown to the AI is consistent with what gets written back.
+
 ## [1.1.10] - 2026-03-29
 
 ### Fixed
