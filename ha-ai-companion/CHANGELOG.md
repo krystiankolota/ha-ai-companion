@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.15] - 2026-03-30
+
+### Fixed
+- **`max_sessions` limit not applied to existing sessions** — pruning only ran on `save_session`, so changing the limit in config had no effect until a new message was sent. `ConversationManager` now runs a synchronous prune on startup, so sessions are trimmed to the configured limit immediately on every restart.
+
 ## [1.1.14] - 2026-03-30
 
 ### Fixed

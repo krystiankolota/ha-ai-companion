@@ -26,6 +26,8 @@ class ConversationManager:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.MAX_SESSIONS = max(1, max_sessions)
         logger.info("ConversationManager initialised at %s (max_sessions=%d)", self.sessions_dir, self.MAX_SESSIONS)
+        # Enforce limit immediately so a config change takes effect on restart
+        self._prune_sync()
 
     def _path(self, session_id: str) -> Path:
         safe = _SAFE_ID.sub('', session_id)[:64] or 'session'
@@ -113,6 +115,20 @@ class ConversationManager:
         except Exception as e:
             logger.error("delete_session(%s) error: %s", session_id, e)
         return False
+
+    def _prune_sync(self):
+        """Synchronous prune — called on init so a config change takes effect on restart."""
+        try:
+            paths = sorted(
+                self.sessions_dir.glob("*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            for old in paths[self.MAX_SESSIONS:]:
+                old.unlink(missing_ok=True)
+                logger.info("Pruned old session on startup: %s", old.name)
+        except Exception:
+            pass
 
     async def _prune(self):
         """Remove oldest sessions beyond MAX_SESSIONS."""
