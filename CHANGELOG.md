@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.9] - 2026-03-30
+
+### Fixed
+- **Memory consolidation broken since 1.1.5** — `_run_memory_consolidation` iterated over `self.tools` (an `AgentTools` instance, not a list), causing `'AgentTools' object is not iterable` warning after every conversation turn; memory was never saved. Fix: memory tool schemas hardcoded directly in the method. Second bug in the same function: `self.agent_tools.execute_tool(...)` referenced a non-existent attribute; changed to `self._dispatch_tool(...)`.
+
 ## [1.1.8] - 2026-03-29
 
 ### Changed

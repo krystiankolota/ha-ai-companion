@@ -1358,12 +1358,61 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
             messages = [{"role": "system", "content": system_content}] + slim_history
 
-            # Build memory-only tool list
-            memory_tools = [t for t in self.tools if t["function"]["name"] in (
-                "save_memory", "delete_memory", "read_memories", "list_memory_stats"
-            )]
-            if not memory_tools:
-                return
+            # Memory-only tool list (hardcoded — self.tools is the AgentTools instance, not iterable)
+            memory_tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_memories",
+                        "description": "Read persistent memory files saved from previous sessions.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "filename": {"type": "string", "description": "Specific memory file to read. Omit to read all."}
+                            },
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "save_memory",
+                        "description": "Save or update a persistent memory file. Use category prefixes: preference_, device_, identity_, baseline_, pattern_, correction_, ecosystem_. Only save persistent facts.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "filename": {"type": "string", "description": "Filename with category prefix (e.g. 'preference_lighting.md'). Only letters, numbers, hyphens and underscores kept; .md forced."},
+                                "content": {"type": "string", "description": "Full markdown content to store. Concise factual bullet points preferred."},
+                                "replaces": {"type": "array", "items": {"type": "string"}, "description": "Optional list of memory filenames this entry supersedes."}
+                            },
+                            "required": ["filename", "content"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delete_memory",
+                        "description": "Delete a memory file that is no longer accurate or relevant.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "filename": {"type": "string", "description": "Name of the memory file to delete."}
+                            },
+                            "required": ["filename"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "list_memory_stats",
+                        "description": "Audit memory health: returns each file's name, size, age in days, and stale flag.",
+                        "parameters": {"type": "object", "properties": {}, "required": []}
+                    }
+                },
+            ]
 
             # Non-streaming, single pass, no retry loop.
             # Use suggestion model (cheaper) for background consolidation work.
@@ -1382,7 +1431,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 for tc in choice.message.tool_calls:
                     fn = tc.function.name
                     args = json.loads(tc.function.arguments or "{}")
-                    result = await self.agent_tools.execute_tool(fn, args)
+                    result = await self._dispatch_tool(fn, args)
                     logger.info(f"[memory consolidation] {fn}({list(args.keys())}) → success={result.get('success')}")
         except Exception as e:
             logger.warning(f"Memory consolidation failed (non-fatal): {e}")
