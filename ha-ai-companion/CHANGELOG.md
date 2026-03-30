@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.12] - 2026-03-30
+
+### Fixed
+- **Naming suggestions re-appear after rename** — `_format_entity_states_compact` was serialising entities as `entity_id=state` only, so the LLM judged names purely from the entity_id slug and ignored the `friendly_name` entirely. A renamed entity (e.g. `switch.pompa` → friendly name "Water Pump") was still flagged because the slug still looks bad. Now formatted as `entity_id["friendly_name"]=state` so the LLM evaluates the actual display name.
+
 ## [1.1.11] - 2026-03-30
 
 ### Fixed

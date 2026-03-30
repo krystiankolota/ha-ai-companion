@@ -315,14 +315,17 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
     @staticmethod
     def _format_entity_states_compact(states: list) -> str:
-        """Compact entity state format: one line per domain, entity_id=state pairs."""
+        """Compact entity state format: one line per domain, entity_id[friendly_name]=state pairs."""
         from collections import defaultdict
         by_domain: Dict[str, list] = defaultdict(list)
         for s in states:
             eid = s.get("entity_id", "")
             domain = eid.split(".")[0] if "." in eid else "other"
             state = s.get("state", "?")
-            by_domain[domain].append(f"{eid}={state}")
+            fname = s.get("friendly_name")
+            # Include friendly_name so the LLM can judge display names, not just entity_id slugs
+            entry = f'{eid}["{fname}"]={state}' if fname else f"{eid}={state}"
+            by_domain[domain].append(entry)
         return "\n".join(
             f"{d}: " + ", ".join(entries)
             for d, entries in sorted(by_domain.items())
