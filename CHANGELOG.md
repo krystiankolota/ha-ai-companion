@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.17] - 2026-03-31
+
+### Added
+- `reload_config` tool — agent can now reload HA configuration after YAML changes are approved, activating new helpers/sensors/scripts without a restart
+- System prompt guidance: agent now defines `input_number` (and other helpers) in YAML instead of asking the user to create them manually in the UI
+
+## [1.1.16] - 2026-03-31
+
+### Added
+- "Clear All" button in conversations sidebar — analyzes all sessions for memorable facts (using the suggestion model), saves them to agent memory, then deletes all conversations
+
 ## [1.1.9] - 2026-03-30
 
 ### Fixed

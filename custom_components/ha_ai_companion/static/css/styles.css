@@ -151,6 +151,30 @@ body {
 }
 .btn-new-chat:hover { background: #0288d1; }
 
+.sessions-panel-footer {
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: 10px 12px;
+}
+
+.btn-clear-all {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+  width: 100%;
+}
+.btn-clear-all:hover {
+  background: rgba(229, 57, 53, 0.12);
+  border-color: #e53935;
+  color: #e57373;
+}
+
 .sessions-list {
   flex: 1;
   overflow-y: auto;
