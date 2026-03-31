@@ -14,6 +14,7 @@ from ..ha.ha_websocket import (
     list_lovelace_dashboards_ws,
     create_lovelace_dashboard_ws,
     delete_lovelace_dashboard_ws,
+    reload_homeassistant_config,
 )
 
 if TYPE_CHECKING:
@@ -1408,3 +1409,32 @@ class AgentTools:
         except Exception as e:
             logger.error(f"get_entity_states error: {e}", exc_info=True)
             return {"success": False, "error": str(e), "states": [], "count": 0}
+
+    async def reload_config(self) -> Dict[str, Any]:
+        """
+        Reload Home Assistant configuration without restarting.
+
+        Triggers homeassistant.reload_all which reloads templates, scripts,
+        input_number, input_boolean, input_text, input_select, automations, etc.
+        Call this after proposed YAML changes are approved to activate new entities.
+        """
+        try:
+            if self.config_manager.hass is not None:
+                await self.config_manager.hass.services.async_call(
+                    "homeassistant", "reload_all"
+                )
+                logger.info("Configuration reloaded via hass API")
+                return {"success": True, "message": "Configuration reloaded. New entities and changes are now active."}
+
+            supervisor_token = os.getenv('SUPERVISOR_TOKEN')
+            if not supervisor_token:
+                return {"success": False, "message": "Cannot reload: no SUPERVISOR_TOKEN available. Reload manually via Developer Tools → YAML."}
+
+            ws_url = "ws://supervisor/core/websocket"
+            await reload_homeassistant_config(ws_url, supervisor_token)
+            logger.info("Configuration reloaded via WebSocket")
+            return {"success": True, "message": "Configuration reloaded. New entities and changes are now active."}
+
+        except Exception as e:
+            logger.error("reload_config error: %s", e)
+            return {"success": False, "message": f"Reload failed: {e}. Try reloading manually via Developer Tools → YAML."}

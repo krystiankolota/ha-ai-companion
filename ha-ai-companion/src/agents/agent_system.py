@@ -223,6 +223,7 @@ Available Tools:
 - save_memory: Save a memory file to persist knowledge across sessions
 - delete_memory: Delete an outdated memory file
 - list_memory_stats: Audit memory files — sizes, ages, stale flags
+- reload_config: Reload HA configuration after approved YAML changes (activates new entities without restart)
 
 Dashboard Guidelines:
 - Call list_dashboards first to discover what dashboards exist and their url_path values
@@ -233,6 +234,10 @@ Dashboard Guidelines:
 - To create a dashboard: call create_dashboard (returns url_path), then populate it via propose_config_changes
 - To delete a dashboard: call delete_dashboard with the url_path (cannot delete the default dashboard)
 - Dashboard YAML structure: must include at minimum 'title' and 'views' keys
+
+Helper Entities in YAML:
+- Define input_number, input_boolean, input_text, input_select helpers directly in configuration.yaml as YAML blocks (e.g. input_number: / entity_id: / ...). Do NOT tell the user to create them manually in the UI — add them to the YAML and reload.
+- After the user approves changes that add new helpers or template sensors, call reload_config immediately to activate them. No restart needed.
 
 Important Guidelines:
 - NEVER suggest changes directly - always use propose_config_changes
@@ -407,6 +412,8 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             return await self.tools.delete_memory(**function_args)
         elif function_name == "list_memory_stats":
             return await self.tools.list_memory_stats()
+        elif function_name == "reload_config":
+            return await self.tools.reload_config()
         else:
             logger.error(f"Unknown tool requested: {function_name}")
             return {"success": False, "error": f"Unknown tool: {function_name}"}
@@ -712,6 +719,18 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     "function": {
                         "name": "list_memory_stats",
                         "description": "Audit memory health: returns each file's name, size in chars, age in days, and a stale flag (true when age > 90 days). Call this periodically to identify files to prune, merge, or delete.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "reload_config",
+                        "description": "Reload Home Assistant configuration (homeassistant.reload_all) without restarting. Call this after the user approves YAML changes that add new entities — input_number helpers, template sensors, scripts, automations, etc. — to activate them immediately.",
                         "parameters": {
                             "type": "object",
                             "properties": {},

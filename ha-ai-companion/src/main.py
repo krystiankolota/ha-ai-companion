@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.15"
+version = "1.1.18"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -388,6 +388,91 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=503, detail="Conversation manager not initialized")
     deleted = await conversation_manager.delete_session(session_id)
     return {"success": deleted}
+
+
+@app.post("/api/sessions/clear-all")
+async def clear_all_sessions():
+    """Analyze all sessions for memorable facts, save them, then delete all sessions."""
+    if not conversation_manager:
+        raise HTTPException(status_code=503, detail="Conversation manager not initialized")
+
+    sessions = await conversation_manager.list_sessions()
+    if not sessions:
+        return {"sessions_deleted": 0, "memories_saved": []}
+
+    memories_saved = []
+
+    if agent_system and agent_system.client:
+        # Collect readable user+assistant content (skip tool calls)
+        conv_parts = []
+        for meta in sessions:
+            session = await conversation_manager.load_session(meta["id"])
+            if not session:
+                continue
+            msgs = [
+                f"{m['role'].upper()}: {str(m.get('content', ''))[:400]}"
+                for m in session.get("messages", [])
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+            if msgs:
+                conv_parts.append(f"### {meta.get('title', 'Untitled')}\n" + "\n".join(msgs[:15]))
+
+        conv_text = "\n\n".join(conv_parts)[:15000]
+
+        if conv_text:
+            prompt = (
+                "Review these Home Assistant conversation sessions and extract facts worth saving as persistent agent memories.\n\n"
+                "Save ONLY genuinely useful home-specific facts:\n"
+                "- Home structure, rooms, areas, specific devices\n"
+                "- User preferences for how they want things done\n"
+                "- Important entities or automations they mentioned\n"
+                "- Context about their HA setup\n\n"
+                "Skip: one-off tasks, generic HA questions, info derivable from HA itself.\n\n"
+                'Return JSON: {"memories": [{"filename": "topic.md", "content": "# Topic\\n- fact"}]}\n'
+                'If nothing worth saving: {"memories": []}\n\n'
+                f"Conversations:\n{conv_text}"
+            )
+
+            data = {"memories": []}
+            try:
+                resp = await agent_system.suggestion_client.chat.completions.create(
+                    model=agent_system.suggestion_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    max_tokens=1500,
+                    temperature=0.2,
+                )
+                data = json_lib.loads(resp.choices[0].message.content)
+            except Exception:
+                try:
+                    import re as _re
+                    resp = await agent_system.suggestion_client.chat.completions.create(
+                        model=agent_system.suggestion_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=1500,
+                        temperature=0.2,
+                    )
+                    text = resp.choices[0].message.content
+                    match = _re.search(r'\{.*\}', text, _re.DOTALL)
+                    if match:
+                        data = json_lib.loads(match.group())
+                except Exception as e:
+                    logger.error("Memory extraction failed during clear-all: %s", e)
+
+            for mem in data.get("memories", []):
+                fn = mem.get("filename", "")
+                content = mem.get("content", "")
+                if fn and content and memory_manager:
+                    ok = await memory_manager.write_file(fn, content)
+                    if ok:
+                        memories_saved.append(fn)
+
+    deleted = 0
+    for meta in sessions:
+        if await conversation_manager.delete_session(meta["id"]):
+            deleted += 1
+
+    return {"sessions_deleted": deleted, "memories_saved": memories_saved}
 
 
 # --- Suggestions endpoints ---
