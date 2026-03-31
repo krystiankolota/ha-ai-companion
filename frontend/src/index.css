@@ -1,0 +1,68 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+@import 'diff2html/bundles/css/diff2html.min.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base dark theme overrides */
+@layer base {
+  html, body, #root {
+    @apply h-full bg-surface-950 text-gray-100;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  /* Thin scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.surface.700') transparent;
+  }
+  *::-webkit-scrollbar { width: 4px; height: 4px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: theme('colors.surface.700'); border-radius: 2px; }
+
+  /* Markdown prose in assistant messages */
+  .prose { color: theme('colors.gray.200'); }
+  .prose h1, .prose h2, .prose h3 { color: theme('colors.gray.100'); font-weight: 600; }
+  .prose code:not(pre code) {
+    @apply bg-surface-800 text-indigo-300 px-1 py-0.5 rounded text-sm font-mono;
+  }
+  .prose pre {
+    @apply bg-surface-950 border border-surface-700 rounded-lg p-3 overflow-x-auto;
+  }
+  .prose pre code { @apply bg-transparent text-gray-300 p-0; }
+  .prose a { @apply text-indigo-400 hover:text-indigo-300; }
+  .prose ul, .prose ol { @apply pl-4; }
+  .prose li { @apply my-1; }
+  .prose p { @apply my-2; }
+  .prose blockquote { @apply border-l-2 border-surface-600 pl-3 text-gray-400 italic; }
+  .prose table { @apply w-full border-collapse; }
+  .prose th { @apply bg-surface-800 px-3 py-2 text-left text-gray-200 font-medium border border-surface-700; }
+  .prose td { @apply px-3 py-2 border border-surface-700; }
+}
+
+/* diff2html dark theme overrides */
+.d2h-wrapper {
+  background: transparent !important;
+}
+.d2h-file-header {
+  background-color: theme('colors.surface.800') !important;
+  border-color: theme('colors.surface.700') !important;
+  color: theme('colors.gray.200') !important;
+}
+.d2h-file-diff {
+  background-color: theme('colors.surface.950') !important;
+}
+.d2h-code-line, .d2h-code-side-line {
+  color: theme('colors.gray.300') !important;
+}
+.d2h-del {
+  background-color: rgba(239, 68, 68, 0.15) !important;
+}
+.d2h-ins {
+  background-color: rgba(16, 185, 129, 0.15) !important;
+}
+.d2h-info {
+  background-color: theme('colors.surface.800') !important;
+  color: theme('colors.gray.500') !important;
+}

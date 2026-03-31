@@ -14,6 +14,8 @@ ENV/
 build/
 develop-eggs/
 dist/
+# Keep the pre-built React bundle so HACS installs work without a build step
+!custom_components/ha_ai_companion/static/dist/
 downloads/
 eggs/
 .eggs/
@@ -53,6 +55,9 @@ backups/
 # Session data
 sessions.db
 *.sqlite
+
+# Frontend build dependencies (source is committed, node_modules are not)
+frontend/node_modules/
 
 # Add-on specific
 test_config/

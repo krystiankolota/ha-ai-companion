@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.18] - 2026-03-31
+
+### Changed
+- Complete frontend rewrite: React 18 + Vite + Tailwind CSS replacing vanilla JS
+- New dark design: surface-950/900/800 palette, indigo accents, Inter font
+- All existing functionality preserved: WebSocket streaming, approval cards, diff modal, suggestions tab, session management, token counter, clear-all with memory extraction
+- Build source in `frontend/` — run `npm install && npm run build` to regenerate `static/dist/bundle.{js,css}`
+
 ## [1.1.17] - 2026-03-31
 
 ### Added
