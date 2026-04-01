@@ -4,8 +4,17 @@ import { Actions } from '../store/reducer'
 import * as Diff from 'diff'
 import { Diff2HtmlUI } from 'diff2html/lib/ui/js/diff2html-ui-base'
 
+function tryPrettyJson(str) {
+  if (!str) return str
+  const trimmed = str.trim()
+  if (trimmed[0] !== '{' && trimmed[0] !== '[') return str
+  try { return JSON.stringify(JSON.parse(trimmed), null, 2) } catch { return str }
+}
+
 function buildUnifiedDiff(filePath, oldContent, newContent) {
-  return Diff.createPatch(filePath, oldContent || '', newContent || '', 'Original', 'Proposed')
+  const old_ = tryPrettyJson(oldContent || '')
+  const new_ = tryPrettyJson(newContent || '')
+  return Diff.createPatch(filePath, old_, new_, 'Original', 'Proposed')
 }
 
 export default function DiffModal() {

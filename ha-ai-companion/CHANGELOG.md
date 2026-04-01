@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.32] - 2026-04-01
+
+### Fixed
+- **Diff unreadable for JSON files** — both sides of the diff are now pretty-printed before comparison, so a compact one-liner proposed by the LLM diffs correctly against the formatted original
+
 ## [1.1.31] - 2026-04-01
 
 ### Removed
