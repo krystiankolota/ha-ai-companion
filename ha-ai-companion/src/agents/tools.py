@@ -1185,10 +1185,8 @@ class AgentTools:
         """
         Make a request to the Node-RED Admin API.
 
-        Auth priority:
-          1. NODERED_TOKEN (explicit long-lived HA token or Node-RED token)
-          2. SUPERVISOR_TOKEN (works when companion runs as HA add-on alongside
-             the official Node-RED HA add-on, which uses HA-based auth)
+        Requires NODERED_TOKEN set to a long-lived HA access token.
+        (SUPERVISOR_TOKEN is for the Supervisor API, not Node-RED's HTTP server.)
         """
         import aiohttp
         import json as _json
@@ -1197,7 +1195,7 @@ class AgentTools:
         if not nodered_url:
             return {"status": 0, "error": "NODERED_URL not configured"}
 
-        token = os.getenv('NODERED_TOKEN') or os.getenv('SUPERVISOR_TOKEN', '')
+        token = os.getenv('NODERED_TOKEN', '')
         headers = {
             "Accept": "application/json",
             "Node-RED-API-Version": "v2",
@@ -1277,7 +1275,8 @@ class AgentTools:
                 "success": False,
                 "error": (
                     "Node-RED authentication failed (401). "
-                    "Set NODERED_TOKEN to a long-lived HA access token in the companion options."
+                    "Set nodered_token in the companion options to a long-lived HA access token "
+                    "(HA Profile → Long-lived access tokens → Create token)."
                 ),
             }
         return {
@@ -1337,8 +1336,8 @@ class AgentTools:
                         "success": False,
                         "error": (
                             "Node-RED API authentication failed (401). "
-                            "The HA Node-RED add-on uses HA-based auth — try setting NODERED_TOKEN "
-                            "to a long-lived HA access token generated in your HA profile."
+                            "Set nodered_token in the companion options to a long-lived HA access token "
+                            "(HA Profile → Long-lived access tokens → Create token)."
                         ),
                         "flows": [],
                         "count": 0,
