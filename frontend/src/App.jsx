@@ -9,7 +9,6 @@ import Sidebar from './components/Sidebar'
 import Header from './components/Header'
 import ChatTab from './components/ChatTab'
 import SuggestionsTab from './components/SuggestionsTab'
-import LogsTab from './components/LogsTab'
 import Footer from './components/Footer'
 import DiffModal from './components/DiffModal'
 import ClearAllModal from './components/ClearAllModal'
@@ -166,7 +165,6 @@ function AppInner() {
         <main className="flex-1 overflow-hidden">
           {state.activeTab === 'chat' && <ChatTab onSend={sendMessage} />}
           {state.activeTab === 'suggestions' && <SuggestionsTab />}
-          {state.activeTab === 'logs' && <LogsTab />}
         </main>
         <Footer />
       </div>

@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.30"
+version = "1.1.31"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -203,121 +203,6 @@ async def health_check():
         "agent_system_ready": agent_system is not None,
         "openai_configured": bool(os.getenv('OPENAI_API_KEY'))
     }
-
-@app.get("/api/logs")
-async def get_logs(lines: int = 200, filter: str = ""):
-    """Return recent lines from home-assistant.log matching the filter."""
-    import aiohttp
-
-    supervisor_token = os.getenv("SUPERVISOR_TOKEN")
-    all_lines: list[str] = []
-    source = "unknown"
-
-    # Primary: Supervisor API (reliable in add-on mode)
-    if supervisor_token:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "http://supervisor/core/logs",
-                    headers={"Authorization": f"Bearer {supervisor_token}"},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        text = await resp.text(errors="replace")
-                        all_lines = text.splitlines()
-                        source = "supervisor_api"
-                    else:
-                        logger.warning(f"Supervisor logs API returned {resp.status}")
-        except Exception as e:
-            logger.warning(f"Supervisor logs API failed: {e}")
-
-    # Fallback: log file on disk
-    if not all_lines:
-        config_dir = os.getenv("HA_CONFIG_DIR", "/homeassistant")
-        candidates = [
-            os.path.join(config_dir, "home-assistant.log"),
-            "/homeassistant/home-assistant.log",
-            "/config/home-assistant.log",
-        ]
-        log_path = next((p for p in candidates if os.path.isfile(p)), None)
-        if log_path is None:
-            return {
-                "error": f"Log file not found. Tried: {', '.join(dict.fromkeys(candidates))}",
-                "lines": [],
-            }
-        try:
-            with open(log_path, "r", errors="replace") as f:
-                all_lines = f.readlines()
-            source = f"file:{log_path}"
-        except Exception as e:
-            return {"error": str(e), "lines": []}
-
-    # When reading from the Supervisor API journal, strip non-HA lines (x265, FFmpeg, etc.)
-    # HA log entries start with a date (e.g. "2026-04-01") or are whitespace-indented
-    # continuation lines (tracebacks). Everything else is raw subprocess noise.
-    import re as _re
-    _ha_line = _re.compile(r'^\d{4}-\d{2}-\d{2}')
-    if source == "supervisor_api":
-        filtered: list[str] = []
-        for line in all_lines:
-            stripped = line.rstrip()
-            if _ha_line.match(stripped) or (stripped and stripped[0] in (' ', '\t')):
-                filtered.append(stripped)
-        all_lines = filtered
-
-    kw = filter.lower()
-    matched = [l.rstrip() for l in all_lines if kw in l.lower()] if kw else [l for l in all_lines]
-    return {"source": source, "total_matched": len(matched), "lines": matched[-lines:]}
-
-
-class AnalyzeLogsRequest(BaseModel):
-    lines: Optional[List[str]] = None  # pre-fetched lines from GET /api/logs
-
-@app.post("/api/logs/analyze")
-async def analyze_logs(req: AnalyzeLogsRequest):
-    """Send log lines to AI for analysis. Returns structured error report."""
-    if not agent_system:
-        raise HTTPException(status_code=503, detail="Agent system not ready")
-
-    log_lines = req.lines or []
-    if not log_lines:
-        return {"errors": [], "summary": "No log lines provided."}
-
-    # Cap to avoid huge context
-    if len(log_lines) > 300:
-        log_lines = log_lines[-300:]
-
-    log_text = "\n".join(log_lines)
-
-    prompt = (
-        "You are a Home Assistant diagnostic expert. Analyze these log lines and return a JSON object.\n\n"
-        "Return ONLY valid JSON with this exact structure:\n"
-        '{"summary": "one sentence overview", "errors": [{"timestamp": "...", "level": "ERROR|WARNING|INFO", '
-        '"component": "...", "message": "...", "cause": "likely cause", "fix": "suggested action"}]}\n\n'
-        "Focus on ERROR and WARNING lines. Skip routine INFO lines. "
-        "Group repeated errors into one entry. Limit to 15 most important issues.\n\n"
-        f"LOG LINES:\n{log_text}"
-    )
-
-    try:
-        response = await agent_system.suggestion_client.chat.completions.create(
-            model=os.getenv("SUGGESTION_MODEL") or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=2000,
-        )
-        content = response.choices[0].message.content or ""
-        # Extract JSON from response
-        import re as re_mod
-        json_match = re_mod.search(r'\{[\s\S]*\}', content)
-        if json_match:
-            result = json_lib.loads(json_match.group(0))
-        else:
-            result = {"summary": "Could not parse AI response.", "errors": []}
-        return result
-    except Exception as e:
-        logger.error(f"Log analysis error: {e}")
-        return {"summary": f"Analysis failed: {str(e)}", "errors": []}
 
 
 # Root endpoint - will serve the UI

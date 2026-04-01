@@ -108,18 +108,3 @@ export function markSuggestionApplied(title) {
 export function getSuggestionsHistory() {
   return apiFetch('api/suggestions/history')
 }
-
-// Logs
-export function getLogs(lines = 200, filter = '') {
-  const params = new URLSearchParams({ lines })
-  if (filter) params.set('filter', filter)
-  return apiFetch(`api/logs?${params}`)
-}
-
-export function analyzeLogs(lines) {
-  return apiFetch('api/logs/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lines }),
-  })
-}
