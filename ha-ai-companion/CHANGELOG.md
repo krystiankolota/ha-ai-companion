@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.26] - 2026-04-01
+
+### Fixed
+- **Logs tab: "Log file not found"** — now reads HA core logs via the Supervisor API (`GET http://supervisor/core/logs`) as primary source; file-based fallback kept for non-add-on mode
+
 ## [1.1.25] - 2026-04-01
 
 ### Fixed

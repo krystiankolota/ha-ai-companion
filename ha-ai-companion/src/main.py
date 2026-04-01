@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.25"
+version = "1.1.26"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -207,27 +207,54 @@ async def health_check():
 @app.get("/api/logs")
 async def get_logs(lines: int = 200, filter: str = ""):
     """Return recent lines from home-assistant.log matching the filter."""
-    config_dir = os.getenv("HA_CONFIG_DIR", "/config")
-    # Try multiple candidate paths — HA log location varies by version/install
-    candidates = [
-        os.path.join(config_dir, "home-assistant.log"),
-        "/homeassistant/home-assistant.log",
-        "/config/home-assistant.log",
-    ]
-    log_path = next((p for p in candidates if os.path.isfile(p)), None)
-    if log_path is None:
-        return {
-            "error": f"Log file not found. Tried: {', '.join(dict.fromkeys(candidates))}",
-            "lines": [],
-        }
-    try:
-        with open(log_path, "r", errors="replace") as f:
-            all_lines = f.readlines()
-        kw = filter.lower()
-        matched = [l.rstrip() for l in all_lines if kw in l.lower()] if kw else [l.rstrip() for l in all_lines]
-        return {"log_path": log_path, "total_matched": len(matched), "lines": matched[-lines:]}
-    except Exception as e:
-        return {"error": str(e), "lines": []}
+    import aiohttp
+
+    supervisor_token = os.getenv("SUPERVISOR_TOKEN")
+    all_lines: list[str] = []
+    source = "unknown"
+
+    # Primary: Supervisor API (reliable in add-on mode)
+    if supervisor_token:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "http://supervisor/core/logs",
+                    headers={"Authorization": f"Bearer {supervisor_token}"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        text = await resp.text(errors="replace")
+                        all_lines = text.splitlines()
+                        source = "supervisor_api"
+                    else:
+                        logger.warning(f"Supervisor logs API returned {resp.status}")
+        except Exception as e:
+            logger.warning(f"Supervisor logs API failed: {e}")
+
+    # Fallback: log file on disk
+    if not all_lines:
+        config_dir = os.getenv("HA_CONFIG_DIR", "/homeassistant")
+        candidates = [
+            os.path.join(config_dir, "home-assistant.log"),
+            "/homeassistant/home-assistant.log",
+            "/config/home-assistant.log",
+        ]
+        log_path = next((p for p in candidates if os.path.isfile(p)), None)
+        if log_path is None:
+            return {
+                "error": f"Log file not found. Tried: {', '.join(dict.fromkeys(candidates))}",
+                "lines": [],
+            }
+        try:
+            with open(log_path, "r", errors="replace") as f:
+                all_lines = f.readlines()
+            source = f"file:{log_path}"
+        except Exception as e:
+            return {"error": str(e), "lines": []}
+
+    kw = filter.lower()
+    matched = [l.rstrip() for l in all_lines if kw in l.lower()] if kw else [l.rstrip() for l in all_lines]
+    return {"source": source, "total_matched": len(matched), "lines": matched[-lines:]}
 
 
 class AnalyzeLogsRequest(BaseModel):
