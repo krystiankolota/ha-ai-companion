@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.21] - 2026-04-01
+
+### Fixed
+- **Node-RED API authentication (401 errors)** — the HA Node-RED add-on uses HA-based auth; the companion now automatically tries `SUPERVISOR_TOKEN` as the Bearer token before falling back to `NODERED_TOKEN`, so the live API works without any extra configuration
+
+### Added
+- **Node-RED flow creation and editing** — companion can now create and deploy Node-RED flows via the approval workflow. Use `propose_config_changes` with `file_path="nodered/new_flow.json"` (adds a tab) or `nodered/flows.json` (full replace). Flow JSON diff is shown before approval, then deployed to Node-RED on confirm.
+
 ## [1.1.20] - 2026-04-01
 
 ### Added

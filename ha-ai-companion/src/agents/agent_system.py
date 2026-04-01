@@ -218,7 +218,10 @@ Available Tools:
 - create_dashboard: Create a new Lovelace dashboard (returns url_path for editing)
 - delete_dashboard: Delete a Lovelace dashboard by url_path
 - get_entity_states: Get live current states of all entities (use for automation suggestions)
-- get_nodered_flows: Read Node-RED flows exported to a JSON file (use when suggesting automations to avoid duplicating existing flows)
+- get_nodered_flows: Read existing Node-RED flows via API or backup file (use before suggesting automations and before creating new flows)
+- propose_config_changes with nodered paths: Deploy flows to Node-RED via approval workflow:
+  * file_path="nodered/new_flow.json" + new_content=JSON array → adds a new flow tab (safe, non-destructive)
+  * file_path="nodered/flows.json" + new_content=JSON array → replaces ALL flows (use only when explicitly requested)
 - read_memories: Read persistent memory files from previous sessions
 - save_memory: Save a memory file to persist knowledge across sessions
 - delete_memory: Delete an outdated memory file
@@ -304,6 +307,8 @@ Automation Suggestion Guidelines:
 - When asked to suggest automations, first call get_entity_states to see what devices exist
 - Also call search_config_files to see what automations already exist (avoid duplicates)
 - If Node-RED is configured, call get_nodered_flows to see existing flows — do NOT suggest automations that are already implemented in Node-RED
+- To create a new Node-RED flow: call get_nodered_flows first (for context), generate valid Node-RED JSON (array of node objects including a tab node), then propose_config_changes with file_path="nodered/new_flow.json". The flow is deployed to Node-RED on approval.
+- Node-RED flow JSON format: array containing one {type:"tab", id, label} node plus the flow's functional nodes, each with {id, type, name, wires, x, y, ...}. Use common node types: inject, debug, function, change, switch, delay, http request, mqtt in/out, ha-api, ha-entity, ha-state-changed, ha-call-service, ha-events-all, ha-webhook.
 - Suggest practical, common-sense automations based on the devices present
 - Group suggestions by area/domain and explain the benefit of each
 - When Node-RED flows are available, mention whether a suggestion is best done in HA automations or Node-RED
@@ -1543,6 +1548,21 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             for file_change in changeset.file_changes:
                 file_path = file_change['file_path']
                 new_content = file_change['new_content']
+
+                # Node-RED virtual paths — deploy via API instead of writing to disk
+                if file_path.startswith("nodered/"):
+                    try:
+                        mode = "replace" if file_path == "nodered/flows.json" else "add"
+                        result = await self.tools.deploy_nodered_flows(new_content, mode=mode)
+                        if result.get("success"):
+                            applied_files.append(file_path)
+                            logger.info(f"Deployed Node-RED flows via API ({mode})")
+                        else:
+                            failed_files.append({"file_path": file_path, "error": result.get("error", "Unknown error")})
+                    except Exception as e:
+                        logger.error(f"Failed to deploy Node-RED flows: {e}")
+                        failed_files.append({"file_path": file_path, "error": str(e)})
+                    continue
 
                 try:
                     await self.config_manager.write_file_raw(

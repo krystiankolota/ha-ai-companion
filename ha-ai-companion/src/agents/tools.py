@@ -1178,6 +1178,114 @@ class AgentTools:
             return {"success": False, "error": str(e)}
 
     # ------------------------------------------------------------------
+    # Node-RED helpers
+    # ------------------------------------------------------------------
+
+    async def _nodered_api_request(self, method: str, path: str, data=None) -> Dict:
+        """
+        Make a request to the Node-RED Admin API.
+
+        Auth priority:
+          1. NODERED_TOKEN (explicit long-lived HA token or Node-RED token)
+          2. SUPERVISOR_TOKEN (works when companion runs as HA add-on alongside
+             the official Node-RED HA add-on, which uses HA-based auth)
+        """
+        import aiohttp
+        import json as _json
+
+        nodered_url = os.getenv('NODERED_URL', '').rstrip('/')
+        if not nodered_url:
+            return {"status": 0, "error": "NODERED_URL not configured"}
+
+        token = os.getenv('NODERED_TOKEN') or os.getenv('SUPERVISOR_TOKEN', '')
+        headers = {
+            "Accept": "application/json",
+            "Node-RED-API-Version": "v2",
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+
+        url = f"{nodered_url}{path}"
+        logger.info(f"Node-RED API {method} {url}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.request(
+                    method, url, headers=headers,
+                    data=_json.dumps(data) if data is not None else None,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    try:
+                        j = await resp.json(content_type=None)
+                    except Exception:
+                        j = None
+                    text = await resp.text() if j is None else ""
+                    return {"status": resp.status, "json": j, "text": text}
+        except aiohttp.ClientError as e:
+            return {"status": 0, "error": str(e)}
+
+    async def deploy_nodered_flows(self, flows_json: str, mode: str = "add") -> Dict[str, Any]:
+        """
+        Deploy flows to Node-RED via the Admin API.
+
+        Args:
+            flows_json: JSON string — array of Node-RED node objects
+            mode: "add" (POST /flow — adds as a new tab) or
+                  "replace" (PUT /flows — replaces ALL flows)
+
+        Returns:
+            Dict with success, message, error
+        """
+        import json as _json
+
+        nodered_url = os.getenv('NODERED_URL', '').rstrip('/')
+        if not nodered_url:
+            return {"success": False, "error": "NODERED_URL not configured — cannot deploy flows"}
+
+        try:
+            flows = _json.loads(flows_json)
+        except _json.JSONDecodeError as e:
+            return {"success": False, "error": f"Invalid JSON: {e}"}
+
+        if not isinstance(flows, list):
+            return {"success": False, "error": "flows_json must be a JSON array"}
+
+        if mode == "add":
+            # POST /flow expects a single flow object: {id, label, nodes: [...]}
+            # If the user passed a flat array of nodes, wrap them in a tab
+            tab = next((n for n in flows if n.get("type") == "tab"), None)
+            if tab:
+                nodes = [n for n in flows if n.get("type") != "tab"]
+                payload = {**tab, "nodes": nodes}
+            else:
+                # No tab node — wrap everything in an unnamed tab
+                import uuid
+                payload = {"id": str(uuid.uuid4()), "label": "AI Flow", "nodes": flows}
+            result = await self._nodered_api_request("POST", "/flow", payload)
+            if result["status"] in (200, 204):
+                return {"success": True, "message": "Flow tab added to Node-RED successfully"}
+        else:
+            # PUT /flows replaces all flows
+            result = await self._nodered_api_request("PUT", "/flows", {"flows": flows})
+            if result["status"] in (200, 204):
+                return {"success": True, "message": "All Node-RED flows replaced successfully"}
+
+        status = result.get("status")
+        if status == 401:
+            return {
+                "success": False,
+                "error": (
+                    "Node-RED authentication failed (401). "
+                    "Set NODERED_TOKEN to a long-lived HA access token in the companion options."
+                ),
+            }
+        return {
+            "success": False,
+            "error": f"Node-RED API returned {status}: {result.get('text', result.get('json', ''))}"
+        }
+
+    # ------------------------------------------------------------------
     # Entity states tool (for automation suggestions)
     # ------------------------------------------------------------------
 
@@ -1204,53 +1312,41 @@ class AgentTools:
         import aiohttp
 
         nodered_url = os.getenv('NODERED_URL', '').rstrip('/')
-        nodered_token = os.getenv('NODERED_TOKEN', '')
 
         # --- Primary: Node-RED Admin API ---
         if nodered_url:
             try:
-                headers = {
-                    "Accept": "application/json",
-                    "Node-RED-API-Version": "v2",
-                }
-                if nodered_token:
-                    headers["Authorization"] = f"Bearer {nodered_token}"
-
-                flows_url = f"{nodered_url}/flows"
-                logger.info(f"Fetching Node-RED flows from {flows_url}")
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(flows_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json(content_type=None)
-                            # API v2 returns {"flows": [...], "rev": "..."}
-                            # API v1 returns [...] directly
-                            flows = data.get("flows", data) if isinstance(data, dict) else data
-                            if not isinstance(flows, list):
-                                raise ValueError(f"Unexpected response shape: {type(flows)}")
-                            logger.info(f"Retrieved {len(flows)} Node-RED flow nodes via API")
-                            return {
-                                "success": True,
-                                "flows": flows,
-                                "count": len(flows),
-                                "source": "api",
-                            }
-                        elif resp.status == 401:
-                            logger.warning("Node-RED API returned 401 — token required or incorrect")
-                            # Don't fall through to file on auth failure, report clearly
-                            return {
-                                "success": False,
-                                "error": "Node-RED API authentication failed (401). Set NODERED_TOKEN in integration options.",
-                                "flows": [],
-                                "count": 0,
-                                "source": "api",
-                            }
-                        else:
-                            text = await resp.text()
-                            logger.warning(f"Node-RED API returned {resp.status}: {text[:200]}")
-                            # Fall through to file fallback
-            except aiohttp.ClientError as e:
-                logger.warning(f"Node-RED API request failed ({e}), trying file fallback")
+                resp_data = await self._nodered_api_request("GET", "/flows")
+                if resp_data.get("status") == 200:
+                    data = resp_data["json"]
+                    # API v2 returns {"flows": [...], "rev": "..."}
+                    # API v1 returns [...] directly
+                    flows = data.get("flows", data) if isinstance(data, dict) else data
+                    if not isinstance(flows, list):
+                        raise ValueError(f"Unexpected response shape: {type(flows)}")
+                    logger.info(f"Retrieved {len(flows)} Node-RED flow nodes via API")
+                    return {
+                        "success": True,
+                        "flows": flows,
+                        "count": len(flows),
+                        "source": "api",
+                    }
+                elif resp_data.get("status") == 401:
+                    logger.warning("Node-RED API returned 401 — auth failed")
+                    return {
+                        "success": False,
+                        "error": (
+                            "Node-RED API authentication failed (401). "
+                            "The HA Node-RED add-on uses HA-based auth — try setting NODERED_TOKEN "
+                            "to a long-lived HA access token generated in your HA profile."
+                        ),
+                        "flows": [],
+                        "count": 0,
+                        "source": "api",
+                    }
+                else:
+                    logger.warning(f"Node-RED API returned {resp_data.get('status')}: {resp_data.get('text', '')[:200]}")
+                    # Fall through to file fallback
             except Exception as e:
                 logger.warning(f"Node-RED API error ({e}), trying file fallback")
 
