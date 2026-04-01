@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.28] - 2026-04-01
+
+### Fixed
+- **Logs tab showing x265/FFmpeg noise** — Supervisor API returns the full HA core container journal including raw subprocess output (camera integrations, Frigate, etc.); now filters to lines starting with a date (`2026-...`) or whitespace-indented continuation lines (tracebacks), stripping all non-HA output
+
 ## [1.1.27] - 2026-04-01
 
 ### Fixed

@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.27"
+version = "1.1.28"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -252,8 +252,21 @@ async def get_logs(lines: int = 200, filter: str = ""):
         except Exception as e:
             return {"error": str(e), "lines": []}
 
+    # When reading from the Supervisor API journal, strip non-HA lines (x265, FFmpeg, etc.)
+    # HA log entries start with a date (e.g. "2026-04-01") or are whitespace-indented
+    # continuation lines (tracebacks). Everything else is raw subprocess noise.
+    import re as _re
+    _ha_line = _re.compile(r'^\d{4}-\d{2}-\d{2}')
+    if source == "supervisor_api":
+        filtered: list[str] = []
+        for line in all_lines:
+            stripped = line.rstrip()
+            if _ha_line.match(stripped) or (stripped and stripped[0] in (' ', '\t')):
+                filtered.append(stripped)
+        all_lines = filtered
+
     kw = filter.lower()
-    matched = [l.rstrip() for l in all_lines if kw in l.lower()] if kw else [l.rstrip() for l in all_lines]
+    matched = [l.rstrip() for l in all_lines if kw in l.lower()] if kw else [l for l in all_lines]
     return {"source": source, "total_matched": len(matched), "lines": matched[-lines:]}
 
 
