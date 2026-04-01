@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.29] - 2026-04-01
+
+### Added
+- **Node-RED tab-level update** — new `nodered/flow/{tab_id}.json` path in `propose_config_changes` calls `PUT /flow/{id}` to update only one tab's nodes without touching the rest of the flows (safe alternative to the destructive full replace)
+
+### Fixed
+- **Node-RED partial edit using flows.json** — system prompt now explicitly instructs: use `nodered/flow/{tab_id}.json` for modifying existing tabs; `nodered/flows.json` is DESTRUCTIVE (replaces everything) and must never be used for partial edits
+
 ## [1.1.28] - 2026-04-01
 
 ### Fixed

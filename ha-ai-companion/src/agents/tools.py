@@ -1223,14 +1223,16 @@ class AgentTools:
         except aiohttp.ClientError as e:
             return {"status": 0, "error": str(e)}
 
-    async def deploy_nodered_flows(self, flows_json: str, mode: str = "add") -> Dict[str, Any]:
+    async def deploy_nodered_flows(self, flows_json: str, mode: str = "add", tab_id: str = "") -> Dict[str, Any]:
         """
         Deploy flows to Node-RED via the Admin API.
 
         Args:
             flows_json: JSON string — array of Node-RED node objects
-            mode: "add" (POST /flow — adds as a new tab) or
-                  "replace" (PUT /flows — replaces ALL flows)
+            mode: "add"        → POST /flow (adds a new tab, non-destructive)
+                  "update_tab" → PUT /flow/{tab_id} (replaces nodes in one tab only)
+                  "replace"    → PUT /flows (replaces ALL flows — destructive)
+            tab_id: required when mode="update_tab"
 
         Returns:
             Dict with success, message, error
@@ -1263,6 +1265,25 @@ class AgentTools:
             result = await self._nodered_api_request("POST", "/flow", payload)
             if result["status"] in (200, 204):
                 return {"success": True, "message": "Flow tab added to Node-RED successfully"}
+
+        elif mode == "update_tab":
+            # PUT /flow/{id} replaces only the nodes in one tab
+            # Derive tab_id from the array if not explicitly provided
+            tab = next((n for n in flows if n.get("type") == "tab"), None)
+            effective_tab_id = tab_id or (tab.get("id") if tab else "")
+            if not effective_tab_id:
+                return {"success": False, "error": "update_tab mode requires a tab_id or a tab node in the array"}
+            nodes = [n for n in flows if n.get("type") != "tab"]
+            payload = {
+                "id": effective_tab_id,
+                "label": tab.get("label", "") if tab else "",
+                "nodes": nodes,
+                "configs": [],
+            }
+            result = await self._nodered_api_request("PUT", f"/flow/{effective_tab_id}", payload)
+            if result["status"] in (200, 204):
+                return {"success": True, "message": f"Flow tab '{effective_tab_id}' updated in Node-RED successfully"}
+
         else:
             # PUT /flows replaces all flows
             result = await self._nodered_api_request("PUT", "/flows", {"flows": flows})

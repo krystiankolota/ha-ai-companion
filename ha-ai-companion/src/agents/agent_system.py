@@ -221,7 +221,8 @@ Available Tools:
 - get_nodered_flows: Read existing Node-RED flows via API or backup file (use before suggesting automations and before creating new flows)
 - propose_config_changes with nodered paths: Deploy flows to Node-RED via approval workflow:
   * file_path="nodered/new_flow.json" + new_content=JSON array → adds a new flow tab (safe, non-destructive)
-  * file_path="nodered/flows.json" + new_content=JSON array → replaces ALL flows (use only when explicitly requested)
+  * file_path="nodered/flow/{tab_id}.json" + new_content=JSON array → updates only that tab (safe; include tab node + its nodes)
+  * file_path="nodered/flows.json" + new_content=JSON array → replaces ALL flows (DESTRUCTIVE — only if user explicitly asks to replace everything)
 - read_memories: Read persistent memory files from previous sessions
 - save_memory: Save a memory file to persist knowledge across sessions
 - delete_memory: Delete an outdated memory file
@@ -307,7 +308,8 @@ Automation Suggestion Guidelines:
 - When asked to suggest automations, first call get_entity_states to see what devices exist
 - Also call search_config_files to see what automations already exist (avoid duplicates)
 - If Node-RED is configured, call get_nodered_flows to see existing flows — do NOT suggest automations that are already implemented in Node-RED
-- To create a new Node-RED flow: call get_nodered_flows first (for context), generate valid Node-RED JSON (array of node objects including a tab node), then propose_config_changes with file_path="nodered/new_flow.json". The flow is deployed to Node-RED on approval.
+- To create a new Node-RED flow tab: call get_nodered_flows first, generate valid Node-RED JSON (array with tab node + its nodes), then propose_config_changes with file_path="nodered/new_flow.json".
+- To modify nodes in an EXISTING flow tab: call get_nodered_flows to get the tab's id, build the updated array (tab node + all nodes for that tab with your changes applied), then propose_config_changes with file_path="nodered/flow/{tab_id}.json". NEVER use nodered/flows.json for partial edits — it replaces everything.
 - Node-RED flow JSON format: array containing one {type:"tab", id, label} node plus the flow's functional nodes, each with {id, type, name, wires, x, y, ...}. Use common node types: inject, debug, function, change, switch, delay, http request, mqtt in/out, ha-api, ha-entity, ha-state-changed, ha-call-service, ha-events-all, ha-webhook.
 - Suggest practical, common-sense automations based on the devices present
 - Group suggestions by area/domain and explain the benefit of each
@@ -1552,8 +1554,16 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 # Node-RED virtual paths — deploy via API instead of writing to disk
                 if file_path.startswith("nodered/"):
                     try:
-                        mode = "replace" if file_path == "nodered/flows.json" else "add"
-                        result = await self.tools.deploy_nodered_flows(new_content, mode=mode)
+                        if file_path == "nodered/flows.json":
+                            mode = "replace"
+                            tab_id = ""
+                        elif file_path.startswith("nodered/flow/"):
+                            mode = "update_tab"
+                            tab_id = file_path[len("nodered/flow/"):].removesuffix(".json")
+                        else:
+                            mode = "add"
+                            tab_id = ""
+                        result = await self.tools.deploy_nodered_flows(new_content, mode=mode, tab_id=tab_id)
                         if result.get("success"):
                             applied_files.append(file_path)
                             logger.info(f"Deployed Node-RED flows via API ({mode})")
