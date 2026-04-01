@@ -2,32 +2,61 @@ import { useRef, useCallback, useState } from 'react'
 import { Actions } from '../store/reducer'
 import { generateId } from '../lib/utils'
 
-// Extract original file contents from search_config_files tool calls in conversation history
+// Extract original file contents from search_config_files / get_nodered_flows tool calls in conversation history
 function extractOriginalContents(history, fileChanges) {
   const originalContents = {}
   const filePathsNeeded = fileChanges.map(fc => fc.file_path)
 
+  // Last get_nodered_flows result — used to populate original for nodered/ paths
+  let lastNoderedFlows = null
+
   for (const msg of history) {
     if (msg.role === 'assistant' && msg.tool_calls) {
       for (const toolCall of msg.tool_calls) {
+        const toolResponse = history.find(
+          m => m.role === 'tool' && m.tool_call_id === toolCall.id
+        )
+        if (!toolResponse) continue
+
         if (toolCall.function.name === 'search_config_files') {
-          const toolResponse = history.find(
-            m => m.role === 'tool' && m.tool_call_id === toolCall.id
-          )
-          if (toolResponse) {
-            try {
-              const searchResult = JSON.parse(toolResponse.content)
-              if (searchResult.success && searchResult.files) {
-                for (const file of searchResult.files) {
-                  if (filePathsNeeded.includes(file.path)) {
-                    originalContents[file.path] = file.content
-                  }
+          try {
+            const searchResult = JSON.parse(toolResponse.content)
+            if (searchResult.success && searchResult.files) {
+              for (const file of searchResult.files) {
+                if (filePathsNeeded.includes(file.path)) {
+                  originalContents[file.path] = file.content
                 }
               }
-            } catch (e) {
-              console.error('Error parsing search results:', e)
             }
+          } catch (e) {
+            console.error('Error parsing search results:', e)
           }
+        }
+
+        if (toolCall.function.name === 'get_nodered_flows') {
+          try {
+            const result = JSON.parse(toolResponse.content)
+            if (result.success && result.flows) {
+              lastNoderedFlows = result.flows
+            }
+          } catch (e) { /* ignore */ }
+        }
+      }
+    }
+  }
+
+  // Populate original content for nodered/ virtual paths from the last get_nodered_flows result
+  if (lastNoderedFlows) {
+    for (const fp of filePathsNeeded) {
+      if (originalContents[fp]) continue
+      if (fp === 'nodered/flows.json') {
+        originalContents[fp] = JSON.stringify(lastNoderedFlows, null, 2)
+      } else if (fp.startsWith('nodered/flow/')) {
+        const tabId = fp.replace('nodered/flow/', '').replace('.json', '')
+        const tab = lastNoderedFlows.find(n => n.type === 'tab' && n.id === tabId)
+        const nodes = lastNoderedFlows.filter(n => n.z === tabId)
+        if (tab) {
+          originalContents[fp] = JSON.stringify([tab, ...nodes], null, 2)
         }
       }
     }

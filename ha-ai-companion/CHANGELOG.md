@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.30] - 2026-04-01
+
+### Fixed
+- **Node-RED diff shows empty original** — approval diff now populates the original side from the `get_nodered_flows` result already in conversation history; `nodered/flow/{tab_id}.json` shows the current tab nodes, `nodered/flows.json` shows the full flows array
+
 ## [1.1.29] - 2026-04-01
 
 ### Added
