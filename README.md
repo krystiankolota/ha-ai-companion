@@ -11,6 +11,7 @@ An AI-powered Home Assistant companion that helps you manage configuration, auto
 - **Suggest automations** — based on your actual live entity states, never duplicates existing ones
 - **Persistent memory** — remembers your preferences and home layout across sessions
 - **Node-RED integration** — reads your existing flows to avoid duplicate automations
+- **Log viewer** — fetch and AI-analyze `home-assistant.log` directly from the companion UI
 - **Conversation history** — sessions saved and accessible across page reloads, with a mobile-friendly slide-in sidebar
 - **Token + cost tracking** — see cumulative input/output tokens and optional USD cost per session
 
@@ -20,7 +21,15 @@ All changes go through a safe approval workflow: the AI proposes, you see a visu
 
 ## Installation
 
-### HACS Custom Component (recommended)
+### Supervisor Add-on (recommended)
+
+1. Go to **Settings** → **Add-ons** → **Add-on Store**
+2. Click ⋮ → **Repositories** → add `https://github.com/krystiankolota/ha-ai-companion`
+3. Find **HA AI Companion** in the store and click **Install**
+4. Go to the add-on **Configuration** tab and set your API key
+5. Click **Start** — the companion appears in your sidebar as "AI Companion"
+
+### HACS Custom Component
 
 1. Open HACS → Integrations → ⋮ → Custom repositories
 2. Add this repository URL, category: Integration
@@ -38,9 +47,9 @@ Copy the `custom_components/ha_ai_companion/` folder into your Home Assistant `c
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `openai_api_url` | API endpoint (any OpenAI-compatible URL) | `https://api.openai.com/v1` |
+| `openai_api_url` | API endpoint (any OpenAI-compatible URL) | Google Gemini |
 | `openai_api_key` | API key | *(required)* |
-| `openai_model` | Model name | `gpt-4o` |
+| `openai_model` | Model name | `gemini-2.5-flash` |
 | `log_level` | Logging level | `info` |
 | `temperature` | Model temperature (optional) | model default |
 | `system_prompt_file` | Custom system prompt file in `/config` (optional) | — |
@@ -48,11 +57,20 @@ Copy the `custom_components/ha_ai_companion/` folder into your Home Assistant `c
 | `enable_cache_control` | Enable prompt caching (Anthropic Claude only) | `false` |
 | `usage_tracking` | Token tracking: `stream_options`, `usage`, `disabled` | `stream_options` |
 | `suggestion_model` | Separate model for the suggestion phase (optional) | main model |
-| `config_model` | Separate model for config edits (optional) | main model |
+| `suggestion_api_url` | API URL for suggestion model (optional) | main URL |
+| `suggestion_api_key` | API key for suggestion model (optional) | main key |
+| `config_model` | Separate model for config-editing phase (optional) | main model |
+| `config_api_url` | API URL for config model (optional) | main URL |
+| `config_api_key` | API key for config model (optional) | main key |
 | `nodered_url` | Node-RED base URL (optional) | — |
 | `nodered_token` | Node-RED API token (optional, if auth enabled) | — |
+| `nodered_flows_file` | Path to Node-RED flows JSON export relative to `/config` (optional) | — |
 | `input_price_per_1m` | USD per 1M input tokens — enables 💰 cost display in footer | `0.0` |
 | `output_price_per_1m` | USD per 1M output tokens | `0.0` |
+| `max_tokens` | Global output token limit | — |
+| `suggestion_max_tokens` | Token limit for suggestion phase | — |
+| `config_max_tokens` | Token limit for config-editing phase | — |
+| `max_sessions` | Max conversation sessions to keep | `50` |
 
 ### AI Provider Examples
 
@@ -104,7 +122,7 @@ output_price_per_1m: 10.00
 
 #### 🏆 Quality — best results, cost secondary
 
-**Anthropic Claude Sonnet 4.6 (newest, near-Opus quality):**
+**Anthropic Claude Sonnet 4.6:**
 ```yaml
 openai_api_url: "https://api.anthropic.com/v1"
 openai_api_key: "sk-ant-..."
@@ -168,8 +186,11 @@ The AI remembers facts across sessions using categorised memory files:
 ### Automation suggestions
 Ask "suggest automations for my home" — the AI fetches live entity states and existing automations/Node-RED flows before suggesting, so it never duplicates what you already have. Each suggestion card includes a type badge (new / improvement) and a copyable YAML block.
 
+### Log viewer
+The **Logs** tab shows `home-assistant.log` with keyword filtering and an "Analyze with AI" button that returns a structured report: severity, component, likely cause, and suggested fix per issue.
+
 ### Conversation sessions
-All conversations are saved automatically. Use the sidebar to switch between past sessions or start a new one.
+All conversations are saved automatically. Use the sidebar to switch between past sessions or start a new one. "Clear all conversations" extracts memorable facts to memory before deleting.
 
 ---
 
@@ -182,6 +203,7 @@ Enable debug logging for the MQTT integration
 Rename "Office Button" device to "Desk Button"
 Suggest automations based on my current devices
 What automations do I have for the bedroom lights?
+Analyze recent Home Assistant errors
 ```
 
 ---

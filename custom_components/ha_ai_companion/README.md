@@ -14,17 +14,28 @@ AI-powered Home Assistant companion for managing configuration, dashboards, auto
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `openai_api_url` | API endpoint (any OpenAI-compatible) | `https://api.openai.com/v1` |
+| `openai_api_url` | API endpoint (any OpenAI-compatible) | Google Gemini |
 | `openai_api_key` | API key | *(required)* |
-| `openai_model` | Model name | `gpt-4o` |
+| `openai_model` | Model name | `gemini-2.5-flash` |
 | `log_level` | Logging verbosity | `info` |
 | `temperature` | Model temperature (optional) | model default |
 | `system_prompt_file` | Custom system prompt file path relative to `/config` | — |
 | `suggestion_prompt` | Extra instructions added to the system prompt | — |
 | `enable_cache_control` | Prompt caching (Anthropic Claude) | `false` |
 | `usage_tracking` | Token tracking: `stream_options`, `usage`, `disabled` | `stream_options` |
+| `suggestion_model` | Cheaper/faster model for suggestion phase (optional) | main model |
+| `suggestion_api_url` | API URL override for suggestion model (optional) | main URL |
+| `suggestion_api_key` | API key override for suggestion model (optional) | main key |
+| `config_model` | Stronger model for config-editing phase (optional) | main model |
+| `config_api_url` | API URL override for config model (optional) | main URL |
+| `config_api_key` | API key override for config model (optional) | main key |
 | `nodered_url` | Node-RED base URL (e.g. `http://homeassistant:1880`) | — |
 | `nodered_token` | Node-RED API token (if auth is enabled) | — |
+| `nodered_flows_file` | Path to Node-RED flows JSON export relative to `/config` | — |
+| `input_price_per_1m` | USD per 1M input tokens — enables cost display | `0.0` |
+| `output_price_per_1m` | USD per 1M output tokens | `0.0` |
+| `max_tokens` | Global output token limit | — |
+| `max_sessions` | Max conversation sessions to keep | `50` |
 
 ## What the companion can do
 
@@ -34,7 +45,8 @@ AI-powered Home Assistant companion for managing configuration, dashboards, auto
 - **Suggest automations** — based on live entity states and existing automations
 - **Avoid duplicates** — reads Node-RED flows before suggesting new ones
 - **Persistent memory** — remembers your preferences and home layout across sessions
-- **Conversation history** — sessions saved and restored across page reloads
+- **Log viewer** — fetch and AI-analyze `home-assistant.log` from the companion UI
+- **Conversation history** — sessions saved server-side, accessible across page reloads with mobile-friendly sidebar
 
 ## Services
 

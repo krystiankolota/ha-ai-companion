@@ -163,8 +163,12 @@ output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `suggestion_model` | String | `""` | Model used during the suggestion phase (before tool results). Leave empty to use `openai_model`. Tip: use a cheaper/faster model here. |
-| `config_model` | String | `""` | Model used once tool results arrive (config edits, device changes). Leave empty to use `openai_model`. Tip: use a stronger model here. |
+| `suggestion_model` | String | `""` | Model for the suggestion phase (before tool calls). Leave empty to use `openai_model`. Tip: use a cheaper/faster model here. |
+| `suggestion_api_url` | String | `""` | API URL override for the suggestion model. Leave empty to use `openai_api_url`. |
+| `suggestion_api_key` | String | `""` | API key override for the suggestion model. Leave empty to use `openai_api_key`. |
+| `config_model` | String | `""` | Model for the config-editing phase (after tool results). Leave empty to use `openai_model`. Tip: use a stronger model here. |
+| `config_api_url` | String | `""` | API URL override for the config model. Leave empty to use `openai_api_url`. |
+| `config_api_key` | String | `""` | API key override for the config model. Leave empty to use `openai_api_key`. |
 
 **Prompt Customisation (optional)**
 
@@ -205,8 +209,6 @@ When both values are set to non-zero, a `💰 $0.0000` cumulative session cost a
 | `max_tokens` | Integer | — | Global output token limit applied to all agent phases. |
 | `suggestion_max_tokens` | Integer | — | Override output token limit for the suggestion phase only. |
 | `config_max_tokens` | Integer | — | Override output token limit for the config-editing phase only. |
-| `suggestion_usage_tracking` | List | `default` | Token tracking for the suggestion phase. `default` inherits the global `usage_tracking` setting. |
-| `config_usage_tracking` | List | `default` | Token tracking for the config-editing phase. `default` inherits the global `usage_tracking` setting. |
 
 **Session management (optional)**
 
@@ -605,7 +607,7 @@ After installation and configuration:
    - Or go to the add-on page and click "Open Web UI"
 
 2. **Verify the connection**
-   - The interface should show: "✅ AI Configuration Agent ready"
+   - The interface should show: "✅ HA AI Companion ready"
    - If not, check your API key and logs
 
 3. **Start chatting**
@@ -732,6 +734,21 @@ Manage devices and entities through the registry:
 - Add icons and pictures
 - Set aliases
 
+### Session Management
+
+All conversations are saved automatically to the server. Use the sidebar to switch between sessions or start a new one.
+
+- **Clear all conversations** — button in the sidebar footer: analyzes all sessions for memorable facts (saves them to memory), then deletes all sessions
+- **Max sessions** — configure `max_sessions` (default 50); oldest sessions are pruned automatically when the limit is exceeded
+
+### Log Viewer
+
+The **Logs** tab lets you inspect `home-assistant.log` directly from the companion UI:
+
+- **Fetch logs** — load recent log lines with optional keyword filter and configurable line count (100–1000)
+- **Raw view** — color-coded output (red = ERROR, amber = WARNING, gray = INFO)
+- **Analyze with AI** — sends fetched lines to the AI and returns a structured report: severity, component, likely cause, and suggested fix per issue
+
 ### Virtual Files
 
 The AI can work with "virtual files" that represent registry data:
@@ -788,7 +805,6 @@ Backups are stored in the `/backup` directory within the add-on.
 #### Backup Rotation
 
 - Default: Keep 10 most recent backups per file
-- Configurable: `max_backups` option (5-50)
 - Older backups automatically deleted
 
 #### Manual Restore
@@ -910,7 +926,7 @@ curl http://localhost:8099/api/config/backups?file_path=configuration.yaml
 
 - **API keys:** Stored as password fields in HA
 - **Logs:** Sensitive data not logged
-- **Conversation history:** Stored in browser only (not server)
+- **Conversation history:** Stored server-side in `/config/.ai_agent_sessions/` (JSON, max `max_sessions` kept)
 
 #### Best Practices
 
@@ -1025,7 +1041,7 @@ pytest tests/ --cov=src --cov-report=html
 #### Data Flow
 
 ```
-User Input → Frontend → /api/chat → Agent System → Tools
+User Input → Frontend → /ws/chat (WebSocket) → Agent System → Tools
                                         ↓
                                   Configuration Manager
                                         ↓
@@ -1042,7 +1058,7 @@ User Input → Frontend → /api/chat → Agent System → Tools
 - **AI:** OpenAI Agents SDK
 - **YAML:** ruamel.yaml (comment-preserving)
 - **WebSocket:** aiohttp, websockets
-- **Frontend:** Vanilla JavaScript, Marked.js, Diff.js
+- **Frontend:** React 18, Vite, Tailwind CSS
 - **Container:** Docker, Alpine Linux
 
 ### Contributing
@@ -1093,5 +1109,5 @@ Follow conventional commits:
 
 ---
 
-**Last Updated:** 2026-03-26
-**Version:** 1.0.0
+**Last Updated:** 2026-04-01
+**Version:** 1.1.20
