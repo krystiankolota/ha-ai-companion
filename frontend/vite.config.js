@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   base: './',
   build: {
-    outDir: '../custom_components/ha_ai_companion/static/dist',
+    outDir: '../ha-ai-companion/static/dist',
     emptyOutDir: true,
     // Don't emit the Vite index.html — FastAPI serves templates/index.html via Jinja2
     rollupOptions: {

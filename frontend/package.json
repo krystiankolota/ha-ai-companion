@@ -5,6 +5,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "postbuild": "node scripts/sync.js",
+    "sync": "node scripts/sync.js",
+    "version:bump": "node scripts/bump-version.js",
     "preview": "vite preview"
   },
   "dependencies": {
