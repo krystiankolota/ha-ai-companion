@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.19"
+version = "1.1.20"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -205,7 +205,7 @@ async def health_check():
     }
 
 @app.get("/api/logs")
-async def get_logs(lines: int = 200, filter: str = "ha_ai_companion"):
+async def get_logs(lines: int = 200, filter: str = ""):
     """Return recent lines from home-assistant.log matching the filter."""
     config_dir = os.getenv("HA_CONFIG_DIR", "/config")
     log_path = os.path.join(config_dir, "home-assistant.log")
@@ -220,6 +220,56 @@ async def get_logs(lines: int = 200, filter: str = "ha_ai_companion"):
         return {"error": f"Log file not found: {log_path}", "lines": []}
     except Exception as e:
         return {"error": str(e), "lines": []}
+
+
+class AnalyzeLogsRequest(BaseModel):
+    lines: Optional[List[str]] = None  # pre-fetched lines from GET /api/logs
+
+@app.post("/api/logs/analyze")
+async def analyze_logs(req: AnalyzeLogsRequest):
+    """Send log lines to AI for analysis. Returns structured error report."""
+    if not agent_system:
+        raise HTTPException(status_code=503, detail="Agent system not ready")
+
+    log_lines = req.lines or []
+    if not log_lines:
+        return {"errors": [], "summary": "No log lines provided."}
+
+    # Cap to avoid huge context
+    if len(log_lines) > 300:
+        log_lines = log_lines[-300:]
+
+    log_text = "\n".join(log_lines)
+
+    prompt = (
+        "You are a Home Assistant diagnostic expert. Analyze these log lines and return a JSON object.\n\n"
+        "Return ONLY valid JSON with this exact structure:\n"
+        '{"summary": "one sentence overview", "errors": [{"timestamp": "...", "level": "ERROR|WARNING|INFO", '
+        '"component": "...", "message": "...", "cause": "likely cause", "fix": "suggested action"}]}\n\n'
+        "Focus on ERROR and WARNING lines. Skip routine INFO lines. "
+        "Group repeated errors into one entry. Limit to 15 most important issues.\n\n"
+        f"LOG LINES:\n{log_text}"
+    )
+
+    try:
+        response = await agent_system.suggestion_client.chat.completions.create(
+            model=os.getenv("SUGGESTION_MODEL") or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=2000,
+        )
+        content = response.choices[0].message.content or ""
+        # Extract JSON from response
+        import re as re_mod
+        json_match = re_mod.search(r'\{[\s\S]*\}', content)
+        if json_match:
+            result = json_lib.loads(json_match.group(0))
+        else:
+            result = {"summary": "Could not parse AI response.", "errors": []}
+        return result
+    except Exception as e:
+        logger.error(f"Log analysis error: {e}")
+        return {"summary": f"Analysis failed: {str(e)}", "errors": []}
 
 
 # Root endpoint - will serve the UI

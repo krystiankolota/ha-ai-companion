@@ -48,6 +48,12 @@ document.addEventListener('DOMContentLoaded', () => {
     newChatBtn = document.getElementById('newChatBtn');
     sidebarBackdrop = document.getElementById('sidebarBackdrop');
 
+    // Auto-resize textarea
+    messageInput.addEventListener('input', () => {
+        messageInput.style.height = 'auto';
+        messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
+    });
+
     // Set up event listeners
     sendBtn.addEventListener('click', sendMessageWebSocket);
     messageInput.addEventListener('keypress', (e) => {
@@ -60,6 +66,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Sidebar toggle
     if (sidebarToggleBtn) sidebarToggleBtn.addEventListener('click', toggleSidebar);
     if (newChatBtn) newChatBtn.addEventListener('click', newChat);
+
+    const clearAllBtn = document.getElementById('clearAllBtn');
+    if (clearAllBtn) clearAllBtn.addEventListener('click', openClearAllModal);
 
     // Close sidebar when backdrop is tapped (mobile)
     if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', closeSidebar);
@@ -1021,6 +1030,44 @@ window.deleteSession = async function(sessionId) {
         console.error('Delete session error:', e);
     }
 };
+
+function openClearAllModal() {
+    const modal = document.getElementById('clearAllModal');
+    const body = document.getElementById('clearAllModalBody');
+    const footer = document.getElementById('clearAllModalFooter');
+    body.innerHTML = '<p>This will analyze all conversations for important facts, save them to memory, then delete all conversation history.</p><p>Continue?</p>';
+    footer.innerHTML = '<button class="btn btn-danger" onclick="confirmClearAll()">Analyze &amp; Clear All</button><button class="btn btn-secondary" onclick="closeClearAllModal()">Cancel</button>';
+    modal.style.display = 'flex';
+}
+
+function closeClearAllModal() {
+    document.getElementById('clearAllModal').style.display = 'none';
+}
+
+async function confirmClearAll() {
+    const body = document.getElementById('clearAllModalBody');
+    const footer = document.getElementById('clearAllModalFooter');
+    body.innerHTML = '<p>Analyzing conversations for memorable facts...</p>';
+    footer.innerHTML = '';
+    try {
+        const resp = await fetch('api/sessions/clear-all', { method: 'POST' });
+        const data = await resp.json();
+        const memList = data.memories_saved && data.memories_saved.length > 0
+            ? `<ul>${data.memories_saved.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
+            : '<p>No new memories extracted.</p>';
+        body.innerHTML = `<p>Done. Deleted <strong>${data.sessions_deleted}</strong> conversation(s).</p>`
+            + (data.memories_saved && data.memories_saved.length > 0
+                ? `<p>Saved ${data.memories_saved.length} memory file(s):${memList}</p>`
+                : '<p>No new memories to save.</p>');
+        footer.innerHTML = '<button class="btn btn-secondary" onclick="closeClearAllModal()">Close</button>';
+        newChat();
+        loadSessions();
+    } catch (e) {
+        body.innerHTML = '<p>Error clearing conversations. Please try again.</p>';
+        footer.innerHTML = '<button class="btn btn-secondary" onclick="closeClearAllModal()">Close</button>';
+        console.error('Clear all error:', e);
+    }
+}
 
 async function autoSaveSession() {
     if (!conversationHistory || conversationHistory.length === 0) return;
