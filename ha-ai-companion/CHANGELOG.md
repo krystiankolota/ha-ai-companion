@@ -5,6 +5,28 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.20] - 2026-04-01
+
+### Added
+- **Logs tab** — new tab in the UI to fetch and view `home-assistant.log` with optional keyword filter and configurable line count (100–1000)
+- **AI log analysis** — "Analyze with AI" button sends fetched log lines to the suggestion model and returns a structured report: severity badges, component, likely cause, and suggested fix per issue
+- **Build automation** — `npm run build` now auto-syncs `src/`, `static/dist/`, and `templates/` to `custom_components/` via postbuild script; `npm run sync` for Python-only changes; `npm run version:bump -- X.Y.Z` bumps all 3 version files atomically
+
+## [1.1.18] - 2026-03-31
+
+### Changed
+- **Frontend rewritten with React 18 + Vite + Tailwind CSS** — modern dark UI replacing the old vanilla JS/CSS. Pre-built bundle committed to git so no build step required for end users. Features: streaming chat, diff viewer, approval cards, suggestions tab, session sidebar, cost display, clear-all with memory extraction.
+
+## [1.1.17] - 2026-03-31
+
+### Added
+- **`reload_config` tool** — AI can now call `homeassistant.reload_all` after proposing YAML helper changes (input_number, template sensors, scripts), activating them without a full HA restart. System prompt updated to guide the AI to define helpers in YAML and reload after approval.
+
+## [1.1.16] - 2026-03-31
+
+### Added
+- **Clear all conversations** — new button in the sessions sidebar that analyzes all sessions for memorable facts (via suggestion model), saves them to memory, then deletes all sessions. Returns count of sessions deleted and memory files saved.
+
 ## [1.1.15] - 2026-03-30
 
 ### Fixed
