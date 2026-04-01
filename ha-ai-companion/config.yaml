@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "1.1.22"
+version: "1.1.23"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -51,6 +51,8 @@ options:
   temperature: ""
   enable_cache_control: false
   usage_tracking: "stream_options"
+  suggestion_usage_tracking: "default"
+  config_usage_tracking: "default"
   suggestion_model: ""
   suggestion_api_url: ""
   suggestion_api_key: ""
@@ -77,6 +79,8 @@ schema:
   temperature: str?
   enable_cache_control: bool
   usage_tracking: list(stream_options|usage|disabled)
+  suggestion_usage_tracking: list(default|stream_options|usage|disabled)?
+  config_usage_tracking: list(default|stream_options|usage|disabled)?
   suggestion_model: str?
   suggestion_api_url: str?
   suggestion_api_key: str?

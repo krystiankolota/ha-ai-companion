@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.23] - 2026-04-01
+
+### Added
+- **Per-phase token usage tracking** — `suggestion_usage_tracking` and `config_usage_tracking` options now exposed in add-on config, allowing independent tracking modes (`stream_options`, `usage`, `disabled`, `default`) for suggestion and config LLMs when using different providers
+
 ## [1.1.22] - 2026-04-01
 
 ### Fixed
