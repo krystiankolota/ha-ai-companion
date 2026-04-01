@@ -1275,8 +1275,8 @@ class AgentTools:
                 "success": False,
                 "error": (
                     "Node-RED authentication failed (401). "
-                    "Set nodered_token in the companion options to a long-lived HA access token "
-                    "(HA Profile → Long-lived access tokens → Create token)."
+                    "The Node-RED HA add-on admin API does not accept HA long-lived tokens. "
+                    "Fix: enable 'Leave front door open' in Node-RED add-on config, then leave nodered_token empty."
                 ),
             }
         return {
@@ -1336,8 +1336,8 @@ class AgentTools:
                         "success": False,
                         "error": (
                             "Node-RED API authentication failed (401). "
-                            "Set nodered_token in the companion options to a long-lived HA access token "
-                            "(HA Profile → Long-lived access tokens → Create token)."
+                            "The Node-RED HA add-on admin API does not accept HA long-lived tokens. "
+                            "Fix: enable 'Leave front door open' in Node-RED add-on config, then leave nodered_token empty."
                         ),
                         "flows": [],
                         "count": 0,

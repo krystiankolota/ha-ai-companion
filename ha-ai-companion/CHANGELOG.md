@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.25] - 2026-04-01
+
+### Fixed
+- **Node-RED 401 error message** — HA long-lived tokens don't work for the Node-RED admin API; error now explains to enable "Leave front door open" in Node-RED add-on config instead
+
 ## [1.1.24] - 2026-04-01
 
 ### Fixed
