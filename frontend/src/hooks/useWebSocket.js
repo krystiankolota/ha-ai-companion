@@ -301,6 +301,13 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
           })
         }
 
+        if (data.truncated) {
+          dispatch({
+            type: Actions.ADD_DISPLAY_MESSAGE,
+            payload: { type: 'system', content: '⚠️ Response was cut short by the provider. If the AI was about to make changes, ask it to continue.' },
+          })
+        }
+
         removeLoadingIndicator()
         dispatch({ type: Actions.SET_SENDING, payload: false })
 

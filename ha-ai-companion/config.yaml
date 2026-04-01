@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "1.1.26"
+version: "1.1.27"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"

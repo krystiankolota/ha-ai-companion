@@ -246,7 +246,7 @@ Important Guidelines:
 - NEVER suggest changes directly - always use propose_config_changes
 - To intentionally delete automations/scripts/scenes, pass confirm_delete=true — only do this when the user explicitly asks to delete them
 - Always read the current configuration before proposing changes using search_config_files
-- Explain your reasoning in your response when calling propose_config_changes
+- Briefly explain the change in text, then call propose_config_changes immediately — do NOT reproduce the full file content in your text response before calling the tool
 - The user can accept or reject your proposed config changes through their own UI
 - Preserve all existing code, comments and structure when possible
 - Only change what's needed to complete the request of the user
@@ -1100,11 +1100,11 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 assistant_message = {"role": "assistant", "content": accumulated_content}
                 yield {
                     "event": "message_complete",
-                    "data": json.dumps({"message": assistant_message, "usage": {}})
+                    "data": json.dumps({"message": assistant_message, "usage": {}, "truncated": True})
                 }
                 yield {
                     "event": "complete",
-                    "data": json.dumps({"messages": [assistant_message], "iterations": iteration, "usage": {}})
+                    "data": json.dumps({"messages": [assistant_message], "iterations": iteration, "usage": {}, "truncated": True})
                 }
             else:
                 logger.error(f"Agent streaming error: {e}", exc_info=True)
