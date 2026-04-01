@@ -15,7 +15,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.21"
+version = "1.1.22"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -208,16 +208,24 @@ async def health_check():
 async def get_logs(lines: int = 200, filter: str = ""):
     """Return recent lines from home-assistant.log matching the filter."""
     config_dir = os.getenv("HA_CONFIG_DIR", "/config")
-    log_path = os.path.join(config_dir, "home-assistant.log")
+    # Try multiple candidate paths — HA log location varies by version/install
+    candidates = [
+        os.path.join(config_dir, "home-assistant.log"),
+        "/homeassistant/home-assistant.log",
+        "/config/home-assistant.log",
+    ]
+    log_path = next((p for p in candidates if os.path.isfile(p)), None)
+    if log_path is None:
+        return {
+            "error": f"Log file not found. Tried: {', '.join(dict.fromkeys(candidates))}",
+            "lines": [],
+        }
     try:
         with open(log_path, "r", errors="replace") as f:
             all_lines = f.readlines()
-        # Return last `lines` lines that contain the filter keyword (case-insensitive)
         kw = filter.lower()
         matched = [l.rstrip() for l in all_lines if kw in l.lower()] if kw else [l.rstrip() for l in all_lines]
         return {"log_path": log_path, "total_matched": len(matched), "lines": matched[-lines:]}
-    except FileNotFoundError:
-        return {"error": f"Log file not found: {log_path}", "lines": []}
     except Exception as e:
         return {"error": str(e), "lines": []}
 
