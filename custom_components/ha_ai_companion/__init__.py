@@ -41,6 +41,7 @@ from .const import (
     CONF_CONFIG_MAX_TOKENS,
     CONF_MAX_SESSIONS,
     CONF_MAX_SUGGESTIONS,
+    CONF_SUGGESTION_TEMPERATURE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -110,6 +111,11 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     if config.get(CONF_TEMPERATURE):
         os.environ["TEMPERATURE"] = str(config.get(CONF_TEMPERATURE))
+
+    if config.get(CONF_SUGGESTION_TEMPERATURE):
+        os.environ["SUGGESTION_TEMPERATURE"] = str(config.get(CONF_SUGGESTION_TEMPERATURE))
+    elif "SUGGESTION_TEMPERATURE" in os.environ:
+        del os.environ["SUGGESTION_TEMPERATURE"]
 
     if config.get(CONF_SYSTEM_PROMPT_FILE):
         os.environ["SYSTEM_PROMPT_FILE"] = config.get(CONF_SYSTEM_PROMPT_FILE)

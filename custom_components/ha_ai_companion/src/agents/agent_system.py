@@ -132,6 +132,11 @@ class AgentSystem:
         temperature_str = os.getenv('TEMPERATURE')
         self.temperature = float(temperature_str) if temperature_str else None
 
+        # Suggestion calls use a lower temperature by default (0.2) to reduce hallucination.
+        # Can be overridden via SUGGESTION_TEMPERATURE env var.
+        suggestion_temp_str = os.getenv('SUGGESTION_TEMPERATURE', '0.2')
+        self.suggestion_temperature = float(suggestion_temp_str)
+
         # Pricing (cost display in UI) — default 0 means cost won't be shown
         self.input_price_per_1m = float(os.getenv('INPUT_PRICE_PER_1M', '0') or '0')
         self.output_price_per_1m = float(os.getenv('OUTPUT_PRICE_PER_1M', '0') or '0')
@@ -1742,8 +1747,20 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 try:
                     dashboards_result = await self.tools.list_dashboards()
                     if dashboards_result.get("success"):
-                        dashboards_text = json.dumps(dashboards_result.get("dashboards", []), indent=2)
-                        context_sections.append(f"## Existing dashboards\n{dashboards_text}")
+                        dashboard_list = dashboards_result.get("dashboards", [])
+                        dashboard_contents = []
+                        for dash in dashboard_list:
+                            url_path = dash.get("url_path")
+                            title = dash.get("title", url_path or "default")
+                            # Fetch actual YAML so LLM can see current cards/layout
+                            lovelace_key = None if url_path in (None, "lovelace") else url_path
+                            yaml_content = await self.tools._get_lovelace_config(lovelace_key)
+                            if yaml_content:
+                                dashboard_contents.append(f"### Dashboard: {title}\n{yaml_content}")
+                            else:
+                                dashboard_contents.append(f"### Dashboard: {title} (url_path={url_path})\n(YAML not available)")
+                        if dashboard_contents:
+                            context_sections.append(f"## Existing dashboards\n" + "\n\n".join(dashboard_contents))
                 except Exception:
                     pass
 
@@ -1806,22 +1823,61 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
             context = "\n\n".join(context_sections)
 
+            # Determine what types of suggestions to generate based on available context.
+            # If the user only selected dashboards (no automation-related types), focus on
+            # dashboard improvements rather than automations to match their intent.
+            automation_types = {'automations', 'scripts', 'scenes', 'nodered'}
+            wants_automations = bool(automation_types & active_types)
+            wants_dashboards = 'dashboards' in active_types
+            # If nothing explicit was selected, default to automations
+            if not wants_automations and not wants_dashboards:
+                wants_automations = True
+
+            suggestion_targets = []
+            if wants_automations:
+                suggestion_targets.append(
+                    "5-10 practical automations the user does not already have "
+                    "(do NOT re-suggest automations already in the automation list or Node-RED flows)"
+                )
+            if wants_dashboards:
+                suggestion_targets.append(
+                    "3-5 Lovelace dashboard improvements — new cards, missing entity tiles, "
+                    "layout improvements, or useful info the dashboards currently lack "
+                    "(do NOT suggest cards/views that already exist on the dashboards)"
+                )
+
+            suggest_instruction = "Suggest " + "; and ".join(suggestion_targets) + "."
+
+            entity_grounding = ""
+            if 'entity_states' in active_types:
+                entity_grounding = (
+                    "CRITICAL: Only reference entity_ids that appear in the '## Current entity states' section. "
+                    "Never invent or guess entity_ids. If an entity for a given location or device is not in the list, "
+                    "do not include that entity in the suggestion. "
+                )
+
+            naming_instruction = ""
+            if 'entity_states' in active_types:
+                naming_instruction = (
+                    "Also review entity friendly_names and identify any that are unclear, ambiguous, or too generic "
+                    "(e.g. 'pompa', 'sensor_1', 'switch_kitchen'). "
+                )
+
             messages = [
                 {
                     "role": "system",
                     "content": (
-                        "You are a Home Assistant automation expert. "
-                        "Based on the provided entity states and existing automations, "
-                        "suggest 5-10 practical automations the user does not already have. "
-                        "Do NOT suggest automations that already exist in the automation list or Node-RED flows. "
-                        "Also review entity friendly_names and identify any that are unclear, ambiguous, or too generic "
-                        "(e.g. 'pompa', 'sensor_1', 'switch_kitchen'). "
+                        "You are a Home Assistant expert. "
+                        f"{suggest_instruction} "
+                        f"{entity_grounding}"
+                        f"{naming_instruction}"
                         "Return ONLY valid JSON — an object with: "
-                        "'suggestions' (array of automation suggestions) and "
+                        "'suggestions' (array of suggestions) and "
                         "'naming_issues' (array of unclear names, may be empty). "
                         "Each suggestion must have: title (string), description (string), "
                         "category (one of: lighting, climate, security, energy, comfort, other), "
-                        "entities (array of entity_id strings), implementation_hint (string with brief YAML hint). "
+                        "entities (array of entity_id strings that actually exist), "
+                        "implementation_hint (string with brief YAML hint). "
                         "Each naming_issue must have: entity_id (string), current_name (string), "
                         "suggested_name (string), reason (string)."
                     )
@@ -1836,9 +1892,8 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 "model": self.suggestion_model,
                 "messages": messages,
                 "stream": False,
+                "temperature": self.suggestion_temperature,
             }
-            if self.temperature is not None:
-                api_params["temperature"] = self.temperature
             if self.suggestion_max_tokens:
                 api_params["max_tokens"] = self.suggestion_max_tokens
 

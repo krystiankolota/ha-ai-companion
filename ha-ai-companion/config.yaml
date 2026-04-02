@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "1.1.33"
+version: "1.1.34"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -69,6 +69,7 @@ options:
   suggestion_max_tokens: 0
   config_max_tokens: 0
   max_sessions: 50
+  suggestion_temperature: ""
 
 schema:
   openai_api_url: url
@@ -97,3 +98,4 @@ schema:
   suggestion_max_tokens: int?
   config_max_tokens: int?
   max_sessions: int?
+  suggestion_temperature: str?

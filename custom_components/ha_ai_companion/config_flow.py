@@ -40,6 +40,7 @@ from .const import (
     CONF_CONFIG_MAX_TOKENS,
     CONF_MAX_SESSIONS,
     CONF_MAX_SUGGESTIONS,
+    CONF_SUGGESTION_TEMPERATURE,
     DEFAULT_API_URL,
     DEFAULT_MODEL,
     DEFAULT_LOG_LEVEL,
@@ -78,6 +79,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
     vol.Optional(CONF_CONFIG_MAX_TOKENS): cv.positive_int,
     vol.Optional(CONF_MAX_SESSIONS): cv.positive_int,
     vol.Optional(CONF_MAX_SUGGESTIONS): cv.positive_int,
+    vol.Optional(CONF_SUGGESTION_TEMPERATURE): cv.string,
 })
 
 
@@ -218,6 +220,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(CONF_SUGGESTION_API_URL, default=self._get(CONF_SUGGESTION_API_URL, "")): cv.string,
                 vol.Optional(CONF_SUGGESTION_API_KEY, default=self._get(CONF_SUGGESTION_API_KEY, "")): cv.string,
                 vol.Optional(CONF_SUGGESTION_MAX_TOKENS, default=self._get(CONF_SUGGESTION_MAX_TOKENS, 0)): cv.positive_int,
+                vol.Optional(CONF_SUGGESTION_TEMPERATURE, default=self._get(CONF_SUGGESTION_TEMPERATURE, "")): cv.string,
                 vol.Optional(CONF_SUGGESTION_PROMPT, default=self._get(CONF_SUGGESTION_PROMPT, "")): cv.string,
                 vol.Optional(CONF_MAX_SUGGESTIONS, default=self._get(CONF_MAX_SUGGESTIONS, DEFAULT_MAX_SUGGESTIONS)): cv.positive_int,
                 vol.Optional(CONF_CONFIG_MODEL, default=self._get(CONF_CONFIG_MODEL, "")): cv.string,

@@ -5,6 +5,19 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.34] - 2026-04-02
+
+### Fixed
+- **Suggestions: resource type selection now controls suggestion type** — selecting only "dashboards" now requests Lovelace dashboard improvements (new cards, missing tiles, layout) instead of automations; the system prompt is built dynamically from the active resource types
+- **Suggestions: entity hallucination** — when entity states are included, the LLM is now explicitly instructed to only use entity_ids from the provided list, preventing invented entities (e.g. motion detector in a room that has none)
+- **Suggestions: dashboard context** — when "dashboards" is selected, the actual Lovelace YAML is now fetched for each dashboard (not just metadata), so the LLM can see existing cards and avoid re-suggesting them
+
+### Changed
+- **Suggestions: temperature** — suggestion calls now default to `0.2` (down from API default ~1.0) to reduce hallucination; configurable via `suggestion_temperature` add-on option
+
+### Added
+- **`suggestion_temperature` option** — new add-on config field to control temperature for suggestion generation; defaults to `0.2`
+
 ## [1.1.33] - 2026-04-02
 
 ### Fixed

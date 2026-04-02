@@ -28,6 +28,7 @@ CONF_OUTPUT_PRICE_PER_1M = "output_price_per_1m"
 CONF_MAX_TOKENS = "max_tokens"
 CONF_SUGGESTION_MAX_TOKENS = "suggestion_max_tokens"
 CONF_CONFIG_MAX_TOKENS = "config_max_tokens"
+CONF_SUGGESTION_TEMPERATURE = "suggestion_temperature"
 CONF_MAX_SESSIONS = "max_sessions"
 CONF_MAX_SUGGESTIONS = "max_suggestions"
 
