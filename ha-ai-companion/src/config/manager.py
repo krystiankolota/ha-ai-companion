@@ -150,8 +150,8 @@ class ConfigurationManager:
         if not file_path.exists():
             raise ConfigurationError(f"Cannot backup non-existent file: {file_path}")
 
-        # Generate backup filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Generate backup filename with timestamp (microseconds prevent same-second collisions)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         backup_name = f"{file_path.stem}_{timestamp}{file_path.suffix}.backup"
         backup_path = self.backup_dir / backup_name
 
@@ -636,8 +636,8 @@ class ConfigurationManager:
             stat = backup.stat()
 
             # Parse original filename from backup name
-            # Format: {stem}_{timestamp}.{ext}.backup
-            parts = backup.stem.rsplit('_', 1)
+            # Format: {stem}_{YYYYMMDD}_{HHMMSS}.{ext}.backup — timestamp has two _ parts
+            parts = backup.stem.rsplit('_', 3)
             original_name = parts[0] if len(parts) > 1 else backup.stem
 
             backups.append({
@@ -670,8 +670,8 @@ class ConfigurationManager:
             raise ConfigurationError(f"Backup not found: {backup_name}")
 
         # Parse original filename from backup
-        # Format: {stem}_{timestamp}.{ext}.backup
-        parts = backup_path.stem.rsplit('_', 1)
+        # Format: {stem}_{YYYYMMDD}_{HHMMSS}.{ext}.backup — timestamp has two _ parts
+        parts = backup_path.stem.rsplit('_', 3)
         if len(parts) < 2:
             raise ConfigurationError(f"Invalid backup name format: {backup_name}")
 

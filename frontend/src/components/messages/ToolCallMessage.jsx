@@ -7,7 +7,7 @@ export default function ToolCallMessage({ toolNames, toolCalls }) {
   const summary = `Tool call: ${names.join(', ')}`
 
   return (
-    <div className="bg-surface-800 border border-surface-700 rounded-lg my-1 overflow-hidden">
+    <div className="bg-surface-800 border border-surface-700 rounded-lg overflow-hidden">
       <button
         className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-gray-400 hover:text-gray-300 hover:bg-surface-750 transition-colors"
         onClick={() => setOpen(o => !o)}

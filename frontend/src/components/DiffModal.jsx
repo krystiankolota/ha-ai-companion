@@ -47,7 +47,7 @@ export default function DiffModal() {
       const diff2htmlUi = new Diff2HtmlUI(diffContainerRef.current, combinedDiff, {
         drawFileList: true,
         matching: 'lines',
-        outputFormat: 'side-by-side',
+        outputFormat: 'line-by-line',
         highlight: false,
         fileContentToggle: true,
       })

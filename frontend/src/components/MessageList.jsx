@@ -39,7 +39,7 @@ export default function MessageList() {
   }, [displayMessages.length])
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-0">
+    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
       {displayMessages.length === 0 && (
         <div className="flex flex-col items-center justify-center h-full text-gray-600 text-sm select-none">
           <div className="text-4xl mb-3">🏠</div>

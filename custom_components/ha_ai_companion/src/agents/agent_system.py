@@ -316,6 +316,12 @@ Automation Suggestion Guidelines:
 - When Node-RED flows are available, mention whether a suggestion is best done in HA automations or Node-RED
 - Offer to implement any suggestion via propose_config_changes
 
+Safety & Reversibility:
+- Every file change creates an automatic timestamped backup before writing.
+- If the user asks to undo or revert a change: call list_backups to find the right backup, then restore_backup — this is always available and safe.
+- Prefer targeted edits over full-file rewrites to minimise diff size and revert risk.
+- When making multiple related changes, propose them together in one changeset so they can be approved or rejected as a unit.
+
 Response Style:
 - Be concise but thorough
 - Use technical terms appropriately
@@ -335,8 +341,8 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             domain = eid.split(".")[0] if "." in eid else "other"
             state = s.get("state", "?")
             fname = s.get("friendly_name")
-            # Include friendly_name so the LLM can judge display names, not just entity_id slugs
-            entry = f'{eid}["{fname}"]={state}' if fname else f"{eid}={state}"
+            # Friendly name first so LLM reads purpose before the technical slug
+            entry = f'"{fname}"[{eid}]={state}' if fname else f"{eid}={state}"
             by_domain[domain].append(entry)
         return "\n".join(
             f"{d}: " + ", ".join(entries)

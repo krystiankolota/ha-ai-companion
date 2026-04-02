@@ -5,6 +5,21 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.33] - 2026-04-02
+
+### Fixed
+- **Diff dark theme** — comprehensive CSS overrides for all diff2html elements (td cells, line numbers, context rows, file list, empty placeholders); switched to line-by-line format for readability on mobile
+- **Backup filename collision** — `_create_backup` now uses microsecond-precision timestamps, preventing same-second overwrites when restore is called immediately after write
+- **Backup restore parsing** — `restore_backup` and `list_backups` now correctly strip the full `YYYYMMDD_HHMMSS_ffffff` timestamp suffix when recovering the original filename (was splitting on last `_` only, leaving date in the stem)
+- **Entity display** — entity state format changed to `"friendly_name"[entity_id]=state` so the AI reads the human-readable name first, improving intent recognition for renamed/customised entities
+
+### Changed
+- **Chat message spacing** — unified to `space-y-3` on the message list container; removed per-component `mb-3`/`my-1` margins that were inconsistently applied
+- **Revert awareness** — system prompt now explicitly instructs the AI to use `list_backups` + `restore_backup` when asked to undo a change
+
+### Added
+- **Test suite** — 83 unit tests for `ConfigurationManager`, `MemoryManager`, and `ConversationManager` (pytest + pytest-asyncio, no HA required); run from `ha-ai-companion/` with `python -m pytest tests/`
+
 ## [1.1.32] - 2026-04-01
 
 ### Fixed

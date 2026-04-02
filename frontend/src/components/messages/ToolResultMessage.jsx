@@ -12,7 +12,7 @@ export default function ToolResultMessage({ functionName, result }) {
   const displayJson = truncated ? json.slice(0, MAX_PREVIEW) + '…' : json
 
   return (
-    <div className="bg-surface-800 border border-surface-700 rounded-lg my-1 overflow-hidden">
+    <div className="bg-surface-800 border border-surface-700 rounded-lg overflow-hidden">
       <button
         className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-gray-400 hover:text-gray-300 hover:bg-surface-750 transition-colors"
         onClick={() => setOpen(o => !o)}

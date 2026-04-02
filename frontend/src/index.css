@@ -42,27 +42,100 @@
 }
 
 /* diff2html dark theme overrides */
-.d2h-wrapper {
+.d2h-wrapper,
+.d2h-file-wrapper,
+.d2h-file-diff,
+.d2h-diff-table,
+.d2h-diff-table td,
+.d2h-code-line,
+.d2h-code-side-line,
+.d2h-code-linenumber,
+.d2h-cntx,
+.d2h-cntx td,
+.d2h-emptyplaceholder,
+.d2h-file-list-wrapper,
+.d2h-file-list-header,
+.d2h-file-list,
+.d2h-file-list li {
   background: transparent !important;
+  background-color: transparent !important;
+}
+.d2h-file-wrapper {
+  border-color: theme('colors.surface.700') !important;
 }
 .d2h-file-header {
   background-color: theme('colors.surface.800') !important;
   border-color: theme('colors.surface.700') !important;
   color: theme('colors.gray.200') !important;
 }
-.d2h-file-diff {
-  background-color: theme('colors.surface.950') !important;
+.d2h-file-list-header {
+  background-color: theme('colors.surface.800') !important;
+  border-color: theme('colors.surface.700') !important;
+  color: theme('colors.gray.400') !important;
+}
+.d2h-file-list-wrapper {
+  border-color: theme('colors.surface.700') !important;
+  margin-bottom: 8px !important;
+}
+.d2h-file-list li {
+  border-color: theme('colors.surface.700') !important;
+  color: theme('colors.gray.300') !important;
+}
+.d2h-file-list a {
+  color: theme('colors.indigo.400') !important;
 }
 .d2h-code-line, .d2h-code-side-line {
   color: theme('colors.gray.300') !important;
 }
+.d2h-code-linenumber {
+  border-color: theme('colors.surface.700') !important;
+  color: theme('colors.gray.600') !important;
+}
 .d2h-del {
-  background-color: rgba(239, 68, 68, 0.15) !important;
+  background-color: rgba(239, 68, 68, 0.18) !important;
+}
+.d2h-del td {
+  background-color: rgba(239, 68, 68, 0.18) !important;
+}
+.d2h-del .d2h-code-linenumber {
+  background-color: rgba(239, 68, 68, 0.25) !important;
+}
+.d2h-del.d2h-change {
+  background-color: rgba(239, 68, 68, 0.18) !important;
 }
 .d2h-ins {
   background-color: rgba(16, 185, 129, 0.15) !important;
 }
+.d2h-ins td {
+  background-color: rgba(16, 185, 129, 0.15) !important;
+}
+.d2h-ins .d2h-code-linenumber {
+  background-color: rgba(16, 185, 129, 0.22) !important;
+}
+.d2h-ins.d2h-change {
+  background-color: rgba(16, 185, 129, 0.15) !important;
+}
 .d2h-info {
   background-color: theme('colors.surface.800') !important;
+  border-color: theme('colors.surface.700') !important;
   color: theme('colors.gray.500') !important;
+}
+.d2h-info td {
+  background-color: theme('colors.surface.800') !important;
+  color: theme('colors.gray.500') !important;
+}
+.d2h-tag {
+  background-color: theme('colors.surface.700') !important;
+  color: theme('colors.gray.400') !important;
+  border-color: theme('colors.surface.600') !important;
+}
+.d2h-moved-tag {
+  background-color: theme('colors.surface.700') !important;
+}
+/* Inline change highlights */
+.d2h-del .d2h-change-old-type { background-color: rgba(239, 68, 68, 0.45) !important; border-radius: 2px; }
+.d2h-ins .d2h-change-new-type { background-color: rgba(16, 185, 129, 0.4) !important; border-radius: 2px; }
+/* Side-by-side separator */
+.d2h-code-side-line + .d2h-code-side-line {
+  border-left-color: theme('colors.surface.700') !important;
 }
