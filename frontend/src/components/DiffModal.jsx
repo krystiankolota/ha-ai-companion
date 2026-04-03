@@ -14,7 +14,7 @@ function tryPrettyJson(str) {
 function buildUnifiedDiff(filePath, oldContent, newContent) {
   const old_ = tryPrettyJson(oldContent || '')
   const new_ = tryPrettyJson(newContent || '')
-  return Diff.createPatch(filePath, old_, new_, 'Original', 'Proposed')
+  return Diff.createPatch(filePath, old_, new_, '', '')
 }
 
 export default function DiffModal() {
