@@ -13,7 +13,6 @@ import {
   getSuggestionsHistory,
 } from '../lib/api'
 import { formatGeneratedAt } from '../lib/utils'
-import MemoryViewer from './MemoryViewer'
 
 const ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'nodered', 'memory']
 
@@ -570,9 +569,6 @@ export default function SuggestionsTab() {
 
       {/* History */}
       <HistorySection history={history} dismissedTitles={dismissedTitles} />
-
-      {/* Memory viewer */}
-      <MemoryViewer />
     </div>
   )
 }
