@@ -184,7 +184,7 @@ The AI remembers facts across sessions using categorised memory files:
 - `correction_` — corrections to previous facts
 
 ### Automation suggestions
-The Suggestions tab fetches live entity states and existing automations/Node-RED flows before asking the AI, so it never duplicates what you already have. You can select which data sources to include (entity states, automations, scenes, scripts, Node-RED, memory). Progress streams in real time so you can see exactly what context is being sent. Each card includes a type badge (new / improvement) and a copyable YAML block.
+The Suggestions tab fetches live entity states and existing automations/Node-RED flows before asking the AI, so it never duplicates what you already have. You can select which data sources to include (entity states, automations, scenes, scripts, Node-RED, memory). Progress streams in real time — after generation a collapsible "Prompt sent to AI" panel shows the exact system prompt, model used, and a preview of every context section with its size. Each card includes a type badge (new / improvement) and a copyable YAML block.
 
 ### Memory tab
 The **Memory** tab (next to Chat and Suggestions) lists all AI memory files stored in `.ai_agent_memories/`. You can expand any file to read its content and delete stale or incorrect entries without having to SSH into the server.

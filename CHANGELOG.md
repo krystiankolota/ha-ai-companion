@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.37] - 2026-04-03
+
+### Fixed
+- **Diff RENAMED badge** — header strings in `createPatch` caused diff2html to treat same-path files as renames
+
+### Added
+- **Generation log** persists after suggestions run (collapsible, auto-open while running)
+- **"Prompt sent to AI"** panel — system prompt + per-section content previews + model/size info
+- **Naming issues auto-dismiss** on "Fix in chat" / "Fix all"
+- **"Add to chat" auto-marks suggestion as applied**
+
 ## [1.1.36] - 2026-04-03
 
 ### Fixed
