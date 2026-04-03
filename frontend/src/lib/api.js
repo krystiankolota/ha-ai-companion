@@ -59,7 +59,7 @@ export function getSuggestions() {
   return apiFetch('api/suggestions')
 }
 
-export async function generateSuggestions(resourceTypes, extraPrompt, onStatus) {
+export async function generateSuggestions(resourceTypes, extraPrompt, onStatus, onContextReady) {
   const body = { resource_types: resourceTypes }
   if (extraPrompt) body.extra_prompt = extraPrompt
   const response = await fetch('api/suggestions/generate', {
@@ -88,6 +88,8 @@ export async function generateSuggestions(resourceTypes, extraPrompt, onStatus) 
         const event = JSON.parse(line)
         if (event.event === 'status' && onStatus) {
           onStatus(event.message)
+        } else if (event.event === 'context_ready' && onContextReady) {
+          onContextReady(event)
         } else if (event.event === 'result') {
           result = event
         } else if (event.event === 'error') {

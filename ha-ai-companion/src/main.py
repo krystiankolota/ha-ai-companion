@@ -636,8 +636,8 @@ async def generate_suggestions(request: Request):
 
     queue: asyncio.Queue = asyncio.Queue()
 
-    async def progress_cb(message: str):
-        await queue.put({"event": "status", "message": message})
+    async def progress_cb(payload):
+        await queue.put(payload)
 
     async def run_generation():
         try:

@@ -157,16 +157,18 @@ function SuggestionCard({ suggestion, onAddToChat, onDismiss, onMarkApplied, com
 
 // ── Naming Issues ──────────────────────────────────────────────────────────────
 
-function NamingIssuesSection({ issues, onSwitchToChat }) {
+function NamingIssuesSection({ issues, onSwitchToChat, onFixed }) {
   if (!issues || issues.length === 0) return null
 
   const fixOne = (entity_id, suggested_name) => {
     onSwitchToChat(`Please rename entity ${entity_id} to have the friendly name "${suggested_name}"`)
+    onFixed?.([entity_id])
   }
 
   const fixAll = () => {
     const lines = issues.map(i => `- ${i.entity_id}: rename to "${i.suggested_name}"`).join('\n')
     onSwitchToChat(`Please rename all these entities to have clearer friendly names:\n${lines}`)
+    onFixed?.(issues.map(i => i.entity_id))
   }
 
   return (
@@ -321,6 +323,7 @@ export default function SuggestionsTab() {
   const [history, setHistory] = useState([])
   const [statusLines, setStatusLines] = useState([])
   const [contextSummary, setContextSummary] = useState(null)
+  const [promptDetails, setPromptDetails] = useState(null)
 
   const loadAll = useCallback(async () => {
     const [sugg, dismissed, applied, hist] = await Promise.allSettled([
@@ -372,22 +375,25 @@ export default function SuggestionsTab() {
     setSuggestions([])
     setNamingIssues([])
     setContextSummary(null)
+    setPromptDetails(null)
     try {
       const types = resourceTypes.length ? resourceTypes : ALL_RESOURCE_TYPES
-      const data = await apiGenerateSuggestions(types, focusPrompt || undefined, (msg) => {
-        setStatusLines(prev => [...prev, msg])
-      })
+      const data = await apiGenerateSuggestions(
+        types,
+        focusPrompt || undefined,
+        (msg) => setStatusLines(prev => [...prev, msg]),
+        (ctx) => setPromptDetails(ctx),
+      )
       setSuggestions(data.suggestions || [])
       setNamingIssues(data.naming_issues || [])
       setGeneratedAt(data.generated_at)
       setContextSummary(data.context_summary || null)
-      setStatusLines([])
+      setStatusLines(prev => [...prev, `✓ Received ${(data.suggestions || []).length} suggestion(s)`])
       setStatus('')
-      // Refresh history
       const hist = await getSuggestionsHistory().catch(() => ({ history: [] }))
       setHistory(hist.history || [])
     } catch (e) {
-      setStatusLines([])
+      setStatusLines(prev => [...prev, `Error: ${e.message}`])
       setStatus(`Error: ${e.message}`)
     } finally {
       setGenerating(false)
@@ -453,6 +459,8 @@ export default function SuggestionsTab() {
       msg += `\n\nStarting YAML:\n\`\`\`yaml\n${s.yaml_block}\n\`\`\``
     }
     switchToChat(msg)
+    // Auto-mark as applied since user is implementing it
+    handleMarkApplied(s.title)
   }
 
   return (
@@ -498,37 +506,59 @@ export default function SuggestionsTab() {
         </button>
       </div>
 
-      {/* Streaming status lines */}
+      {/* Generation log — persists after completion */}
       {statusLines.length > 0 && (
-        <div className="bg-surface-900 border border-surface-700 rounded-xl p-3 mb-3 space-y-1">
-          {statusLines.map((line, i) => (
-            <div key={i} className={`text-xs font-mono ${line.startsWith('✓') ? 'text-emerald-400' : line.startsWith('Error') ? 'text-red-400' : 'text-gray-400'}`}>
-              {line}
+        <details className="mb-3" open={generating}>
+          <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors select-none">
+            Generation log ({statusLines.length} steps)
+          </summary>
+          <div className="mt-1 bg-surface-900 border border-surface-700 rounded-xl p-3 space-y-1">
+            {statusLines.map((line, i) => (
+              <div key={i} className={`text-xs font-mono ${line.startsWith('✓') ? 'text-emerald-400' : line.startsWith('Error') ? 'text-red-400' : 'text-gray-400'}`}>
+                {generating && i === statusLines.length - 1
+                  ? <span className="animate-pulse">{line}</span>
+                  : line}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {/* Prompt sent to AI */}
+      {promptDetails && !generating && (
+        <details className="mb-3">
+          <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors select-none">
+            Prompt sent to AI
+            <span className="ml-2 font-mono text-gray-600">
+              {promptDetails.model} · ~{Math.round((promptDetails.total_chars || 0) / 1000 * 10) / 10}K chars
+            </span>
+          </summary>
+          <div className="mt-1 bg-surface-900 border border-surface-700 rounded-xl p-3 space-y-3">
+            {/* System prompt */}
+            <div>
+              <div className="text-[10px] text-gray-500 font-medium uppercase tracking-wide mb-1">System prompt</div>
+              <pre className="text-[11px] text-gray-300 font-mono whitespace-pre-wrap break-words bg-surface-950 rounded p-2">
+                {promptDetails.system_prompt}
+              </pre>
             </div>
-          ))}
-        </div>
+            {/* Context sections */}
+            {(promptDetails.sections || []).map((s, i) => (
+              <div key={i}>
+                <div className="text-[10px] text-gray-500 font-medium uppercase tracking-wide mb-1">
+                  {s.header} <span className="normal-case font-normal text-gray-600">({Math.round(s.chars / 1000 * 10) / 10}K chars)</span>
+                </div>
+                <pre className="text-[11px] text-gray-400 font-mono whitespace-pre-wrap break-words bg-surface-950 rounded p-2 max-h-40 overflow-y-auto">
+                  {s.preview}{s.truncated ? '\n…(truncated)' : ''}
+                </pre>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       {/* Error status */}
       {status && (
         <div className="text-xs text-red-400 mb-3 italic">{status}</div>
-      )}
-
-      {/* Context summary */}
-      {contextSummary && contextSummary.length > 0 && !generating && (
-        <details className="mb-3 text-xs text-gray-500">
-          <summary className="cursor-pointer hover:text-gray-300 transition-colors">What was analyzed</summary>
-          <div className="mt-1 bg-surface-900 border border-surface-700 rounded-lg p-2 space-y-0.5">
-            {contextSummary.map((item, i) => (
-              <div key={i} className="font-mono text-[11px]">
-                <span className="text-gray-400">{item.type}</span>
-                {item.count != null && <span className="text-gray-500">: {item.count} items</span>}
-                {item.files != null && <span className="text-gray-500">: {item.files} file(s)</span>}
-                {item.chars != null && <span className="text-gray-600"> (~{Math.round(item.chars / 1000 * 10) / 10}K chars)</span>}
-              </div>
-            ))}
-          </div>
-        </details>
       )}
 
       {/* Generated at */}
@@ -542,7 +572,11 @@ export default function SuggestionsTab() {
       )}
 
       {/* Naming issues */}
-      <NamingIssuesSection issues={namingIssues} onSwitchToChat={switchToChat} />
+      <NamingIssuesSection
+        issues={namingIssues}
+        onSwitchToChat={switchToChat}
+        onFixed={(entityIds) => setNamingIssues(prev => prev.filter(i => !entityIds.includes(i.entity_id)))}
+      />
 
       {/* Suggestions list */}
       {visibleSuggestions.length === 0 && !generating && !status && (

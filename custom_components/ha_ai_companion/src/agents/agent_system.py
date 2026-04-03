@@ -1696,9 +1696,12 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         if not self.client:
             return {"success": False, "error": "OpenAI API not configured"}
 
-        async def _emit(msg: str):
+        async def _emit(payload):
             if progress_cb:
-                await progress_cb(msg)
+                if isinstance(payload, str):
+                    await progress_cb({"event": "status", "message": payload})
+                else:
+                    await progress_cb(payload)
 
         try:
             logger.info("Generating automation suggestions")
@@ -1945,6 +1948,29 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 api_params["max_tokens"] = self.suggestion_max_tokens
 
             total_chars = sum(c.get("chars", 0) for c in context_summary)
+
+            # Emit context details for UI transparency before the AI call
+            sections_preview = []
+            for section in context_sections:
+                lines = section.split('\n')
+                header = lines[0] if lines else ''
+                body_lines = lines[1:] if len(lines) > 1 else []
+                preview = '\n'.join(body_lines)[:500]
+                truncated = len('\n'.join(body_lines)) > 500
+                sections_preview.append({
+                    "header": header,
+                    "chars": len(section),
+                    "preview": preview,
+                    "truncated": truncated,
+                })
+            await _emit({
+                "event": "context_ready",
+                "system_prompt": messages[0]["content"],
+                "sections": sections_preview,
+                "model": self.suggestion_model,
+                "total_chars": total_chars,
+            })
+
             await _emit(f"Calling AI model ({len(context_sections)} context sections, ~{total_chars // 1000}K chars)…")
             response = await self.suggestion_client.chat.completions.create(**api_params)
             raw = response.choices[0].message.content.strip()
