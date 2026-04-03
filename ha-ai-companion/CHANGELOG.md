@@ -5,6 +5,21 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.35] - 2026-04-03
+
+### Fixed
+- **Suggestions: "Add to chat", "Fix in chat", "Fix all" buttons** — all redirected to an empty chat instead of prefilling the message box; fixed by storing the prefill in app state so it's picked up when the chat tab mounts
+
+### Added
+- **Suggestions: live progress stream** — generation now streams step-by-step status (fetching entity states, loading automations, calling AI…); progress visible in real time instead of a single static spinner
+- **Suggestions: "What was analyzed" summary** — collapsible section after generation shows each context source with item count and approximate size in KB
+- **Memory viewer** — collapsible section in the Suggestions tab lists all `.ai_agent_memories/` files with size and last-updated date; click to read content, delete button to remove stale entries
+- **Memory API** — new endpoints `GET /api/memory`, `GET /api/memory/{filename}`, `DELETE /api/memory/{filename}`
+
+### Changed
+- **Suggestions: removed dashboards from default context** — dashboard YAML is large and rarely improves automation suggestion quality; dashboards remain fully editable via chat
+- **Suggestions: cross-section file deduplication** — the same config file is now never sent in two context sections (automations / scenes / scripts), avoiding redundant tokens
+
 ## [1.1.34] - 2026-04-02
 
 ### Fixed
