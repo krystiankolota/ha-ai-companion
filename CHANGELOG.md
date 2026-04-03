@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-04-03
+
+### Changed
+- **Suggestions: also propose improvements** — prompt now asks for a mix of new automations/scripts AND improvements to existing ones (add missing conditions, better triggers, edge cases, notifications, redundancy reduction); each suggestion carries a `type` field (`new` or `improvement`) shown as a badge in the UI
+
 ## [1.2.0] - 2026-04-03
 
 ### Fixed

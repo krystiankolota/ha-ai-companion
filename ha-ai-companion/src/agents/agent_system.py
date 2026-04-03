@@ -1886,8 +1886,13 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             suggestion_targets = []
             if wants_automations:
                 suggestion_targets.append(
-                    "5-10 practical automations the user does not already have "
-                    "(do NOT re-suggest automations already in the automation list or Node-RED flows)"
+                    "5-10 suggestions that are either: "
+                    "(a) new automations/scripts the user does not already have, OR "
+                    "(b) meaningful improvements to existing automations, scripts, or Node-RED flows "
+                    "(e.g. add missing conditions, make triggers more reliable, reduce redundancy, "
+                    "add notifications, handle edge cases, improve efficiency). "
+                    "Mix of new and improvements is ideal. "
+                    "Do NOT re-suggest automations that are already correct and need no changes."
                 )
             if wants_dashboards:
                 suggestion_targets.append(
@@ -1925,9 +1930,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         "'suggestions' (array of suggestions) and "
                         "'naming_issues' (array of unclear names, may be empty). "
                         "Each suggestion must have: title (string), description (string), "
+                        "type (either 'new' for new automations/scripts or 'improvement' for improving existing ones), "
                         "category (one of: lighting, climate, security, energy, comfort, other), "
                         "entities (array of entity_id strings that actually exist), "
-                        "implementation_hint (string with brief YAML hint). "
+                        "implementation_hint (string with brief YAML hint or description of what to change). "
                         "Each naming_issue must have: entity_id (string), current_name (string), "
                         "suggested_name (string), reason (string)."
                     )
