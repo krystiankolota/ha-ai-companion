@@ -5,7 +5,7 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.35] - 2026-04-03
+## [1.1.38] - 2026-04-03
 
 ### Fixed
 - **Diff green highlighting** — CSS specificity bug caused added lines to render without green background; `.d2h-diff-table .d2h-ins` selector now wins over the blanket transparent override
