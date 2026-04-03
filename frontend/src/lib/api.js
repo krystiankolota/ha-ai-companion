@@ -59,14 +59,46 @@ export function getSuggestions() {
   return apiFetch('api/suggestions')
 }
 
-export function generateSuggestions(resourceTypes, extraPrompt) {
+export async function generateSuggestions(resourceTypes, extraPrompt, onStatus) {
   const body = { resource_types: resourceTypes }
   if (extraPrompt) body.extra_prompt = extraPrompt
-  return apiFetch('api/suggestions/generate', {
+  const response = await fetch('api/suggestions/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  if (!response.ok) {
+    let detail
+    try { detail = (await response.json()).detail } catch { detail = response.statusText }
+    throw new Error(detail || response.statusText)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result = null
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const event = JSON.parse(line)
+        if (event.event === 'status' && onStatus) {
+          onStatus(event.message)
+        } else if (event.event === 'result') {
+          result = event
+        } else if (event.event === 'error') {
+          throw new Error(event.message)
+        }
+      } catch (e) {
+        if (e.message && !line.includes(e.message)) throw e
+      }
+    }
+  }
+  return result
 }
 
 export function dismissSuggestion(title) {
@@ -107,4 +139,17 @@ export function markSuggestionApplied(title) {
 
 export function getSuggestionsHistory() {
   return apiFetch('api/suggestions/history')
+}
+
+// Memory
+export function getMemoryFiles() {
+  return apiFetch('api/memory')
+}
+
+export function getMemoryFile(filename) {
+  return apiFetch(`api/memory/${encodeURIComponent(filename)}`)
+}
+
+export function deleteMemoryFile(filename) {
+  return apiFetch(`api/memory/${encodeURIComponent(filename)}`, { method: 'DELETE' })
 }

@@ -1,10 +1,11 @@
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
+import asyncio
 import os
 import logging
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.1.34"
+version = "1.1.35"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -616,7 +617,7 @@ async def clear_applied():
 
 @app.post("/api/suggestions/generate")
 async def generate_suggestions(request: Request):
-    """Ask the AI to generate fresh automation suggestions and cache them."""
+    """Ask the AI to generate fresh automation suggestions (NDJSON stream of status + result)."""
     if not agent_system:
         raise HTTPException(status_code=503, detail="Agent system not initialized")
 
@@ -631,28 +632,97 @@ async def generate_suggestions(request: Request):
     except Exception:
         pass
 
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def progress_cb(message: str):
+        await queue.put({"event": "status", "message": message})
+
+    async def run_generation():
+        try:
+            result = await agent_system.generate_suggestions(
+                extra_prompt=extra_prompt,
+                resource_types=resource_types,
+                progress_cb=progress_cb,
+            )
+            if result.get("success"):
+                payload = {
+                    "event": "result",
+                    "suggestions": result["suggestions"],
+                    "naming_issues": result.get("naming_issues", []),
+                    "context_summary": result.get("context_summary", []),
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                try:
+                    cache = {k: v for k, v in payload.items() if k != "event"}
+                    with open(_suggestions_path(), "w") as f:
+                        json_lib.dump(cache, f, indent=2)
+                except Exception as e:
+                    logger.warning(f"Failed to cache suggestions: {e}")
+                try:
+                    _append_to_history({k: v for k, v in payload.items() if k != "event"})
+                except Exception as e:
+                    logger.warning(f"Failed to append to suggestions history: {e}")
+                await queue.put(payload)
+            else:
+                await queue.put({"event": "error", "message": result.get("error", "Generation failed")})
+        except Exception as e:
+            logger.error(f"Suggestions generation error: {e}", exc_info=True)
+            await queue.put({"event": "error", "message": str(e)})
+        finally:
+            await queue.put(None)  # sentinel
+
+    asyncio.create_task(run_generation())
+
+    async def stream():
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield json_lib.dumps(item) + "\n"
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+# --- Memory endpoints ---
+
+@app.get("/api/memory")
+async def list_memory_files():
+    """Return list of memory files with metadata."""
+    if not memory_manager:
+        return {"files": []}
     try:
-        result = await agent_system.generate_suggestions(extra_prompt=extra_prompt, resource_types=resource_types)
-        if result.get("success"):
-            payload = {
-                "suggestions": result["suggestions"],
-                "naming_issues": result.get("naming_issues", []),
-                "generated_at": datetime.now(timezone.utc).isoformat()
-            }
+        files = []
+        for name in await memory_manager.list_files():
+            path = memory_manager.memory_dir / name
             try:
-                with open(_suggestions_path(), "w") as f:
-                    json_lib.dump(payload, f, indent=2)
-            except Exception as e:
-                logger.warning(f"Failed to cache suggestions: {e}")
-            try:
-                _append_to_history(payload)
-            except Exception as e:
-                logger.warning(f"Failed to append to suggestions history: {e}")
-            return payload
-        else:
-            raise HTTPException(status_code=500, detail=result.get("error", "Generation failed"))
-    except HTTPException:
-        raise
+                stat = path.stat()
+                content = path.read_text(encoding="utf-8")
+                updated = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+                files.append({"name": name, "updated": updated, "chars": len(content)})
+            except Exception:
+                files.append({"name": name, "updated": None, "chars": 0})
+        return {"files": files}
     except Exception as e:
-        logger.error(f"Suggestions generation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/memory/{filename}")
+async def get_memory_file(filename: str):
+    """Return content of a memory file."""
+    if not memory_manager:
+        raise HTTPException(status_code=503, detail="Memory manager not initialized")
+    content = await memory_manager.read_file(filename)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Memory file not found")
+    return {"name": filename, "content": content}
+
+
+@app.delete("/api/memory/{filename}")
+async def delete_memory_file(filename: str):
+    """Delete a memory file."""
+    if not memory_manager:
+        raise HTTPException(status_code=503, detail="Memory manager not initialized")
+    deleted = await memory_manager.delete_file(filename)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory file not found")
+    return {"success": True}

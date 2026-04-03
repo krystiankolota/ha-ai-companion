@@ -16,6 +16,7 @@ export const initialState = {
   activeTab: 'chat',
   sidebarOpen: false,
   showClearAllModal: false,
+  chatPrefill: null,         // message to prefill in the chat textarea
 }
 
 export const Actions = {
@@ -39,6 +40,7 @@ export const Actions = {
   UPDATE_DISPLAY_MESSAGE: 'UPDATE_DISPLAY_MESSAGE',
   SHOW_CLEAR_ALL_MODAL: 'SHOW_CLEAR_ALL_MODAL',
   HIDE_CLEAR_ALL_MODAL: 'HIDE_CLEAR_ALL_MODAL',
+  SET_CHAT_PREFILL: 'SET_CHAT_PREFILL',
 }
 
 export function reducer(state, action) {
@@ -192,6 +194,9 @@ export function reducer(state, action) {
 
     case Actions.HIDE_CLEAR_ALL_MODAL:
       return { ...state, showClearAllModal: false }
+
+    case Actions.SET_CHAT_PREFILL:
+      return { ...state, chatPrefill: action.payload }
 
     default:
       return state

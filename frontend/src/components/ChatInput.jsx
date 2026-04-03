@@ -1,10 +1,22 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useEffect } from 'react'
 import { useAppContext } from '../store/AppContext'
+import { Actions } from '../store/reducer'
 
 export default function ChatInput({ onSend }) {
-  const { state } = useAppContext()
-  const { isSending } = state
+  const { state, dispatch } = useAppContext()
+  const { isSending, chatPrefill } = state
   const textareaRef = useRef(null)
+
+  useEffect(() => {
+    if (!chatPrefill) return
+    const el = textareaRef.current
+    if (!el) return
+    el.value = chatPrefill
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+    el.focus()
+    dispatch({ type: Actions.SET_CHAT_PREFILL, payload: null })
+  }, [chatPrefill, dispatch])
 
   const handleInput = useCallback(() => {
     const el = textareaRef.current

@@ -13,8 +13,9 @@ import {
   getSuggestionsHistory,
 } from '../lib/api'
 import { formatGeneratedAt } from '../lib/utils'
+import MemoryViewer from './MemoryViewer'
 
-const ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'dashboards', 'nodered', 'memory']
+const ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'nodered', 'memory']
 
 const CATEGORY_ICONS = {
   lighting: '💡',
@@ -319,6 +320,8 @@ export default function SuggestionsTab() {
   const [dismissedTitles, setDismissedTitles] = useState(new Set())
   const [appliedTitles, setAppliedTitles] = useState(new Set())
   const [history, setHistory] = useState([])
+  const [statusLines, setStatusLines] = useState([])
+  const [contextSummary, setContextSummary] = useState(null)
 
   const loadAll = useCallback(async () => {
     const [sugg, dismissed, applied, hist] = await Promise.allSettled([
@@ -365,20 +368,27 @@ export default function SuggestionsTab() {
 
   const handleGenerate = async () => {
     setGenerating(true)
-    setStatus('Fetching entity states and generating suggestions…')
+    setStatusLines(['Starting…'])
+    setStatus('')
     setSuggestions([])
     setNamingIssues([])
+    setContextSummary(null)
     try {
       const types = resourceTypes.length ? resourceTypes : ALL_RESOURCE_TYPES
-      const data = await apiGenerateSuggestions(types, focusPrompt || undefined)
+      const data = await apiGenerateSuggestions(types, focusPrompt || undefined, (msg) => {
+        setStatusLines(prev => [...prev, msg])
+      })
       setSuggestions(data.suggestions || [])
       setNamingIssues(data.naming_issues || [])
       setGeneratedAt(data.generated_at)
+      setContextSummary(data.context_summary || null)
+      setStatusLines([])
       setStatus('')
       // Refresh history
       const hist = await getSuggestionsHistory().catch(() => ({ history: [] }))
       setHistory(hist.history || [])
     } catch (e) {
+      setStatusLines([])
       setStatus(`Error: ${e.message}`)
     } finally {
       setGenerating(false)
@@ -430,10 +440,8 @@ export default function SuggestionsTab() {
   }
 
   const switchToChat = useCallback((message) => {
+    dispatch({ type: Actions.SET_CHAT_PREFILL, payload: message })
     dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'chat' })
-    // Set prefill via a global ref so ChatInput can pick it up
-    // Since we can't directly write to the textarea ref from here, use a custom event
-    window.dispatchEvent(new CustomEvent('ha-chat-prefill', { detail: { message } }))
   }, [dispatch])
 
   const visibleSuggestions = suggestions.filter(
@@ -491,9 +499,37 @@ export default function SuggestionsTab() {
         </button>
       </div>
 
-      {/* Status */}
+      {/* Streaming status lines */}
+      {statusLines.length > 0 && (
+        <div className="bg-surface-900 border border-surface-700 rounded-xl p-3 mb-3 space-y-1">
+          {statusLines.map((line, i) => (
+            <div key={i} className={`text-xs font-mono ${line.startsWith('✓') ? 'text-emerald-400' : line.startsWith('Error') ? 'text-red-400' : 'text-gray-400'}`}>
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Error status */}
       {status && (
-        <div className="text-xs text-gray-400 mb-3 italic">{status}</div>
+        <div className="text-xs text-red-400 mb-3 italic">{status}</div>
+      )}
+
+      {/* Context summary */}
+      {contextSummary && contextSummary.length > 0 && !generating && (
+        <details className="mb-3 text-xs text-gray-500">
+          <summary className="cursor-pointer hover:text-gray-300 transition-colors">What was analyzed</summary>
+          <div className="mt-1 bg-surface-900 border border-surface-700 rounded-lg p-2 space-y-0.5">
+            {contextSummary.map((item, i) => (
+              <div key={i} className="font-mono text-[11px]">
+                <span className="text-gray-400">{item.type}</span>
+                {item.count != null && <span className="text-gray-500">: {item.count} items</span>}
+                {item.files != null && <span className="text-gray-500">: {item.files} file(s)</span>}
+                {item.chars != null && <span className="text-gray-600"> (~{Math.round(item.chars / 1000 * 10) / 10}K chars)</span>}
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       {/* Generated at */}
@@ -534,6 +570,9 @@ export default function SuggestionsTab() {
 
       {/* History */}
       <HistorySection history={history} dismissedTitles={dismissedTitles} />
+
+      {/* Memory viewer */}
+      <MemoryViewer />
     </div>
   )
 }

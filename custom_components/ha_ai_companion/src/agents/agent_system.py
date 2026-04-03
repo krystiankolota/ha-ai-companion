@@ -1671,7 +1671,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 "message": f"Error applying changes: {str(e)}"
             }
 
-    async def generate_suggestions(self, extra_prompt: Optional[str] = None, resource_types: Optional[List[str]] = None) -> Dict[str, Any]:
+    async def generate_suggestions(self, extra_prompt: Optional[str] = None, resource_types: Optional[List[str]] = None, progress_cb=None) -> Dict[str, Any]:
         """
         Generate automation suggestions by pre-fetching context and making a single AI call.
 
@@ -1691,60 +1691,90 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         if not self.client:
             return {"success": False, "error": "OpenAI API not configured"}
 
+        async def _emit(msg: str):
+            if progress_cb:
+                await progress_cb(msg)
+
         try:
             logger.info("Generating automation suggestions")
             ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'dashboards', 'nodered', 'memory']
             active_types = set(resource_types) if resource_types else set(ALL_RESOURCE_TYPES)
+            context_summary = []
 
             # 1. Gather context based on selected resource types
             context_sections = []
+            # Track included file paths to avoid sending the same file content in multiple sections
+            included_paths: set = set()
 
             if 'entity_states' in active_types:
+                await _emit("Fetching entity states…")
                 entity_states_result = await self.tools.get_entity_states()
-                entity_states_text = self._format_entity_states_compact(entity_states_result.get("states", []))
+                states = entity_states_result.get("states", [])
+                entity_states_text = self._format_entity_states_compact(states)
                 context_sections.append(f"## Current entity states\n{entity_states_text}")
+                context_summary.append({"type": "entity_states", "count": len(states), "chars": len(entity_states_text)})
+                await _emit(f"✓ Entity states: {len(states)} entities")
 
             if 'automations' in active_types:
+                await _emit("Loading automations…")
                 # Read all automation files (supports single-file and split-file setups).
                 # Search for 'alias' which is present in every YAML automation block.
                 automations_result = await self.tools.search_config_files(search_pattern="alias")
                 automations_files = automations_result.get("files", [])
-                automation_contents = [
-                    f"# {f['path']}\n{f.get('content', '')}"
-                    for f in automations_files
-                    if "automation" in f.get("path", "").lower()
-                ]
+                automation_contents = []
+                for f in automations_files:
+                    p = f.get("path", "")
+                    if "automation" in p.lower() and p not in included_paths:
+                        included_paths.add(p)
+                        automation_contents.append(f"# {p}\n{f.get('content', '')}")
                 automations_text = "\n\n".join(automation_contents) if automation_contents else json.dumps(automations_files, indent=2)
                 context_sections.append(f"## Existing automations\n{automations_text}")
+                context_summary.append({"type": "automations", "files": len(automation_contents), "chars": len(automations_text)})
+                await _emit(f"✓ Automations: {len(automation_contents)} file(s)")
 
             if 'scenes' in active_types:
                 try:
+                    await _emit("Loading scenes…")
                     scenes_result = await self.tools.search_config_files(search_pattern="scene:")
                     scenes_files = [
                         f for f in scenes_result.get("files", [])
-                        if "scene" in f.get("path", "").lower()
+                        if "scene" in f.get("path", "").lower() and f.get("path") not in included_paths
                     ]
+                    for f in scenes_files:
+                        included_paths.add(f.get("path", ""))
                     if scenes_files:
                         scenes_text = "\n\n".join(f"# {f['path']}\n{f.get('content', '')}" for f in scenes_files)
                         context_sections.append(f"## Existing scenes\n{scenes_text}")
+                        context_summary.append({"type": "scenes", "files": len(scenes_files), "chars": len(scenes_text)})
+                        await _emit(f"✓ Scenes: {len(scenes_files)} file(s)")
+                    else:
+                        await _emit("✓ Scenes: none found")
                 except Exception:
                     pass
 
             if 'scripts' in active_types:
                 try:
+                    await _emit("Loading scripts…")
                     scripts_result = await self.tools.search_config_files(search_pattern="sequence:")
                     scripts_files = [
                         f for f in scripts_result.get("files", [])
-                        if "script" in f.get("path", "").lower()
+                        if "script" in f.get("path", "").lower() and f.get("path") not in included_paths
                     ]
+                    for f in scripts_files:
+                        included_paths.add(f.get("path", ""))
                     if scripts_files:
                         scripts_text = "\n\n".join(f"# {f['path']}\n{f.get('content', '')}" for f in scripts_files)
                         context_sections.append(f"## Existing scripts\n{scripts_text}")
+                        context_summary.append({"type": "scripts", "files": len(scripts_files), "chars": len(scripts_text)})
+                        await _emit(f"✓ Scripts: {len(scripts_files)} file(s)")
+                    else:
+                        await _emit("✓ Scripts: none found")
                 except Exception:
                     pass
 
             if 'dashboards' in active_types:
                 try:
+                    await _emit("Loading dashboards…")
                     dashboards_result = await self.tools.list_dashboards()
                     if dashboards_result.get("success"):
                         dashboard_list = dashboards_result.get("dashboards", [])
@@ -1761,12 +1791,15 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                                 dashboard_contents.append(f"### Dashboard: {title} (url_path={url_path})\n(YAML not available)")
                         if dashboard_contents:
                             context_sections.append(f"## Existing dashboards\n" + "\n\n".join(dashboard_contents))
+                        context_summary.append({"type": "dashboards", "count": len(dashboard_list)})
+                        await _emit(f"✓ Dashboards: {len(dashboard_list)} loaded")
                 except Exception:
                     pass
 
             nodered_text = ""
             if 'nodered' in active_types:
                 try:
+                    await _emit("Loading Node-RED flows…")
                     nodered_result = await self.tools.get_nodered_flows()
                     if nodered_result.get("success"):
                         nodered_text = json.dumps(nodered_result.get("flows", []), indent=2)
@@ -1774,15 +1807,24 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     pass
                 if nodered_text:
                     context_sections.append(f"## Existing Node-RED flows\n{nodered_text}")
+                    context_summary.append({"type": "nodered", "chars": len(nodered_text)})
+                    await _emit(f"✓ Node-RED flows loaded")
+                else:
+                    await _emit("✓ Node-RED: not available")
 
             # 2. Inject memory context so the suggester knows device relationships etc.
             # Use the focus prompt (if any) as the relevance query; fall back to empty
             # so all non-stale memory is included when no specific focus is given.
             if 'memory' in active_types and self.memory_manager:
                 try:
+                    await _emit("Loading memory context…")
                     memory_context = await self.memory_manager.get_context()
                     if memory_context:
                         context_sections.append(f"## Home context from memory\n{memory_context}")
+                        context_summary.append({"type": "memory", "chars": len(memory_context)})
+                        await _emit(f"✓ Memory: {len(memory_context)} chars")
+                    else:
+                        await _emit("✓ Memory: empty")
                 except Exception:
                     pass
 
@@ -1897,6 +1939,8 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             if self.suggestion_max_tokens:
                 api_params["max_tokens"] = self.suggestion_max_tokens
 
+            total_chars = sum(c.get("chars", 0) for c in context_summary)
+            await _emit(f"Calling AI model ({len(context_sections)} context sections, ~{total_chars // 1000}K chars)…")
             response = await self.suggestion_client.chat.completions.create(**api_params)
             raw = response.choices[0].message.content.strip()
 
@@ -1916,7 +1960,8 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 naming_issues = []
 
             logger.info(f"Generated {len(suggestions)} automation suggestions, {len(naming_issues)} naming issues")
-            return {"success": True, "suggestions": suggestions, "naming_issues": naming_issues}
+            await _emit(f"✓ Done: {len(suggestions)} suggestion(s), {len(naming_issues)} naming issue(s)")
+            return {"success": True, "suggestions": suggestions, "naming_issues": naming_issues, "context_summary": context_summary}
 
         except Exception as e:
             logger.error(f"Failed to generate suggestions: {e}", exc_info=True)

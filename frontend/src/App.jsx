@@ -105,22 +105,6 @@ function AppInner() {
     return () => window.removeEventListener('beforeunload', handler)
   }, [])
 
-  // Handle chat prefill from suggestions tab
-  useEffect(() => {
-    const handler = (e) => {
-      const { message } = e.detail || {}
-      if (!message) return
-      const textarea = document.querySelector('main textarea')
-      if (textarea) {
-        textarea.value = message
-        textarea.dispatchEvent(new Event('input'))
-        textarea.focus()
-      }
-    }
-    window.addEventListener('ha-chat-prefill', handler)
-    return () => window.removeEventListener('ha-chat-prefill', handler)
-  }, [])
-
   const handleSwitchSession = useCallback((sessionId) => {
     switchSession(sessionId, resetWS)
   }, [switchSession, resetWS])
