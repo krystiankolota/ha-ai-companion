@@ -42,10 +42,10 @@ AI-powered Home Assistant companion for managing configuration, dashboards, auto
 - **Read and edit** any YAML configuration file
 - **Manage dashboards** — list, read, edit, create and delete Lovelace dashboards
 - **Device / entity / area management** — rename, move to areas, update labels
-- **Suggest automations** — based on live entity states and existing automations
+- **Suggest automations** — based on live entity states; select context sources; live progress stream; never duplicates existing ones
+- **Memory viewer** — browse, inspect and delete AI memory files from the Suggestions tab
 - **Avoid duplicates** — reads Node-RED flows before suggesting new ones
 - **Persistent memory** — remembers your preferences and home layout across sessions
-- **Log viewer** — fetch and AI-analyze `home-assistant.log` from the companion UI
 - **Conversation history** — sessions saved server-side, accessible across page reloads with mobile-friendly sidebar
 
 ## Services

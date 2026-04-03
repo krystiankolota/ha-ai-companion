@@ -8,10 +8,10 @@ An AI-powered Home Assistant companion that helps you manage configuration, auto
 
 - **Review, edit and create dashboards** — ask the AI to build or modify Lovelace dashboards
 - **Manage configuration files** — automations, scripts, YAML configs, devices, entities, areas
-- **Suggest automations** — based on your actual live entity states, never duplicates existing ones
+- **Suggest automations** — based on live entity states; select which context to include; live progress stream shows what data is being sent
+- **Memory viewer** — browse, inspect and delete the AI's persistent memory files directly from the UI
 - **Persistent memory** — remembers your preferences and home layout across sessions
 - **Node-RED integration** — reads your existing flows to avoid duplicate automations
-- **Log viewer** — fetch and AI-analyze `home-assistant.log` directly from the companion UI
 - **Conversation history** — sessions saved and accessible across page reloads, with a mobile-friendly slide-in sidebar
 - **Token + cost tracking** — see cumulative input/output tokens and optional USD cost per session
 
@@ -184,10 +184,10 @@ The AI remembers facts across sessions using categorised memory files:
 - `correction_` — corrections to previous facts
 
 ### Automation suggestions
-Ask "suggest automations for my home" — the AI fetches live entity states and existing automations/Node-RED flows before suggesting, so it never duplicates what you already have. Each suggestion card includes a type badge (new / improvement) and a copyable YAML block.
+The Suggestions tab fetches live entity states and existing automations/Node-RED flows before asking the AI, so it never duplicates what you already have. You can select which data sources to include (entity states, automations, scenes, scripts, Node-RED, memory). Progress streams in real time so you can see exactly what context is being sent. Each card includes a type badge (new / improvement) and a copyable YAML block.
 
-### Log viewer
-The **Logs** tab shows `home-assistant.log` with keyword filtering and an "Analyze with AI" button that returns a structured report: severity, component, likely cause, and suggested fix per issue.
+### Memory viewer
+The Suggestions tab also shows all AI memory files stored in `.ai_agent_memories/`. You can expand any file to read its content and delete stale or incorrect entries without having to SSH into the server.
 
 ### Conversation sessions
 All conversations are saved automatically. Use the sidebar to switch between past sessions or start a new one. "Clear all conversations" extracts memorable facts to memory before deleting.
