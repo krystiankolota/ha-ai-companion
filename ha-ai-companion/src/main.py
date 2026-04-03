@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 import asyncio
 import os
@@ -41,7 +41,8 @@ conversation_manager: Optional[ConversationManager] = None
 # Phase 2: Pydantic models for API requests
 class RestoreBackupRequest(BaseModel):
     backup_name: str
-    validate: bool = True
+    run_validation: bool = Field(True, alias="validate")
+    model_config = {"populate_by_name": True}
 
 # Phase 3: Pydantic models for agent chat
 class ChatRequest(BaseModel):
@@ -51,7 +52,8 @@ class ChatRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     change_id: str
     approved: bool
-    validate: bool = True
+    run_validation: bool = Field(True, alias="validate")
+    model_config = {"populate_by_name": True}
 
 class SaveSessionRequest(BaseModel):
     title: Optional[str] = None
@@ -321,7 +323,7 @@ async def approve_changes(request: ApprovalRequest):
         result = await agent_system.process_approval(
             change_id=request.change_id,
             approved=request.approved,
-            validate=request.validate
+            validate=request.run_validation
         )
 
         return result

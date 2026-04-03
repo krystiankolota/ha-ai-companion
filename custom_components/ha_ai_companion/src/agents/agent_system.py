@@ -1396,6 +1396,11 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     if text:
                         slim_history.append({"role": role, "content": text})
 
+            # Some providers (Azure, Gemini via OpenRouter) require the conversation
+            # to end with a user message. Strip any trailing assistant turns.
+            while slim_history and slim_history[-1]["role"] != "user":
+                slim_history.pop()
+
             messages = [{"role": "system", "content": system_content}] + slim_history
 
             # Memory-only tool list (hardcoded — self.tools is the AgentTools instance, not iterable)
