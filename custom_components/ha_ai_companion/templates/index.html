@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0f1117">
     <title>HA AI Companion</title>
-    <link rel="stylesheet" href="static/dist/bundle.css">
+    <link rel="stylesheet" href="static/dist/bundle.css?v={{ version }}">
 </head>
 <body>
     <div id="root"></div>
     <script>window.HA_VERSION = "{{ version }}";</script>
-    <script type="module" src="static/dist/bundle.js"></script>
+    <script type="module" src="static/dist/bundle.js?v={{ version }}"></script>
 </body>
 </html>

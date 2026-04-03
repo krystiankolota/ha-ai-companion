@@ -185,18 +185,22 @@ function NamingIssuesSection({ issues, onSwitchToChat, onFixed }) {
       <p className="text-xs text-gray-400 mb-3">These entity names may be confusing. Click "Fix in chat" to rename them.</p>
       <div className="space-y-2">
         {issues.map((issue, i) => (
-          <div key={i} className="flex items-center gap-2 flex-wrap text-xs bg-surface-800 rounded-lg px-3 py-2">
-            <span className="font-mono text-indigo-300">{issue.entity_id}</span>
-            <span className="text-gray-400">"{issue.current_name}"</span>
-            <span className="text-gray-600">→</span>
-            <span className="text-emerald-400">"{issue.suggested_name}"</span>
-            {issue.reason && <span className="text-gray-500 flex-1 text-[10px]">{issue.reason}</span>}
-            <button
-              onClick={() => fixOne(issue.entity_id, issue.suggested_name)}
-              className="px-2 py-1 bg-surface-700 hover:bg-surface-600 text-gray-300 rounded transition-colors flex-shrink-0"
-            >
-              Fix in chat
-            </button>
+          <div key={i} className="text-xs bg-surface-800 rounded-lg px-3 py-2 space-y-1">
+            <div className="flex items-start justify-between gap-2 min-w-0">
+              <span className="font-mono text-indigo-300 break-all min-w-0">{issue.entity_id}</span>
+              <button
+                onClick={() => fixOne(issue.entity_id, issue.suggested_name)}
+                className="px-2 py-1 bg-surface-700 hover:bg-surface-600 text-gray-300 rounded transition-colors flex-shrink-0 text-[11px]"
+              >
+                Fix in chat
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+              <span className="text-gray-400 break-words">"{issue.current_name}"</span>
+              <span className="text-gray-600">→</span>
+              <span className="text-emerald-400 break-words">"{issue.suggested_name}"</span>
+            </div>
+            {issue.reason && <div className="text-gray-500 text-[10px] break-words">{issue.reason}</div>}
           </div>
         ))}
       </div>

@@ -5,40 +5,28 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.37] - 2026-04-03
-
-### Fixed
-- **Diff modal RENAMED badge** — `Diff.createPatch` was appending `'Original'`/`'Proposed'` as tab-separated suffixes to filename lines; diff2html included them in the filename comparison, making identical paths appear as renames. Now passes empty strings.
-
-### Added
-- **Generation log** — persists after completion as a collapsible (auto-open while running); last active step pulses; final line confirms suggestion count
-- **"Prompt sent to AI" panel** — shows model name, total context size, full system prompt, and a scrollable preview of each context section (first 500 chars + size)
-- **Naming issues auto-dismiss** — "Fix in chat" removes that entity from the list; "Fix all" clears all naming issues immediately
-- **"Add to chat" auto-marks applied** — clicking "Add to chat" on a suggestion marks it as applied since it implies intent to implement
-
-## [1.1.36] - 2026-04-03
-
-### Fixed
-- **Memory consolidation provider error** — memory consolidation was failing with "This model does not support assistant message prefill" on Azure/Gemini via OpenRouter; trailing assistant turns are now stripped from the consolidation request so it always ends with a user message
-- **Pydantic field warning** — `validate` field in `RestoreBackupRequest` and `ApprovalRequest` shadowed `BaseModel.validate`; renamed to `run_validation` with `alias="validate"` — JSON API contract unchanged
-
-### Changed
-- **Memory viewer promoted to its own tab** — Memory is now a first-class tab in the header (Chat / Suggestions / Memory) instead of a collapsible section inside the Suggestions tab
-
 ## [1.1.35] - 2026-04-03
 
 ### Fixed
-- **Suggestions: "Add to chat", "Fix in chat", "Fix all" buttons** — all redirected to an empty chat instead of prefilling the message box; fixed by storing the prefill in app state so it's picked up when the chat tab mounts
+- **Diff green highlighting** — CSS specificity bug caused added lines to render without green background; `.d2h-diff-table .d2h-ins` selector now wins over the blanket transparent override
+- **Diff modal RENAMED badge** — `Diff.createPatch` was appending tab-separated `'Original'`/`'Proposed'` suffixes to filenames; diff2html included them in path comparison, making same-file diffs appear as renames. Now passes empty strings.
+- **Memory consolidation provider error** — strips trailing assistant turns from history before sending; Azure/Gemini/OpenRouter require conversation to end with a user message
+- **Pydantic `validate` field warning** — renamed to `run_validation` with `Field(alias="validate")`; JSON API unchanged
+- **Suggestion buttons** ("Add to chat", "Fix in chat", "Fix all") — prefill via React state (`chatPrefill`) instead of custom DOM events, fixing timing race on tab switch
 
 ### Added
-- **Suggestions: live progress stream** — generation now streams step-by-step status (fetching entity states, loading automations, calling AI…); progress visible in real time instead of a single static spinner
-- **Suggestions: "What was analyzed" summary** — collapsible section after generation shows each context source with item count and approximate size in KB
-- **Memory viewer** — collapsible section in the Suggestions tab lists all `.ai_agent_memories/` files with size and last-updated date; click to read content, delete button to remove stale entries
-- **Memory API** — new endpoints `GET /api/memory`, `GET /api/memory/{filename}`, `DELETE /api/memory/{filename}`
+- **Memory tab** — dedicated top-level tab to browse, read, and delete AI memory files from `.ai_agent_memories/`
+- **Suggestion generation log** — live NDJSON progress stream; persists as collapsible after run; last step pulses while active
+- **"Prompt sent to AI" panel** — shows model name, total context chars, full system prompt, and scrollable section previews after generation
+- **Naming issues auto-dismiss** — "Fix in chat" removes the entity; "Fix all" clears the list
+- **"Add to chat" auto-marks applied**
+- **Mobile cache busting** — `?v={{ version }}` query string on `bundle.js` and `bundle.css`
+- Memory CRUD endpoints: `GET /api/memory`, `GET /api/memory/{filename}`, `DELETE /api/memory/{filename}`
 
 ### Changed
-- **Suggestions: removed dashboards from default context** — dashboard YAML is large and rarely improves automation suggestion quality; dashboards remain fully editable via chat
-- **Suggestions: cross-section file deduplication** — the same config file is now never sent in two context sections (automations / scenes / scripts), avoiding redundant tokens
+- **Entity name word wrap** — naming issue cards use `break-all` / `break-words` to prevent horizontal scroll on mobile
+- Removed `dashboards` from default suggestion context
+- Suggestion context deduplicates file paths across sections
 
 ## [1.1.34] - 2026-04-02
 

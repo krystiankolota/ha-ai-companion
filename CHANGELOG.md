@@ -5,40 +5,27 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.37] - 2026-04-03
-
-### Fixed
-- **Diff RENAMED badge** — header strings in `createPatch` caused diff2html to treat same-path files as renames
-
-### Added
-- **Generation log** persists after suggestions run (collapsible, auto-open while running)
-- **"Prompt sent to AI"** panel — system prompt + per-section content previews + model/size info
-- **Naming issues auto-dismiss** on "Fix in chat" / "Fix all"
-- **"Add to chat" auto-marks suggestion as applied**
-
-## [1.1.36] - 2026-04-03
-
-### Fixed
-- **Memory consolidation provider error** — strips trailing assistant turns before sending to Azure/Gemini via OpenRouter (those providers require conversation to end with a user message)
-- **Pydantic field warning** — renamed `validate` field to `run_validation` with alias; JSON API unchanged
-
-### Changed
-- **Memory tab** — promoted from collapsible section in Suggestions to its own top-level tab
-
 ## [1.1.35] - 2026-04-03
 
 ### Fixed
-- "Add to chat", "Fix in chat", "Fix all" buttons on suggestions tab now correctly prefill the chat textarea (was redirecting to empty chat due to timing race between tab switch and component mount)
+- **Diff green highlighting** — CSS specificity bug: `.d2h-diff-table td` (0,1,1) was overriding `.d2h-ins` (0,1,0); fixed by using `.d2h-diff-table .d2h-ins` (0,2,0)
+- **Diff RENAMED badge** — header strings in `createPatch` caused diff2html to treat same-path files as renames; now passes empty strings
+- **Memory consolidation provider error** — strips trailing assistant turns before sending to Azure/Gemini; those providers require conversation ending with a user message
+- **Pydantic field warning** — `validate` field renamed to `run_validation` with alias; JSON API unchanged
+- **Suggestion buttons** ("Add to chat", "Fix in chat", "Fix all") — now correctly prefill the chat textarea via React state instead of custom events (fixes timing race on tab switch)
 
 ### Added
-- Suggestions generation now streams live progress (NDJSON) — each fetch step appears in real time: entity states count, automation files, scenes, scripts, Node-RED, memory
-- "What was analyzed" collapsible summary after generation showing context sections and sizes
-- Memory viewer in Suggestions tab — list all `.ai_agent_memories/` files with size/date, expand to read content, delete stale entries
-- `/api/memory`, `/api/memory/{filename}` (GET), `/api/memory/{filename}` (DELETE) endpoints
+- **Memory tab** — dedicated top-level tab (next to Chat and Suggestions) to browse, expand, and delete AI memory files
+- **Suggestion generation log** — live progress stream during generation; persists as collapsible after completion; last active step pulses
+- **"Prompt sent to AI" panel** — after generation shows full system prompt, model name, total context size, and scrollable preview of each context section
+- **Naming issues auto-dismiss** — "Fix in chat" removes that entity from the list; "Fix all" clears all entries
+- **"Add to chat" auto-marks applied** — marks suggestion as applied when added to chat (implies intent to implement)
+- **Mobile cache busting** — static assets now served with `?v={{ version }}` query string so mobile browsers pick up updates
 
 ### Changed
-- Removed `dashboards` from default suggestion context (noisy, large, rarely improves suggestion quality; dashboards remain editable via chat)
-- Suggestion context now deduplicates file paths across sections (automations/scenes/scripts) to avoid sending same file content multiple times and wasting tokens
+- **Entity name word wrap** — naming issue cards use `break-all` / `break-words` so long entity IDs don't cause horizontal scroll on mobile
+- Removed `dashboards` from default suggestion context (noisy, large, rarely improves quality)
+- Suggestion context deduplicates file paths across sections to avoid sending same content twice
 
 ## [1.1.18] - 2026-03-31
 
