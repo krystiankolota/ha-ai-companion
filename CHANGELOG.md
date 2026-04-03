@@ -5,7 +5,7 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.38] - 2026-04-03
+## [1.2.0] - 2026-04-03
 
 ### Fixed
 - **Mobile cache busting** — HA Ingress and mobile WebView ignore query strings when caching; static bundles are now served as `bundle.{version}.js` / `bundle.{version}.css` (path-based versioning) so each release forces a fresh download regardless of WebView cache behaviour
