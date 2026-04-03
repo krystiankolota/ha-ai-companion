@@ -43,7 +43,7 @@ AI-powered Home Assistant companion for managing configuration, dashboards, auto
 - **Manage dashboards** — list, read, edit, create and delete Lovelace dashboards
 - **Device / entity / area management** — rename, move to areas, update labels
 - **Suggest automations** — based on live entity states; select context sources; live progress stream; never duplicates existing ones
-- **Memory viewer** — browse, inspect and delete AI memory files from the Suggestions tab
+- **Memory tab** — dedicated tab to browse, inspect and delete AI memory files
 - **Avoid duplicates** — reads Node-RED flows before suggesting new ones
 - **Persistent memory** — remembers your preferences and home layout across sessions
 - **Conversation history** — sessions saved server-side, accessible across page reloads with mobile-friendly sidebar

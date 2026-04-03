@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.36] - 2026-04-03
+
+### Fixed
+- **Memory consolidation provider error** — strips trailing assistant turns before sending to Azure/Gemini via OpenRouter (those providers require conversation to end with a user message)
+- **Pydantic field warning** — renamed `validate` field to `run_validation` with alias; JSON API unchanged
+
+### Changed
+- **Memory tab** — promoted from collapsible section in Suggestions to its own top-level tab
+
 ## [1.1.35] - 2026-04-03
 
 ### Fixed

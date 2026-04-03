@@ -9,7 +9,7 @@ An AI-powered Home Assistant companion that helps you manage configuration, auto
 - **Review, edit and create dashboards** — ask the AI to build or modify Lovelace dashboards
 - **Manage configuration files** — automations, scripts, YAML configs, devices, entities, areas
 - **Suggest automations** — based on live entity states; select which context to include; live progress stream shows what data is being sent
-- **Memory viewer** — browse, inspect and delete the AI's persistent memory files directly from the UI
+- **Memory tab** — dedicated tab to browse, inspect and delete the AI's persistent memory files
 - **Persistent memory** — remembers your preferences and home layout across sessions
 - **Node-RED integration** — reads your existing flows to avoid duplicate automations
 - **Conversation history** — sessions saved and accessible across page reloads, with a mobile-friendly slide-in sidebar
@@ -186,8 +186,8 @@ The AI remembers facts across sessions using categorised memory files:
 ### Automation suggestions
 The Suggestions tab fetches live entity states and existing automations/Node-RED flows before asking the AI, so it never duplicates what you already have. You can select which data sources to include (entity states, automations, scenes, scripts, Node-RED, memory). Progress streams in real time so you can see exactly what context is being sent. Each card includes a type badge (new / improvement) and a copyable YAML block.
 
-### Memory viewer
-The Suggestions tab also shows all AI memory files stored in `.ai_agent_memories/`. You can expand any file to read its content and delete stale or incorrect entries without having to SSH into the server.
+### Memory tab
+The **Memory** tab (next to Chat and Suggestions) lists all AI memory files stored in `.ai_agent_memories/`. You can expand any file to read its content and delete stale or incorrect entries without having to SSH into the server.
 
 ### Conversation sessions
 All conversations are saved automatically. Use the sidebar to switch between past sessions or start a new one. "Clear all conversations" extracts memorable facts to memory before deleting.

@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.36] - 2026-04-03
+
+### Fixed
+- **Memory consolidation provider error** — memory consolidation was failing with "This model does not support assistant message prefill" on Azure/Gemini via OpenRouter; trailing assistant turns are now stripped from the consolidation request so it always ends with a user message
+- **Pydantic field warning** — `validate` field in `RestoreBackupRequest` and `ApprovalRequest` shadowed `BaseModel.validate`; renamed to `run_validation` with `alias="validate"` — JSON API contract unchanged
+
+### Changed
+- **Memory viewer promoted to its own tab** — Memory is now a first-class tab in the header (Chat / Suggestions / Memory) instead of a collapsible section inside the Suggestions tab
+
 ## [1.1.35] - 2026-04-03
 
 ### Fixed

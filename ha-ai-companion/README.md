@@ -145,7 +145,7 @@ The `suggestion_prompt` option adds extra text to the default prompt without rep
 | Virtual files | Lovelace dashboards, devices, entities and areas treated as editable files |
 | Automation safety guard | Rejects changes that would delete >20% of existing automations |
 | Automation suggestions | Based on live entity states; select context sources; live progress stream; avoids duplicating existing HA or Node-RED flows |
-| Memory viewer | Browse, inspect and delete AI memory files directly from the Suggestions tab |
+| Memory viewer | Dedicated Memory tab — browse, inspect and delete AI memory files |
 | Persistent memory | Remembers preferences and home layout across sessions; consolidates after each chat |
 | Home topology injection | Area→entity map pre-loaded into every prompt, reducing unnecessary tool calls |
 | Conversation history | Sessions saved to disk, visible in the sidebar (mobile: slide-in drawer) |
