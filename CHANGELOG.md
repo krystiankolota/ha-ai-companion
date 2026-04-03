@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.38] - 2026-04-03
 
 ### Fixed
+- **Mobile cache busting** — HA Ingress and mobile WebView ignore query strings when caching; static bundles are now served as `bundle.{version}.js` / `bundle.{version}.css` (path-based versioning) so each release forces a fresh download regardless of WebView cache behaviour
 - **Diff green highlighting** — CSS specificity bug: `.d2h-diff-table td` (0,1,1) was overriding `.d2h-ins` (0,1,0); fixed by using `.d2h-diff-table .d2h-ins` (0,2,0)
 - **Diff RENAMED badge** — header strings in `createPatch` caused diff2html to treat same-path files as renames; now passes empty strings
 - **Memory consolidation provider error** — strips trailing assistant turns before sending to Azure/Gemini; those providers require conversation ending with a user message
