@@ -59,11 +59,23 @@ export default function ApprovalCard({ changeset }) {
       {/* File list */}
       {changeset.file_changes_detail && changeset.file_changes_detail.length > 0 && (
         <div className="mb-3 space-y-1">
-          {changeset.file_changes_detail.map((fc, i) => (
-            <div key={i} className="flex items-center gap-2 text-xs text-gray-400">
-              <span className="font-mono text-gray-300 truncate">{fc.file_path}</span>
-            </div>
-          ))}
+          {changeset.file_changes_detail.map((fc, i) => {
+            const stat = changeset.diff_stats && changeset.diff_stats[i]
+            return (
+              <div key={i} className="flex items-center gap-2 text-xs text-gray-400">
+                <span className="font-mono text-gray-300 truncate">{fc.file_path}</span>
+                {stat && (
+                  stat.is_new_file
+                    ? <span className="text-indigo-400 flex-shrink-0">new file</span>
+                    : <span className="flex-shrink-0">
+                        <span className="text-emerald-400">+{stat.added}</span>
+                        {' '}
+                        <span className="text-red-400">-{stat.removed}</span>
+                      </span>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
       {changeset.files && !changeset.file_changes_detail && (

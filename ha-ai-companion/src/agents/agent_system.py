@@ -388,8 +388,13 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         logger.debug(f"Pruned {len(messages) - len(pruned)} old tool messages (kept last {keep_blocks} blocks)")
         return pruned
 
-    async def _dispatch_tool(self, function_name: str, function_args: dict) -> dict:
-        """Execute a named tool and return its result dict."""
+    async def _dispatch_tool(self, function_name: str, function_args: dict, turn_state: Optional[dict] = None) -> dict:
+        """Execute a named tool and return its result dict.
+
+        Args:
+            turn_state: Per-request mutable dict with keys like 'has_read'. When None,
+                        the read-before-write guard is skipped (used by consolidation).
+        """
         if function_name == "search_config_files":
             try:
                 return await asyncio.wait_for(self.tools.search_config_files(**function_args), timeout=60.0)
@@ -404,6 +409,15 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     f"Received args: {function_args}"
                 )
                 logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+            if turn_state is not None and not turn_state.get("has_read", False):
+                error_msg = (
+                    "ERROR: You must read the current file content before proposing changes. "
+                    "Call search_config_files (for YAML/Lovelace files) or get_nodered_flows (for Node-RED) first "
+                    "to get the current state of the files you want to modify. "
+                    "This ensures your changes preserve all existing content and structure."
+                )
+                logger.warning("propose_config_changes blocked: no read_config call this turn")
                 return {"success": False, "error": error_msg}
             return await self.tools.propose_config_changes(**function_args)
         elif function_name == "list_dashboards":
@@ -773,6 +787,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             # Initialize status queue for streaming tool progress events
             self._tool_status_queue = asyncio.Queue()
 
+            # Per-turn state (local — safe under concurrent WS connections)
+            turn_state = {"has_read": False}
+            self.tools.clear_turn_cache()
+
             # Pre-declare so outer except can access partial content on stream errors
             accumulated_content = ""
 
@@ -1016,7 +1034,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     }
 
                     # Execute the tool via a task, yielding status events while waiting
-                    tool_task = asyncio.create_task(self._dispatch_tool(function_name, function_args))
+                    tool_task = asyncio.create_task(self._dispatch_tool(function_name, function_args, turn_state))
                     while not tool_task.done():
                         while not self._tool_status_queue.empty():
                             yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
@@ -1029,6 +1047,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     except Exception as e:
                         result = {"success": False, "error": str(e)}
                     logger.info(f"[ITERATION {iteration}] Tool '{function_name}' done: success={result.get('success')}")
+
+                    # Update read-before-write guard (local per-turn state)
+                    if function_name in ("search_config_files", "get_nodered_flows") and result.get("success"):
+                        turn_state["has_read"] = True
 
                     # Add tool result to messages with cache control on the last tool result
                     is_last_tool = (tool_idx == len(accumulated_tool_calls) - 1)
@@ -1471,10 +1493,14 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 max_tokens=1024,
             )
 
+            _CONSOLIDATION_TOOLS = {"read_memories", "save_memory", "delete_memory", "list_memory_stats"}
             choice = response.choices[0]
             if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
                 for tc in choice.message.tool_calls:
                     fn = tc.function.name
+                    if fn not in _CONSOLIDATION_TOOLS:
+                        logger.warning(f"[memory consolidation] Ignoring unexpected tool call: {fn}")
+                        continue
                     args = json.loads(tc.function.arguments or "{}")
                     result = await self._dispatch_tool(fn, args)
                     logger.info(f"[memory consolidation] {fn}({list(args.keys())}) → success={result.get('success')}")

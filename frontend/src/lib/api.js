@@ -155,3 +155,19 @@ export function getMemoryFile(filename) {
 export function deleteMemoryFile(filename) {
   return apiFetch(`api/memory/${encodeURIComponent(filename)}`, { method: 'DELETE' })
 }
+
+export function updateMemoryFile(filename, content) {
+  return apiFetch(`api/memory/${encodeURIComponent(filename)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+}
+
+export function createMemoryFile(filename, content) {
+  return apiFetch('api/memory', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename, content }),
+  })
+}

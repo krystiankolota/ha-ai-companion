@@ -291,6 +291,7 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
             total_files: data.result.total_files,
             files: data.result.files,
             reason: data.result.reason,
+            diff_stats: data.result.diff_stats || [],
           }
 
           if (args && args.changes) {

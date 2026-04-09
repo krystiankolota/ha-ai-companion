@@ -16,7 +16,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.2.1"
+version = "1.3.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -717,6 +717,38 @@ async def get_memory_file(filename: str):
     if content is None:
         raise HTTPException(status_code=404, detail="Memory file not found")
     return {"name": filename, "content": content}
+
+
+@app.put("/api/memory/{filename}")
+async def update_memory_file(filename: str, request: Request):
+    """Update an existing memory file."""
+    if not memory_manager:
+        raise HTTPException(status_code=503, detail="Memory manager not initialized")
+    body = await request.json()
+    content = body.get("content", "")
+    ok = await memory_manager.write_file(filename, content)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Write failed — content may exceed {memory_manager.MAX_FILE_CHARS} chars")
+    return {"success": True}
+
+
+@app.post("/api/memory")
+async def create_memory_file(request: Request):
+    """Create a new memory file."""
+    if not memory_manager:
+        raise HTTPException(status_code=503, detail="Memory manager not initialized")
+    body = await request.json()
+    filename = body.get("filename", "").strip()
+    content = body.get("content", "")
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename is required")
+    ok = await memory_manager.write_file(filename, content)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Write failed — content may exceed {memory_manager.MAX_FILE_CHARS} chars or filename is invalid")
+    # Return sanitised filename (manager strips unsafe chars and forces .md)
+    from pathlib import Path
+    sanitised = Path(memory_manager._path(filename)).name
+    return {"success": True, "filename": sanitised}
 
 
 @app.delete("/api/memory/{filename}")

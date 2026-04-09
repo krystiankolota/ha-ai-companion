@@ -56,7 +56,12 @@ class AgentTools:
         self.memory_manager = memory_manager
         self._lovelace_cache: Dict[Optional[str], str] = {}  # {url_path: yaml_str}
         self._lovelace_lock = asyncio.Lock()
+        self._turn_registry_cache: Dict[str, Any] = {}  # cleared each chat turn
         logger.info("AgentTools initialized")
+
+    def clear_turn_cache(self) -> None:
+        """Clear per-turn registry cache. Called at the start of each chat turn."""
+        self._turn_registry_cache.clear()
 
     def _push_status(self, message: str) -> None:
         """Push a progress event to the agent's streaming queue (no-op if not streaming)."""
@@ -190,10 +195,14 @@ class AgentTools:
         Internal helper to retrieve all devices from registry.
 
         Uses hass API in custom component mode, WebSocket in add-on mode.
+        Results are cached per-turn to avoid redundant WS calls when multiple
+        search_config_files calls happen in the same agent iteration.
 
         Returns:
             List of device dictionaries
         """
+        if "devices" in self._turn_registry_cache:
+            return self._turn_registry_cache["devices"]
         try:
             # Custom component mode: use hass directly
             if self.config_manager.hass is not None:
@@ -212,6 +221,7 @@ class AgentTools:
                         "identifiers": list(device.identifiers),
                     })
                 logger.debug(f"Retrieved {len(devices)} devices via hass API")
+                self._turn_registry_cache["devices"] = devices
                 return devices
 
             # Add-on mode: use WebSocket API
@@ -227,6 +237,7 @@ class AgentTools:
             await ws_client.connect()
             devices = await ws_client.list_devices()
             await ws_client.close()
+            self._turn_registry_cache["devices"] = devices
             return devices
         except Exception as e:
             logger.debug(f"Failed to get devices: {e}")
@@ -237,10 +248,13 @@ class AgentTools:
         Internal helper to retrieve all entities from registry.
 
         Uses hass API in custom component mode, WebSocket in add-on mode.
+        Results are cached per-turn to avoid redundant WS calls.
 
         Returns:
             List of entity dictionaries
         """
+        if "entities" in self._turn_registry_cache:
+            return self._turn_registry_cache["entities"]
         try:
             # Custom component mode: use hass directly
             if self.config_manager.hass is not None:
@@ -261,6 +275,7 @@ class AgentTools:
                         "disabled_by": entity.disabled_by,
                     })
                 logger.debug(f"Retrieved {len(entities)} entities via hass API")
+                self._turn_registry_cache["entities"] = entities
                 return entities
 
             # Add-on mode: use WebSocket API
@@ -276,6 +291,7 @@ class AgentTools:
             await ws_client.connect()
             entities = await ws_client.list_entities()
             await ws_client.close()
+            self._turn_registry_cache["entities"] = entities
             return entities
         except Exception as e:
             logger.debug(f"Failed to get entities: {e}")
@@ -286,10 +302,13 @@ class AgentTools:
         Internal helper to retrieve all areas from registry.
 
         Uses hass API in custom component mode, WebSocket in add-on mode.
+        Results are cached per-turn to avoid redundant WS calls.
 
         Returns:
             List of area dictionaries
         """
+        if "areas" in self._turn_registry_cache:
+            return self._turn_registry_cache["areas"]
         try:
             # Custom component mode: use hass directly
             if self.config_manager.hass is not None:
@@ -307,6 +326,7 @@ class AgentTools:
                         "aliases": area.aliases,
                     })
                 logger.debug(f"Retrieved {len(areas)} areas via hass API")
+                self._turn_registry_cache["areas"] = areas
                 return areas
 
             # Add-on mode: use WebSocket API
@@ -322,6 +342,7 @@ class AgentTools:
             await ws_client.connect()
             areas = await ws_client.list_areas()
             await ws_client.close()
+            self._turn_registry_cache["areas"] = areas
             return areas
         except Exception as e:
             logger.debug(f"Failed to get areas: {e}")
@@ -850,12 +871,30 @@ class AgentTools:
                     "file_changes": stored_changes
                 })
 
+            # Compute per-file diff stats for UI display
+            diff_stats = []
+            for fc in file_changes:
+                old_lines = fc["current_content"].splitlines()
+                new_lines = fc["new_content"].splitlines()
+                old_set = set(old_lines)
+                new_set = set(new_lines)
+                added = sum(1 for l in new_lines if l not in old_set)
+                removed = sum(1 for l in old_lines if l not in new_set)
+                is_new_file = not fc["current_content"].strip()
+                diff_stats.append({
+                    "file_path": fc["file_path"],
+                    "added": added,
+                    "removed": removed,
+                    "is_new_file": is_new_file,
+                })
+
             return {
                 "success": True,
                 "changeset_id": changeset_id,
                 "files": [fc["file_path"] for fc in file_changes],
                 "total_files": len(file_changes),
                 "expires_at": expires_at,
+                "diff_stats": diff_stats,
                 "errors": errors if errors else None,
                 "message": f"Successfully proposed changeset with {len(file_changes)} file(s). Awaiting user approval."
             }

@@ -149,7 +149,7 @@ function AppInner() {
         <Header />
         <main className="flex-1 overflow-hidden">
           {state.activeTab === 'chat' && <ChatTab onSend={sendMessage} />}
-          {state.activeTab === 'suggestions' && <SuggestionsTab />}
+          {state.activeTab === 'suggestions' && <SuggestionsTab onImplement={sendMessage} />}
           {state.activeTab === 'memory' && <MemoryTab />}
         </main>
         <Footer />

@@ -5,6 +5,19 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-04-09
+
+### Added
+- **Suggestions: "Implement →" button** — one-click auto-send to agent directly from a suggestion card; old "Add to chat" renamed to "Edit first" for when you want to review before sending
+- **Suggestions: auto-refresh** — interval selector (Off / 30 min / 1 hr / 2 hr / 4 hr) with live countdown; skips if already generating; preference persists across sessions
+- **Memory: inline edit and create** — edit any memory file directly in the Memory tab; "New" button to create files without going through chat; 800-char limit counter shown in editor
+- **Approval card: diff stats** — each file in a changeset now shows `+N -N` lines changed; new files labelled "new file"
+
+### Fixed
+- **Model compliance: read-before-write guard** — if a model (e.g. Gemini Flash) calls `propose_config_changes` without first calling `search_config_files`, the tool now returns an explicit error instructing it to read first; prevents the "only aliases changed" failure pattern
+- **Memory consolidation: tool hallucination** — background memory consolidation no longer crashes when a weak model hallucinates calls to `search_config_files`; non-memory tools are silently ignored
+- **Performance: registry cache per turn** — device, entity, and area registries are cached within a single agent turn; when Sonnet makes 3+ parallel `search_config_files` calls in one iteration, WS connections drop from 9 to 3
+
 ## [1.2.1] - 2026-04-03
 
 ### Changed

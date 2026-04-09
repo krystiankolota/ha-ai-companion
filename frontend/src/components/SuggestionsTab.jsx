@@ -47,7 +47,7 @@ function loadStoredFocusPrompt() {
 
 // ── Suggestion Card ────────────────────────────────────────────────────────────
 
-function SuggestionCard({ suggestion, onAddToChat, onDismiss, onMarkApplied, compact }) {
+function SuggestionCard({ suggestion, onAddToChat, onImplement, onDismiss, onMarkApplied, compact }) {
   const [copying, setCopying] = useState(false)
 
   const copyYaml = async () => {
@@ -134,12 +134,20 @@ function SuggestionCard({ suggestion, onAddToChat, onDismiss, onMarkApplied, com
       )}
 
       <div className="flex flex-wrap gap-2">
+        {onImplement && (
+          <button
+            onClick={onImplement}
+            className="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
+          >
+            Implement →
+          </button>
+        )}
         {onAddToChat && (
           <button
             onClick={onAddToChat}
             className="text-xs px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300 rounded-lg transition-colors"
           >
-            Add to chat
+            Edit first
           </button>
         )}
         {onMarkApplied && (
@@ -310,9 +318,26 @@ function HistorySection({ history, dismissedTitles }) {
   )
 }
 
+const AUTO_REFRESH_OPTIONS = [
+  { label: 'Off', ms: 0 },
+  { label: '30 min', ms: 30 * 60 * 1000 },
+  { label: '1 hr', ms: 60 * 60 * 1000 },
+  { label: '2 hr', ms: 2 * 60 * 60 * 1000 },
+  { label: '4 hr', ms: 4 * 60 * 60 * 1000 },
+]
+
+function loadStoredAutoRefresh() {
+  try { return parseInt(localStorage.getItem('suggestionAutoRefresh') || '0') } catch { return 0 }
+}
+
+function fmtCountdown(secs) {
+  const m = Math.floor(secs / 60), s = secs % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
 // ── Main SuggestionsTab ────────────────────────────────────────────────────────
 
-export default function SuggestionsTab() {
+export default function SuggestionsTab({ onImplement }) {
   const { dispatch } = useAppContext()
 
   const [resourceTypes, setResourceTypes] = useState(loadStoredResourceTypes)
@@ -328,6 +353,11 @@ export default function SuggestionsTab() {
   const [statusLines, setStatusLines] = useState([])
   const [contextSummary, setContextSummary] = useState(null)
   const [promptDetails, setPromptDetails] = useState(null)
+  const [autoRefreshMs, setAutoRefreshMs] = useState(loadStoredAutoRefresh)
+  const [countdown, setCountdown] = useState(null)  // seconds until next refresh
+  const autoRefreshTimer = useRef(null)
+  const countdownTimer = useRef(null)
+  const generatingRef = useRef(false)
 
   const loadAll = useCallback(async () => {
     const [sugg, dismissed, applied, hist] = await Promise.allSettled([
@@ -357,6 +387,46 @@ export default function SuggestionsTab() {
     loadAll()
   }, [loadAll])
 
+  // Auto-refresh timer management
+  const startAutoRefresh = useCallback((ms) => {
+    clearInterval(autoRefreshTimer.current)
+    clearInterval(countdownTimer.current)
+    if (!ms) { setCountdown(null); return }
+
+    let secsLeft = Math.round(ms / 1000)
+    setCountdown(secsLeft)
+
+    countdownTimer.current = setInterval(() => {
+      secsLeft -= 1
+      setCountdown(secsLeft)
+    }, 1000)
+
+    autoRefreshTimer.current = setInterval(() => {
+      if (!generatingRef.current && !document.hidden) {
+        clearInterval(countdownTimer.current)
+        setCountdown(null)
+        // handleGenerate reference is stable via callback below
+        handleGenerateRef.current()
+      }
+    }, ms)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep a stable ref to handleGenerate so autoRefresh can call it
+  const handleGenerateRef = useRef(null)
+
+  useEffect(() => {
+    return () => {
+      clearInterval(autoRefreshTimer.current)
+      clearInterval(countdownTimer.current)
+    }
+  }, [])
+
+  const handleAutoRefreshChange = (ms) => {
+    setAutoRefreshMs(ms)
+    try { localStorage.setItem('suggestionAutoRefresh', String(ms)) } catch (_) {}
+    startAutoRefresh(ms)
+  }
+
   const handleToggleResource = (type) => {
     setResourceTypes(prev => {
       const next = prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
@@ -372,7 +442,9 @@ export default function SuggestionsTab() {
     try { localStorage.setItem('suggestionFocusPrompt', val) } catch (_) {}
   }
 
-  const handleGenerate = async () => {
+  const handleGenerate = useCallback(async () => {
+    if (generatingRef.current) return
+    generatingRef.current = true
     setGenerating(true)
     setStatusLines(['Starting…'])
     setStatus('')
@@ -400,9 +472,15 @@ export default function SuggestionsTab() {
       setStatusLines(prev => [...prev, `Error: ${e.message}`])
       setStatus(`Error: ${e.message}`)
     } finally {
+      generatingRef.current = false
       setGenerating(false)
+      // Restart countdown after generation completes
+      startAutoRefresh(autoRefreshMs)
     }
-  }
+  }, [resourceTypes, focusPrompt, autoRefreshMs, startAutoRefresh])
+
+  // Keep ref in sync so auto-refresh timer can call latest version
+  handleGenerateRef.current = handleGenerate
 
   const handleDismiss = async (title) => {
     try {
@@ -457,13 +535,22 @@ export default function SuggestionsTab() {
     s => !dismissedTitles.has(s.title) && !appliedTitles.has(s.title)
   )
 
-  const addToChat = (s) => {
+  const buildSuggestionMessage = (s) => {
     let msg = `Please implement this automation suggestion:\n\n**${s.title}**\n${s.description}`
     if (s.yaml_block) {
       msg += `\n\nStarting YAML:\n\`\`\`yaml\n${s.yaml_block}\n\`\`\``
     }
-    switchToChat(msg)
-    // Auto-mark as applied since user is implementing it
+    return msg
+  }
+
+  const addToChat = (s) => {
+    switchToChat(buildSuggestionMessage(s))
+    handleMarkApplied(s.title)
+  }
+
+  const handleImplement = (s) => {
+    dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'chat' })
+    if (onImplement) onImplement(buildSuggestionMessage(s))
     handleMarkApplied(s.title)
   }
 
@@ -501,13 +588,33 @@ export default function SuggestionsTab() {
           />
         </div>
 
-        <button
-          onClick={handleGenerate}
-          disabled={generating}
-          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-surface-700 disabled:text-gray-500 text-white rounded-lg text-xs font-medium transition-colors"
-        >
-          {generating ? 'Generating…' : 'Generate suggestions'}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-surface-700 disabled:text-gray-500 text-white rounded-lg text-xs font-medium transition-colors"
+          >
+            {generating ? 'Generating…' : 'Generate suggestions'}
+          </button>
+
+          {/* Auto-refresh selector */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">Auto-refresh:</span>
+            <select
+              value={autoRefreshMs}
+              onChange={e => handleAutoRefreshChange(Number(e.target.value))}
+              className="bg-surface-800 border border-surface-700 text-gray-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500"
+            >
+              {AUTO_REFRESH_OPTIONS.map(o => (
+                <option key={o.ms} value={o.ms}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {countdown !== null && !generating && (
+            <span className="text-xs text-gray-600">next in {fmtCountdown(countdown)}</span>
+          )}
+        </div>
       </div>
 
       {/* Generation log — persists after completion */}
@@ -593,6 +700,7 @@ export default function SuggestionsTab() {
           key={s.title || i}
           suggestion={s}
           onAddToChat={() => addToChat(s)}
+          onImplement={onImplement ? () => handleImplement(s) : null}
           onDismiss={() => handleDismiss(s.title)}
           onMarkApplied={() => handleMarkApplied(s.title)}
         />
