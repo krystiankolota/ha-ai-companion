@@ -74,6 +74,7 @@ class AgentSystem:
         enable_cache_control: bool = False,
         usage_tracking: str = 'stream_options',
         memory_manager: Optional[MemoryManager] = None,
+        conversation_manager=None,
     ):
         """
         Initialize the agent system.
@@ -90,7 +91,8 @@ class AgentSystem:
         """
         self.config_manager = config_manager
         self.memory_manager = memory_manager
-        self.tools = AgentTools(config_manager, agent_system=self, memory_manager=memory_manager)
+        self.conversation_manager = conversation_manager
+        self.tools = AgentTools(config_manager, agent_system=self, memory_manager=memory_manager, conversation_manager=conversation_manager)
 
         # Initialize main OpenAI client
         api_key = os.getenv('OPENAI_API_KEY')
@@ -232,6 +234,7 @@ Available Tools:
 - save_memory: Save a memory file to persist knowledge across sessions
 - delete_memory: Delete an outdated memory file
 - list_memory_stats: Audit memory files — sizes, ages, stale flags
+- search_past_sessions: Keyword search across past conversation sessions — use when user references prior work or before starting a topic with likely history
 - reload_config: Reload HA configuration after approved YAML changes (activates new entities without restart)
 
 Dashboard Guidelines:
@@ -305,6 +308,7 @@ Context injection:
 - Call read_memories only for a specific file not shown in the injected context
 - Home layout (areas → entities) is injected below — use it to answer location/entity questions without tool calls
 - Only call get_entity_states when you need live state values or attributes not shown in the layout
+- Call search_past_sessions when the user references a prior conversation ("that thing we did last week", "remember when...") or before tackling a topic that may have prior history (automations, dashboards, routines)
 
 Automation Suggestion Guidelines:
 - When asked to suggest automations, first call get_entity_states to see what devices exist
@@ -441,6 +445,8 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             return await self.tools.delete_memory(**function_args)
         elif function_name == "list_memory_stats":
             return await self.tools.list_memory_stats()
+        elif function_name == "search_past_sessions":
+            return await self.tools.search_past_sessions(**function_args)
         elif function_name == "reload_config":
             return await self.tools.reload_config()
         else:
@@ -752,6 +758,28 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                             "type": "object",
                             "properties": {},
                             "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search_past_sessions",
+                        "description": "Keyword search across past conversation sessions. Use this when the user references something discussed before (e.g. 'that automation we made last week', 'remember when we fixed...'), or before starting work on a topic that likely has prior history. Returns matching sessions with excerpts.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Search query, e.g. 'morning routine automation', 'boiler heating schedule', 'dashboard lights card'."
+                                },
+                                "limit": {
+                                    "type": "integer",
+                                    "description": "Max sessions to return (default 3, max 5).",
+                                    "default": 3
+                                }
+                            },
+                            "required": ["query"]
                         }
                     }
                 },

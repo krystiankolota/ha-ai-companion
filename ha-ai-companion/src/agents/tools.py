@@ -19,6 +19,7 @@ from ..ha.ha_websocket import (
 
 if TYPE_CHECKING:
     from ..memory.manager import MemoryManager
+    from ..conversations.manager import ConversationManager
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class AgentTools:
         workflow: Optional['ValidationWorkflow'] = None,
         agent_system: Optional[Any] = None,
         memory_manager: Optional['MemoryManager'] = None,
+        conversation_manager: Optional['ConversationManager'] = None,
     ):
         """
         Initialize agent tools with a configuration manager.
@@ -49,11 +51,13 @@ class AgentTools:
             workflow: Optional ValidationWorkflow for approval management
             agent_system: Optional AgentSystem for changeset storage
             memory_manager: Optional MemoryManager for persistent memories
+            conversation_manager: Optional ConversationManager for session search
         """
         self.config_manager = config_manager
         self.workflow = workflow
         self.agent_system = agent_system
         self.memory_manager = memory_manager
+        self.conversation_manager = conversation_manager
         self._lovelace_cache: Dict[Optional[str], str] = {}  # {url_path: yaml_str}
         self._lovelace_lock = asyncio.Lock()
         self._turn_registry_cache: Dict[str, Any] = {}  # cleared each chat turn
@@ -1053,6 +1057,33 @@ class AgentTools:
         except Exception as e:
             logger.error(f"list_memory_stats error: {e}")
             return {"success": False, "error": str(e)}
+
+    async def search_past_sessions(self, query: str, limit: int = 3) -> Dict[str, Any]:
+        """
+        Keyword search across past conversation sessions.
+
+        Searches user and assistant messages from stored sessions and returns
+        the most relevant ones with excerpts.  Use this when the user references
+        something that may have been discussed in a previous session, or to recall
+        past decisions before starting a related task.
+
+        Args:
+            query: Natural-language search query (e.g. "morning routine", "boiler automation").
+            limit: Max number of sessions to return (default 3, max 5).
+
+        Returns:
+            Dict with success bool and a 'sessions' list, each entry containing:
+                session_id, title, updated_at, total_hits, and up to 3 message excerpts.
+        """
+        if not self.conversation_manager:
+            return {"success": False, "error": "Conversation manager not available", "sessions": []}
+
+        try:
+            results = await self.conversation_manager.search_sessions(query, min(limit, 5))
+            return {"success": True, "sessions": results, "count": len(results)}
+        except Exception as e:
+            logger.error(f"search_past_sessions error: {e}")
+            return {"success": False, "error": str(e), "sessions": []}
 
     # ------------------------------------------------------------------
     # Dashboard management tools

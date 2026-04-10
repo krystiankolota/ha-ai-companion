@@ -143,3 +143,54 @@ class ConversationManager:
                 logger.debug("Pruned old session: %s", old.name)
         except Exception:
             pass
+
+    async def search_sessions(self, query: str, limit: int = 3) -> List[Dict]:
+        """
+        Keyword search across stored conversation sessions.
+
+        Tokenises the query, scores each session by total keyword hits across
+        user/assistant messages, and returns the top sessions with excerpts.
+        """
+        keywords = [w.lower() for w in re.split(r'\W+', query) if len(w) >= 3]
+        if not keywords:
+            return []
+
+        results = []
+        paths = sorted(
+            self.sessions_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        for path in paths:
+            try:
+                data = json.loads(path.read_text(encoding='utf-8'))
+                session_matches = []
+                for msg in data.get('messages', []):
+                    if msg.get('role') not in ('user', 'assistant'):
+                        continue
+                    content = msg.get('content', '')
+                    if not isinstance(content, str) or not content.strip():
+                        continue
+                    content_lower = content.lower()
+                    hits = sum(1 for kw in keywords if kw in content_lower)
+                    if hits:
+                        session_matches.append({
+                            'role': msg['role'],
+                            'excerpt': content[:300].strip(),
+                            'hits': hits,
+                        })
+                if session_matches:
+                    session_matches.sort(key=lambda m: m['hits'], reverse=True)
+                    results.append({
+                        'session_id': data.get('id', path.stem),
+                        'title': data.get('title', 'Untitled'),
+                        'updated_at': data.get('updated_at', ''),
+                        'total_hits': sum(m['hits'] for m in session_matches),
+                        'matches': session_matches[:3],
+                    })
+            except Exception:
+                continue
+
+        results.sort(key=lambda r: r['total_hits'], reverse=True)
+        return results[:limit]

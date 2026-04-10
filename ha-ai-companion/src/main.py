@@ -17,7 +17,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.4.1"
+version = "1.5.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -149,6 +149,7 @@ async def lifespan(_: FastAPI):
                 enable_cache_control=enable_cache_control,
                 usage_tracking=usage_tracking,
                 memory_manager=memory_manager,
+                conversation_manager=conversation_manager,
             )
             logger.info("Agent system initialized")
         else:

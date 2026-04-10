@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-04-10
+
+### Added
+- **Conversation history search** — new `search_past_sessions` tool lets the agent search stored conversation sessions by keyword; when the user references prior work ("that automation we made last week", "remember when we fixed...") the agent retrieves relevant past exchanges verbatim before responding, instead of asking the user to re-explain
+
 ## [1.4.1] - 2026-04-10
 
 ### Fixed
