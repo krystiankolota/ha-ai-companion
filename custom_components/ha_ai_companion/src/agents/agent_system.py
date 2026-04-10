@@ -276,24 +276,22 @@ Automation safety rules (CRITICAL):
 
 Memory Guidelines:
 - Categories: preference_, identity_, device_, baseline_, pattern_, correction_ (use as filename prefix)
-- Examples: preference_lighting.md, device_nicknames.md, pattern_morning_routine.md
+- Examples: preference_notifications.md (who gets notified), identity_residents.md, preference_language.md
 
-SAVE only when the user explicitly states a persistent fact:
-- Preferences ("I prefer 22°C", "always dim at night")
-- Device nicknames or locations ("Button 1 is the desk button")
-- Room/home layout facts
-- Baseline sensor norms ("100 ppm CO2 is normal here")
-- Recurring routines or schedules
+SAVE only when ALL are true: (1) user explicitly stated it, (2) it is durable across sessions, (3) it is NOT derivable from HA config or entity states:
+- User preferences ("always notify mobile_phone_a AND mobile_phone_b", "prefer 22°C at night")
+- Residents / occupants and their devices ("Krystian's phone = mobile_krystian")
+- Device purpose when the name is genuinely unclear ("pompa = water pressure pump in basement")
+- Recurring routines stated by the user ("we go to bed around 23:00")
 - Corrections to previously stored facts
 
-DO NOT save — if in doubt, don't:
-- Current states or live sensor readings (these change constantly)
-- Actions just performed ("I turned on X")
-- One-time commands (not stated as ongoing preference)
-- Device specs, capabilities, or HA integration details
-- Inferred or assumed facts the user never stated
-- Single-event observations or troubleshooting notes
-- Anything already derivable from the HA configuration
+NEVER save (not even if unsure):
+- What you did this session ("created automation X", "we edited file Y")
+- Current or recent sensor readings / states
+- Automations or scripts that were created (they're in the config files)
+- Device specs, model names, or integration details
+- Anything the AI can figure out by reading the HA config or entity list
+- Inferred or assumed facts the user never explicitly stated
 
 Anti-bloat rules (enforced by the system, also your responsibility):
 - Max 25 files total — merge related facts into one file rather than creating many small ones
@@ -301,10 +299,9 @@ Anti-bloat rules (enforced by the system, also your responsibility):
 - When updating a memory, overwrite the whole file — never append stale info
 - Use the `replaces` field when correcting a previous memory to delete the old file atomically
 - Call list_memory_stats periodically and proactively delete/merge stale or oversized files
-- At session end: if you learned something new, save it; if something is now stale, delete it
 
 Context injection:
-- Memory is already injected into this prompt at session start — check it before calling read_memories
+- Memory is already injected into this prompt at session start — NEVER reproduce or quote memory content in your responses
 - Call read_memories only for a specific file not shown in the injected context
 - Home layout (areas → entities) is injected below — use it to answer location/entity questions without tool calls
 - Only call get_entity_states when you need live state values or attributes not shown in the layout
@@ -1371,31 +1368,28 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             memory_context = await self.memory_manager.get_context()
             system_content = (
                 "You are a memory consolidation assistant for a Home Assistant AI companion.\n"
-                "Review the conversation and update persistent memory ONLY if clearly warranted.\n\n"
-                "SAVE when ALL of these are true:\n"
-                "  1. The user explicitly stated a durable fact (not inferred, not a current state)\n"
-                "  2. Confidence ≥ 0.85 — if in doubt, do NOT save\n"
-                "  3. It belongs to one of the categories below\n\n"
-                "Memory categories and prefixes:\n"
-                "  preference_  — user preferences (temperature, lighting, schedules)\n"
-                "  identity_    — home structure, rooms, layout\n"
-                "  device_      — device nicknames, locations, roles\n"
-                "  baseline_    — normal sensor ranges for this home\n"
-                "  pattern_     — recurring routines or schedules\n"
-                "  correction_  — corrections to previously stored facts\n"
-                "  ecosystem_   — device relationships, integration facts, HA-specific knowledge\n"
-                "                 (e.g. 'pompa = water pressure pump', 'zigbee coordinator on /dev/ttyUSB0')\n\n"
-                "Ecosystem learning (FEAT-9): Actively look for device relationship facts:\n"
-                "  - What a device actually does (especially if name is unclear)\n"
-                "  - Which devices control which other devices\n"
-                "  - Integration-specific facts (coordinator, hub, bridge)\n"
-                "  - Save these under ecosystem_devices.md, ecosystem_integrations.md, or user_patterns.md\n\n"
-                "DO NOT save: current sensor readings, actions just performed, one-time commands,\n"
-                "anything already in injected memory below.\n\n"
-                "If existing memory is contradicted → overwrite with save_memory (use 'replaces' field).\n"
-                "If existing memory is stale (>90 days, user corrected it) → delete_memory first.\n"
-                "Max 800 chars per file (bullet points only). Max 25 files total — merge before creating new.\n"
-                "If nothing qualifies: call NO tools.\n"
+                "Your job: extract ONLY high-value, durable facts from the conversation — facts the AI\n"
+                "cannot figure out by reading HA config files or entity states.\n\n"
+                "SAVE only when ALL of these are true:\n"
+                "  1. The user explicitly stated it (never infer or assume)\n"
+                "  2. It is durable — remains true across many future sessions\n"
+                "  3. It cannot be derived from HA config/entity list\n"
+                "  4. Confidence ≥ 0.9 — when in doubt, save NOTHING\n\n"
+                "Good examples to save:\n"
+                "  - preference_notifications.md: 'always notify mobile_krystian AND mobile_marta'\n"
+                "  - identity_residents.md: 'Krystian and Marta live here; Krystian = primary user'\n"
+                "  - device_purpose.md: 'pompa = water pressure pump; cwu = hot water boiler'\n"
+                "  - preference_language.md: 'respond in Polish; HA content in Polish'\n\n"
+                "NEVER save (automatic disqualifiers):\n"
+                "  - What was done this session ('created automation X', 'edited file Y', 'we configured Z')\n"
+                "  - Any automation, script, or flow that was created (it is already in config files)\n"
+                "  - Current sensor readings, device states, or live values\n"
+                "  - Device model names, specs, or integration details\n"
+                "  - Anything the AI can find by searching config files or entity states\n"
+                "  - Inferred or assumed facts the user never said out loud\n\n"
+                "If nothing from the conversation qualifies: call NO tools at all.\n"
+                "If existing memory is wrong or stale: overwrite with save_memory (use 'replaces' field).\n"
+                "Max 800 chars per file (bullet points only). Max 25 files — merge before creating new.\n"
                 f"Current date/time: {now_str}"
             )
             if memory_context:
@@ -1940,8 +1934,12 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             naming_instruction = ""
             if 'entity_states' in active_types:
                 naming_instruction = (
-                    "Also review entity friendly_names and identify any that are unclear, ambiguous, or too generic "
-                    "(e.g. 'pompa', 'sensor_1', 'switch_kitchen'). "
+                    "Also review entity friendly_names and flag ONLY names where the device's purpose or function "
+                    "is genuinely ambiguous — i.e. a knowledgeable person could not determine what the device does "
+                    "from the name alone (e.g. 'pompa', 'sensor_1', 'device_003', 'nowy_guzik'). "
+                    "Do NOT flag cosmetic issues: punctuation, capitalisation, hyphenation, word order, "
+                    "abbreviations, or names that are simply short. "
+                    "Keep naming_issues minimal — fewer is better. "
                 )
 
             messages = [

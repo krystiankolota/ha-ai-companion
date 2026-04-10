@@ -5,6 +5,13 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-04-10
+
+### Fixed
+- **Memory: content not printed in chat** — explicit instruction prevents the AI from reproducing or quoting memory content in its responses
+- **Memory consolidation: session logs no longer saved** — rewrote consolidation prompt with strict disqualifiers; model no longer saves "created automation X" or other session activity as persistent facts; only durable user-stated preferences, resident info, and device purpose qualify
+- **Suggestions: naming issues now require genuine ambiguity** — naming suggestions are only raised when a knowledgeable person could not determine the device's purpose from its name; cosmetic issues (punctuation, capitalisation, hyphenation) are suppressed
+
 ## [1.3.0] - 2026-04-09
 
 ### Added
