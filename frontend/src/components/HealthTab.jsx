@@ -5,6 +5,7 @@ import {
   generateHealthReport,
   dismissHealthFinding,
   clearHealthDismissed,
+  getHealthDismissed,
   stageHealthFix,
   submitApproval,
 } from '../lib/api'
@@ -203,7 +204,12 @@ const CATEGORY_ORDER = ['dead_ref', 'orphaned_helper', 'duplicate', 'unused']
 export default function HealthTab({ onSendMessage }) {
   const { dispatch } = useAppContext()
 
-  const [findings, setFindings] = useState([])
+  const [findings, setFindings] = useState(() => {
+    try {
+      const cached = localStorage.getItem('health_findings')
+      return cached ? JSON.parse(cached) : []
+    } catch { return [] }
+  })
   const [dismissed, setDismissed] = useState(new Set())
   const [showDismissed, setShowDismissed] = useState(false)
   const [scanning, setScanning] = useState(false)
@@ -224,11 +230,15 @@ export default function HealthTab({ onSendMessage }) {
         setStatusLines(prev => [...prev, msg])
       })
       if (result) {
-        setFindings(result.findings || [])
+        const findings = result.findings || []
+        setFindings(findings)
         setDismissed(new Set(result.dismissed || []))
         const ts = result.scanned_at || new Date().toISOString()
         setScannedAt(ts)
-        try { localStorage.setItem('health_scanned_at', ts) } catch { /* ignore */ }
+        try {
+          localStorage.setItem('health_scanned_at', ts)
+          localStorage.setItem('health_findings', JSON.stringify(findings))
+        } catch { /* ignore */ }
       }
     } catch (e) {
       setError(e.message)
@@ -236,6 +246,11 @@ export default function HealthTab({ onSendMessage }) {
       setScanning(false)
     }
   }, [])
+
+  // On mount: load dismissed state from backend (so it's in sync even when findings came from localStorage)
+  useEffect(() => {
+    getHealthDismissed().then(r => setDismissed(new Set(r.dismissed || []))).catch(() => {})
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scan on first open if no prior results
   useEffect(() => {

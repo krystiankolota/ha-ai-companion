@@ -2156,13 +2156,15 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             now = datetime.now(timezone.utc)
 
             all_entity_ids: set = set()
+            known_domains: set = set()          # domains that have real entities in HA
             stale_unavailable: Dict[str, float] = {}  # entity_id → days unavailable
 
             for s in states:
                 eid = s.get("entity_id", "")
-                if not eid:
+                if not eid or "." not in eid:
                     continue
                 all_entity_ids.add(eid)
+                known_domains.add(eid.split(".")[0])
                 state_val = s.get("state", "")
                 if state_val in ("unavailable", "unknown"):
                     lc = s.get("last_changed")
@@ -2175,7 +2177,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         except Exception:
                             pass
 
-            await _emit(f"✓ Entity states: {len(all_entity_ids)} entities, {len(stale_unavailable)} stale-unavailable")
+            await _emit(f"✓ Entity states: {len(all_entity_ids)} entities ({len(known_domains)} domains), {len(stale_unavailable)} stale-unavailable")
 
             # ── 2. Config files ─────────────────────────────────────────────
             await _emit("Loading automations…")
@@ -2267,6 +2269,13 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 for match in ENTITY_RE.finditer(content):
                     eid = match.group(0).strip()
                     if eid in seen_dead:
+                        continue
+                    # Only flag entity_ids whose domain actually has entities in HA.
+                    # This filters out service-only domains (notify, homeassistant,
+                    # persistent_notification, etc.) that would otherwise produce
+                    # false positives since they never appear in entity states.
+                    domain = eid.split(".")[0]
+                    if domain not in known_domains:
                         continue
                     if eid not in all_entity_ids:
                         seen_dead.add(eid)

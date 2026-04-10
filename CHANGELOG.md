@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-04-10
+
+### Fixed
+- **Health: dead ref false positives** — entity_id references are now only flagged if their domain actually has entities in HA; service-only domains (`notify`, `homeassistant`, `persistent_notification`, etc.) are automatically excluded since they never appear in entity states
+- **Health: scan results lost on reload** — findings are now persisted to localStorage and restored on tab open; dismissed state is re-synced from backend on mount
+
 ## [1.4.0] - 2026-04-10
 
 ### Added
