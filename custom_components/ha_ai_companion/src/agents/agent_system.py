@@ -2027,3 +2027,455 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
         except Exception as e:
             logger.error(f"Failed to generate suggestions: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Health report
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _remove_yaml_block(content: str, parent_key: str, child_key: str) -> str:
+        """
+        Line-based removal of a child key block under a parent key in YAML.
+        Preserves comments and formatting — does NOT re-serialize.
+
+        Finds the child_key indented under parent_key and removes lines from
+        there to the next sibling (same indent level) or EOF. If removing the
+        child leaves the parent with no children, the parent line is also removed.
+        """
+        lines = content.splitlines(keepends=True)
+        result = []
+        i = 0
+        n = len(lines)
+
+        # Find parent key at column 0
+        parent_line_idx = None
+        for idx, line in enumerate(lines):
+            stripped = line.lstrip()
+            if line.startswith(parent_key + ":") or line.startswith(parent_key + " "):
+                parent_line_idx = idx
+                break
+
+        if parent_line_idx is None:
+            return content  # parent not found — return unchanged
+
+        # Find child key indented under parent
+        child_start = None
+        child_indent = None
+        for idx in range(parent_line_idx + 1, n):
+            line = lines[idx]
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            indent = len(line) - len(stripped)
+            if indent == 0:
+                break  # hit next top-level key — child not found
+            key = stripped.split(":")[0].rstrip()
+            if key == child_key:
+                child_start = idx
+                child_indent = indent
+                break
+
+        if child_start is None:
+            return content  # child not found
+
+        # Find end of child block (next line at same or lower indent, non-blank, non-comment)
+        child_end = n
+        for idx in range(child_start + 1, n):
+            line = lines[idx]
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            indent = len(line) - len(stripped)
+            if indent <= child_indent:
+                child_end = idx
+                break
+
+        # Build output skipping [child_start, child_end)
+        result = lines[:child_start] + lines[child_end:]
+
+        # Check if parent now has no children (all remaining lines after parent are top-level or blank)
+        result_str = "".join(result)
+        result_lines = result_str.splitlines(keepends=True)
+        parent_still_has_children = False
+        for idx in range(parent_line_idx + 1, len(result_lines)):
+            line = result_lines[idx]
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            indent = len(line) - len(stripped)
+            if indent == 0:
+                break
+            parent_still_has_children = True
+            break
+
+        if not parent_still_has_children:
+            # Remove the parent line too
+            final = result_lines[:parent_line_idx] + result_lines[parent_line_idx + 1:]
+            return "".join(final)
+
+        return result_str
+
+    async def generate_health_report(self, progress_cb=None) -> Dict[str, Any]:
+        """
+        Scan HA config files and entity states for four categories of problems:
+          A — dead entity references (unavailable >7 days or missing from registry)
+          B — orphaned helpers (defined but never referenced)
+          C — duplicate/redundant automations (AI-judged)
+          D — unused scripts and scenes (defined but never called)
+
+        Returns:
+            Dict with 'success', 'findings' list, 'scan_stats' dict.
+        """
+        import re
+        import json
+        import time as _time
+
+        UNAVAILABLE_THRESHOLD_DAYS = 7
+        HELPER_DOMAINS = ("input_boolean", "input_number", "input_text",
+                          "input_select", "input_datetime", "counter", "timer")
+        # Regex for entity_id: domain.slug (min 3 chars each side)
+        ENTITY_RE = re.compile(r'\b([a-z_][a-z0-9_]{1,})\.([a-z0-9_]{2,})\b')
+
+        async def _emit(msg):
+            if progress_cb:
+                if isinstance(msg, str):
+                    await progress_cb({"event": "status", "message": msg})
+                else:
+                    await progress_cb(msg)
+
+        t_start = _time.monotonic()
+
+        try:
+            findings = []
+            files_checked = set()
+
+            # ── 1. Entity states ────────────────────────────────────────────
+            await _emit("Fetching entity states…")
+            states_result = await self.tools.get_entity_states()
+            states = states_result.get("states", [])
+            now = datetime.now(timezone.utc)
+
+            all_entity_ids: set = set()
+            stale_unavailable: Dict[str, float] = {}  # entity_id → days unavailable
+
+            for s in states:
+                eid = s.get("entity_id", "")
+                if not eid:
+                    continue
+                all_entity_ids.add(eid)
+                state_val = s.get("state", "")
+                if state_val in ("unavailable", "unknown"):
+                    lc = s.get("last_changed")
+                    if lc:
+                        try:
+                            lc_dt = datetime.fromisoformat(lc.replace("Z", "+00:00"))
+                            days = (now - lc_dt).total_seconds() / 86400
+                            if days >= UNAVAILABLE_THRESHOLD_DAYS:
+                                stale_unavailable[eid] = round(days, 1)
+                        except Exception:
+                            pass
+
+            await _emit(f"✓ Entity states: {len(all_entity_ids)} entities, {len(stale_unavailable)} stale-unavailable")
+
+            # ── 2. Config files ─────────────────────────────────────────────
+            await _emit("Loading automations…")
+            auto_result = await self.tools.search_config_files(search_pattern="alias")
+            auto_files = [f for f in auto_result.get("files", [])
+                          if "automation" in f.get("path", "").lower()
+                          and not f.get("path", "").startswith("entities/")
+                          and not f.get("path", "").startswith("devices/")]
+            for f in auto_files:
+                files_checked.add(f["path"])
+
+            await _emit("Loading scripts…")
+            script_result = await self.tools.search_config_files(search_pattern="sequence:")
+            script_files = [f for f in script_result.get("files", [])
+                            if "script" in f.get("path", "").lower()
+                            and not f.get("path", "").startswith("entities/")
+                            and not f.get("path", "").startswith("devices/")]
+            for f in script_files:
+                files_checked.add(f["path"])
+
+            await _emit("Loading scenes…")
+            scene_result = await self.tools.search_config_files(search_pattern="scene:")
+            scene_files = [f for f in scene_result.get("files", [])
+                           if "scene" in f.get("path", "").lower()
+                           and not f.get("path", "").startswith("entities/")
+                           and not f.get("path", "").startswith("devices/")]
+            for f in scene_files:
+                files_checked.add(f["path"])
+
+            await _emit("Loading helpers…")
+            helper_def_files: Dict[str, list] = {}  # path → list of (domain, key, entity_id)
+            helper_contents: Dict[str, str] = {}
+            for domain in HELPER_DOMAINS:
+                res = await self.tools.search_config_files(search_pattern=f"{domain}:")
+                for f in res.get("files", []):
+                    p = f.get("path", "")
+                    if p.startswith("entities/") or p.startswith("devices/"):
+                        continue
+                    files_checked.add(p)
+                    content = f.get("content", "")
+                    helper_contents[p] = content
+                    # Extract helper entity_ids defined under this domain
+                    in_domain = False
+                    for line in content.splitlines():
+                        stripped = line.lstrip()
+                        if not stripped or stripped.startswith("#"):
+                            continue
+                        indent = len(line) - len(stripped)
+                        if indent == 0:
+                            in_domain = line.startswith(f"{domain}:")
+                            continue
+                        if in_domain and indent > 0 and ":" in stripped:
+                            key = stripped.split(":")[0].strip()
+                            if key and not key.startswith("-"):
+                                entity_id = f"{domain}.{key}"
+                                if p not in helper_def_files:
+                                    helper_def_files[p] = []
+                                helper_def_files[p].append((domain, key, entity_id))
+
+            await _emit("Loading dashboards…")
+            try:
+                dash_result = await self.tools.list_dashboards()
+                dash_files_content = []
+                for dash in dash_result.get("dashboards", []):
+                    url_path = dash.get("url_path")
+                    key = None if url_path in (None, "lovelace") else url_path
+                    yaml_content = await self.tools._get_lovelace_config(key)
+                    if yaml_content:
+                        path = f"lovelace/{url_path}.yaml" if url_path else "lovelace.yaml"
+                        dash_files_content.append({"path": path, "content": yaml_content})
+                        files_checked.add(path)
+            except Exception:
+                dash_files_content = []
+
+            # All file contents joined for cross-reference searching
+            all_contents_list = (
+                auto_files + script_files + scene_files +
+                list({"path": p, "content": c} for p, c in helper_contents.items()) +
+                dash_files_content
+            )
+            all_contents_combined = "\n".join(f.get("content", "") for f in all_contents_list)
+
+            # ── 3. Check A: Dead entity references ──────────────────────────
+            await _emit("Checking dead entity references…")
+            seen_dead: set = set()
+            for file_obj in all_contents_list:
+                path = file_obj.get("path", "")
+                content = file_obj.get("content", "")
+                for match in ENTITY_RE.finditer(content):
+                    eid = match.group(0).strip()
+                    if eid in seen_dead:
+                        continue
+                    if eid not in all_entity_ids:
+                        seen_dead.add(eid)
+                        findings.append({
+                            "category": "dead_ref",
+                            "key": f"dead_ref:{eid}",
+                            "entity_id": eid,
+                            "file_path": path,
+                            "reason": "missing",
+                            "days_unavailable": None,
+                            "fix": "chat",
+                        })
+                    elif eid in stale_unavailable:
+                        seen_dead.add(eid)
+                        findings.append({
+                            "category": "dead_ref",
+                            "key": f"dead_ref:{eid}",
+                            "entity_id": eid,
+                            "file_path": path,
+                            "reason": "unavailable",
+                            "days_unavailable": stale_unavailable[eid],
+                            "fix": "chat",
+                        })
+
+            await _emit(f"✓ Dead refs: {sum(1 for f in findings if f['category'] == 'dead_ref')} found")
+
+            # ── 4. Check B: Orphaned helpers ────────────────────────────────
+            await _emit("Checking orphaned helpers…")
+            all_defined_helpers: list = []
+            for path, entries in helper_def_files.items():
+                for domain, key, entity_id in entries:
+                    all_defined_helpers.append((domain, key, entity_id, path))
+
+            for domain, key, entity_id, def_path in all_defined_helpers:
+                # Count references in all files EXCEPT the definition file itself
+                ref_count = 0
+                for file_obj in all_contents_list:
+                    if file_obj.get("path") == def_path:
+                        continue
+                    if entity_id in file_obj.get("content", ""):
+                        ref_count += 1
+                # Also check combined content outside the definition file
+                if ref_count == 0:
+                    # Pre-compute fix: remove the YAML block
+                    def_content = helper_contents.get(def_path, "")
+                    new_content = self._remove_yaml_block(def_content, domain, key)
+                    findings.append({
+                        "category": "orphaned_helper",
+                        "key": f"orphaned_helper:{entity_id}",
+                        "entity_id": entity_id,
+                        "file_path": def_path,
+                        "domain": domain,
+                        "fix": "precomputed",
+                        "precomputed_fix": {"file_path": def_path, "new_content": new_content},
+                    })
+
+            await _emit(f"✓ Orphaned helpers: {sum(1 for f in findings if f['category'] == 'orphaned_helper')} found")
+
+            # ── 5. Check C: Duplicate automations (AI-judged) ───────────────
+            await _emit("Checking for duplicate automations…")
+            all_automations = []
+            for file_obj in auto_files:
+                path = file_obj.get("path", "")
+                content = file_obj.get("content", "")
+                # Extract automation blocks by alias
+                current_alias = None
+                current_lines: list = []
+                for line in content.splitlines():
+                    stripped = line.lstrip()
+                    if stripped.startswith("- alias:") or (stripped.startswith("alias:") and not line.startswith(" ")):
+                        if current_alias and current_lines:
+                            all_automations.append({
+                                "alias": current_alias,
+                                "file": path,
+                                "snippet": "\n".join(current_lines[:20]),
+                            })
+                        current_alias = stripped.split(":", 1)[1].strip().strip("\"'")
+                        current_lines = [line]
+                    elif current_alias:
+                        current_lines.append(line)
+                if current_alias and current_lines:
+                    all_automations.append({
+                        "alias": current_alias,
+                        "file": path,
+                        "snippet": "\n".join(current_lines[:20]),
+                    })
+
+            duplicate_findings = []
+            if len(all_automations) >= 2 and self.suggestion_client:
+                try:
+                    auto_list_text = json.dumps(
+                        [{"alias": a["alias"], "file": a["file"], "snippet": a["snippet"][:300]}
+                         for a in all_automations],
+                        indent=2
+                    )
+                    dup_response = await self.suggestion_client.chat.completions.create(
+                        model=self.suggestion_model,
+                        messages=[
+                            {"role": "system", "content": (
+                                "You are a Home Assistant expert. Analyze the following list of automations "
+                                "and identify any pairs or groups that are functionally identical or very similar "
+                                "(same trigger AND same action). Be conservative — only flag clear duplicates. "
+                                "Return ONLY valid JSON: "
+                                "{\"duplicates\": [{\"aliases\": [\"name1\", \"name2\"], \"files\": [\"a.yaml\"], \"reason\": \"...\"}]} "
+                                "If none found, return {\"duplicates\": []}."
+                            )},
+                            {"role": "user", "content": auto_list_text},
+                        ],
+                        stream=False,
+                        temperature=0.1,
+                    )
+                    raw = dup_response.choices[0].message.content.strip()
+                    if raw.startswith("```"):
+                        raw = raw.split("```")[1]
+                        if raw.startswith("json"):
+                            raw = raw[4:]
+                        raw = raw.strip()
+                    dup_parsed = json.loads(raw)
+                    for dup in dup_parsed.get("duplicates", []):
+                        aliases = dup.get("aliases", [])
+                        if len(aliases) >= 2:
+                            key = "duplicate:" + "|".join(sorted(aliases))
+                            duplicate_findings.append({
+                                "category": "duplicate",
+                                "key": key,
+                                "aliases": aliases,
+                                "files": dup.get("files", []),
+                                "reason": dup.get("reason", ""),
+                                "fix": "chat",
+                            })
+                except Exception as e:
+                    logger.warning(f"Duplicate automation check failed: {e}")
+
+            findings.extend(duplicate_findings)
+            await _emit(f"✓ Duplicates: {len(duplicate_findings)} found")
+
+            # ── 6. Check D: Unused scripts and scenes ───────────────────────
+            await _emit("Checking unused scripts and scenes…")
+
+            def _extract_defined_keys(files: list, domain: str) -> list:
+                """Extract {entity_id, file_path, key} for all items defined in these files."""
+                defined = []
+                for file_obj in files:
+                    path = file_obj.get("path", "")
+                    content = file_obj.get("content", "")
+                    in_domain = False
+                    for line in content.splitlines():
+                        stripped = line.lstrip()
+                        if not stripped or stripped.startswith("#"):
+                            continue
+                        indent = len(line) - len(stripped)
+                        if indent == 0:
+                            in_domain = line.strip().rstrip(":") == domain
+                            continue
+                        if in_domain and indent > 0 and ":" in stripped and not stripped.startswith("-"):
+                            key = stripped.split(":")[0].strip()
+                            if key:
+                                defined.append({
+                                    "entity_id": f"{domain}.{key}",
+                                    "file_path": path,
+                                    "key": key,
+                                })
+                return defined
+
+            script_defs = _extract_defined_keys(script_files, "script")
+            scene_defs = _extract_defined_keys(scene_files, "scene")
+
+            for item in script_defs + scene_defs:
+                eid = item["entity_id"]
+                domain = eid.split(".")[0]
+                entity_key = item["key"]
+                file_path = item["file_path"]
+                # Check references in all other files
+                ref_count = sum(
+                    1 for file_obj in all_contents_list
+                    if file_obj.get("path") != file_path and eid in file_obj.get("content", "")
+                )
+                if ref_count == 0:
+                    def_content = next(
+                        (f.get("content", "") for f in all_contents_list if f.get("path") == file_path), ""
+                    )
+                    new_content = self._remove_yaml_block(def_content, domain, entity_key)
+                    findings.append({
+                        "category": "unused",
+                        "key": f"unused:{eid}",
+                        "entity_id": eid,
+                        "file_path": file_path,
+                        "item_type": domain,  # "script" or "scene"
+                        "fix": "precomputed",
+                        "precomputed_fix": {"file_path": file_path, "new_content": new_content},
+                    })
+
+            await _emit(f"✓ Unused scripts/scenes: {sum(1 for f in findings if f['category'] == 'unused')} found")
+
+            duration_ms = int((_time.monotonic() - t_start) * 1000)
+            total = len(findings)
+            logger.info(f"Health scan complete: {total} findings in {duration_ms}ms")
+            await _emit(f"✓ Scan complete: {total} finding(s) in {duration_ms // 1000}s")
+
+            return {
+                "success": True,
+                "findings": findings,
+                "scan_stats": {
+                    "entities_checked": len(all_entity_ids),
+                    "files_checked": len(files_checked),
+                    "duration_ms": duration_ms,
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"Health scan failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}

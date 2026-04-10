@@ -143,6 +143,71 @@ export function getSuggestionsHistory() {
   return apiFetch('api/suggestions/history')
 }
 
+// Health
+export async function generateHealthReport(onStatus) {
+  const response = await fetch('api/health/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  if (!response.ok) {
+    let detail
+    try { detail = (await response.json()).detail } catch { detail = response.statusText }
+    throw new Error(detail || response.statusText)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result = null
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const event = JSON.parse(line)
+        if (event.event === 'status' && onStatus) {
+          onStatus(event.message)
+        } else if (event.event === 'result') {
+          result = event
+        } else if (event.event === 'error') {
+          throw new Error(event.message)
+        }
+      } catch (e) {
+        if (e.message && !line.includes(e.message)) throw e
+      }
+    }
+  }
+  return result
+}
+
+export function dismissHealthFinding(key) {
+  return apiFetch('api/health/dismiss', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  })
+}
+
+export function clearHealthDismissed() {
+  return apiFetch('api/health/dismissed', { method: 'DELETE' })
+}
+
+export function getHealthDismissed() {
+  return apiFetch('api/health/dismissed')
+}
+
+export function stageHealthFix(filePath, newContent) {
+  return apiFetch('api/health/stage-fix', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_path: filePath, new_content: newContent }),
+  })
+}
+
 // Memory
 export function getMemoryFiles() {
   return apiFetch('api/memory')

@@ -3,7 +3,7 @@ import { useAppContext } from '../../store/AppContext'
 import { Actions } from '../../store/reducer'
 import { submitApproval } from '../../lib/api'
 
-// States: pending | processing | approved | rejected
+// States: pending | confirming_reject | processing | approved | rejected
 export default function ApprovalCard({ changeset }) {
   const { dispatch } = useAppContext()
   const [status, setStatus] = useState('pending')
@@ -30,7 +30,11 @@ export default function ApprovalCard({ changeset }) {
     }
   }
 
-  const handleReject = async () => {
+  const handleRejectClick = () => {
+    setStatus('confirming_reject')
+  }
+
+  const handleRejectConfirm = async () => {
     setStatus('processing')
     try {
       await submitApproval(changeset.changeset_id, false)
@@ -42,6 +46,10 @@ export default function ApprovalCard({ changeset }) {
         payload: { type: 'system', content: `❌ Rejection error: ${e.message}` },
       })
     }
+  }
+
+  const handleRejectCancel = () => {
+    setStatus('pending')
   }
 
   return (
@@ -102,10 +110,28 @@ export default function ApprovalCard({ changeset }) {
             ✓ Approve &amp; Apply
           </button>
           <button
-            onClick={handleReject}
+            onClick={handleRejectClick}
             className="px-3 py-1.5 text-xs bg-red-800 hover:bg-red-700 text-white rounded-lg transition-colors"
           >
             ✗ Reject
+          </button>
+        </div>
+      )}
+
+      {status === 'confirming_reject' && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-400">Discard all changes?</span>
+          <button
+            onClick={handleRejectConfirm}
+            className="px-3 py-1.5 text-xs bg-red-700 hover:bg-red-600 text-white rounded-lg transition-colors"
+          >
+            Confirm reject
+          </button>
+          <button
+            onClick={handleRejectCancel}
+            className="px-3 py-1.5 text-xs bg-surface-700 hover:bg-surface-600 text-gray-300 rounded-lg transition-colors"
+          >
+            Cancel
           </button>
         </div>
       )}

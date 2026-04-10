@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 import asyncio
 import os
+import re
 import logging
 from datetime import datetime, timezone
 import json as json_lib
@@ -16,7 +17,7 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 
-version = "1.3.1"
+version = "1.4.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -683,6 +684,132 @@ async def generate_suggestions(request: Request):
             yield json_lib.dumps(item) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+# --- Health endpoints ---
+
+HEALTH_DISMISSED_KEY = ".ai_agent_health_dismissed.json"
+
+def _health_dismissed_path() -> str:
+    config_dir = os.getenv("HA_CONFIG_DIR", "/config")
+    return os.path.join(config_dir, HEALTH_DISMISSED_KEY)
+
+def _read_health_dismissed() -> list:
+    path = _health_dismissed_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json_lib.load(f)
+        except Exception:
+            pass
+    return []
+
+def _write_health_dismissed(keys: list):
+    with open(_health_dismissed_path(), "w") as f:
+        json_lib.dump(keys, f, indent=2)
+
+
+@app.post("/api/health/generate")
+async def generate_health_report(request: Request):
+    """Run a health scan and stream NDJSON progress + result."""
+    if not agent_system:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def progress_cb(payload):
+        await queue.put(payload)
+
+    async def run_scan():
+        try:
+            result = await agent_system.generate_health_report(progress_cb=progress_cb)
+            dismissed = _read_health_dismissed()
+            if result.get("success"):
+                await queue.put({
+                    "event": "result",
+                    "findings": result["findings"],
+                    "scan_stats": result.get("scan_stats", {}),
+                    "dismissed": dismissed,
+                    "scanned_at": datetime.now(timezone.utc).isoformat(),
+                })
+            else:
+                await queue.put({"event": "error", "message": result.get("error", "Scan failed")})
+        except Exception as e:
+            logger.error(f"Health scan error: {e}", exc_info=True)
+            await queue.put({"event": "error", "message": str(e)})
+        finally:
+            await queue.put(None)
+
+    asyncio.create_task(run_scan())
+
+    async def stream():
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield json_lib.dumps(item) + "\n"
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+@app.get("/api/health/dismissed")
+async def get_health_dismissed():
+    return {"dismissed": _read_health_dismissed()}
+
+
+_HEALTH_KEY_RE = re.compile(r'^[a-zA-Z0-9_\-:\.\|]+$')
+
+@app.post("/api/health/dismiss")
+async def dismiss_health_finding(request: Request):
+    body = await request.json()
+    key = body.get("key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="key is required")
+    if not _HEALTH_KEY_RE.match(key):
+        raise HTTPException(status_code=400, detail="Invalid key format")
+    dismissed = _read_health_dismissed()
+    if key not in dismissed:
+        dismissed.append(key)
+        _write_health_dismissed(dismissed)
+    return {"dismissed": dismissed}
+
+
+@app.delete("/api/health/dismissed")
+async def clear_health_dismissed():
+    _write_health_dismissed([])
+    return {"dismissed": []}
+
+
+@app.post("/api/health/stage-fix")
+async def stage_health_fix(request: Request):
+    """
+    Pre-stage a pre-computed fix (for orphaned helpers / unused scripts/scenes)
+    by creating a changeset through the existing propose_config_changes tool.
+    Returns changeset_id + files + diff_stats for the frontend to show an approval modal.
+    """
+    if not agent_system:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    body = await request.json()
+    file_path = body.get("file_path", "").strip()
+    new_content = body.get("new_content", "")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="file_path is required")
+    try:
+        result = await agent_system.tools.propose_config_changes(
+            changes=[{"file_path": file_path, "new_content": new_content}]
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Staging failed"))
+        return {
+            "changeset_id": result["changeset_id"],
+            "files": result.get("files", []),
+            "diff_stats": result.get("diff_stats", []),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"stage_health_fix error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Memory endpoints ---

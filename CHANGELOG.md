@@ -5,6 +5,22 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-04-10
+
+### Added
+- **Health tab** — new fourth tab for config maintenance; scans for four categories of problems:
+  - **Dead entity refs**: entities referenced in automations/scripts/scenes/dashboards that are unavailable >7 days or missing from the registry entirely
+  - **Orphaned helpers**: `input_boolean`, `input_number`, etc. defined in YAML but never referenced anywhere — one-click fix with approval diff
+  - **Duplicate automations**: AI-detected pairs/groups with same trigger and action
+  - **Unused scripts/scenes**: defined but never called from any automation, dashboard, or other script — one-click fix with approval diff
+- **Health: dismissible findings** — dismiss any finding to hide it from future scans; "Show dismissed" toggle to restore; persisted in `.ai_agent_health_dismissed.json`
+- **Health: pre-computed fixes** — orphaned helpers and unused scripts/scenes show "Apply fix" which stages the change through the existing approval flow (backup created before write)
+- **Health: "Fix →" button** — dead refs and duplicates are sent to the chat agent with full context to handle safely
+- **Health: restore backup shortcut** — "↩ Restore backup" button sends to chat to list and restore recent backups
+
+### Fixed
+- **Approval card: reject confirmation** — clicking "Reject" now shows an inline "Discard all changes? / Confirm reject / Cancel" prompt to prevent accidental rejection of multi-file changesets
+
 ## [1.3.1] - 2026-04-10
 
 ### Fixed
