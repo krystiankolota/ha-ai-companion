@@ -5,6 +5,20 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-04-11
+
+### Added
+- **Watchman & Spook integration** — new `get_ha_issues` tool reads Watchman missing entity/service references directly from entity state attributes (`sensor.watchman_missing_entities`, `sensor.watchman_missing_actions`) and fetches Spook repair issues via the HA repairs API; agent now understands and can fix broken config references when asked
+- **Entity ID validation** — `propose_config_changes` now checks every `entity_id:` field in proposed YAML against the entity registry; unknown entity IDs return suggestions from the same domain so the agent can self-correct before you see the approval dialog
+- **watchman_report.txt readable** — `search_config_files` now includes `.txt` files from the config root, so the agent can directly read the watchman text report
+
+### Fixed
+- **Dashboard url_path underscores** — HA requires hyphens in dashboard URL slugs; underscores in `url_path` are now automatically converted to hyphens before the API call (was causing `invalid_format` errors)
+- **Entity ID hallucination** — added system prompt rules instructing the agent to never invent entity IDs and to verify against `get_entity_states` before writing YAML; `propose_config_changes` warnings are now actionable (fix or remove)
+
+### Removed
+- **Health tab** — replaced by Watchman and Spook integrations which detect the same issues more reliably; all `/api/health/*` backend endpoints removed
+
 ## [1.5.0] - 2026-04-10
 
 ### Added

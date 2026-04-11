@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from ..config import ConfigurationManager, ConfigurationError
 from ..ha.ha_websocket import (
     get_lovelace_config_as_yaml,
+    get_repairs_ws,
     list_lovelace_dashboards_ws,
     create_lovelace_dashboard_ws,
     delete_lovelace_dashboard_ws,
@@ -352,6 +353,89 @@ class AgentTools:
             logger.debug(f"Failed to get areas: {e}")
             return []
 
+    async def _validate_entity_ids_in_yaml(self, yaml_content: str) -> List[Dict[str, Any]]:
+        """
+        Extract entity_id references from YAML content and validate against the entity registry.
+
+        Focuses on explicit `entity_id:` fields (single values and lists). Returns a list of
+        unknown entity IDs with similar known entities as suggestions.
+
+        Only matches entity_id fields — avoids false positives from service calls, template
+        variables, or comment lines.
+        """
+        import re
+
+        # Extract entity_ids from explicit entity_id: fields and list items under them
+        found_ids: set = set()
+
+        # Pattern 1: entity_id: domain.entity  (single value on same line)
+        for m in re.finditer(r'entity_id\s*:\s+([a-z][a-z0-9_]*\.[a-z0-9_]+)', yaml_content):
+            found_ids.add(m.group(1))
+
+        # Pattern 2: entity_id as a list, items on subsequent lines
+        # Find each "entity_id:" line then collect following "- domain.entity" lines
+        lines = yaml_content.splitlines()
+        i = 0
+        while i < len(lines):
+            stripped = lines[i].lstrip()
+            if re.match(r'entity_id\s*:\s*$', stripped) or re.match(r'entity_id\s*:\s*\[', stripped):
+                # Collect list items
+                i += 1
+                while i < len(lines):
+                    item_line = lines[i].lstrip()
+                    if not item_line or item_line.startswith('#'):
+                        i += 1
+                        continue
+                    item_m = re.match(r'-\s+([a-z][a-z0-9_]*\.[a-z0-9_]+)', item_line)
+                    if item_m:
+                        found_ids.add(item_m.group(1))
+                        i += 1
+                    else:
+                        break
+            else:
+                i += 1
+
+        if not found_ids:
+            return []
+
+        # Get entity registry (cached per turn)
+        entities = await self._get_all_entities()
+        known_ids = {e.get('entity_id') for e in entities if e.get('entity_id')}
+
+        if not known_ids:
+            return []  # Can't validate without entity list
+
+        warnings = []
+        for eid in sorted(found_ids):
+            if eid in known_ids:
+                continue
+
+            domain = eid.split('.')[0] if '.' in eid else ''
+            slug = eid.split('.', 1)[1] if '.' in eid else eid
+
+            # Find similar entities in same domain by slug overlap
+            same_domain = [e['entity_id'] for e in entities if e.get('entity_id', '').startswith(f'{domain}.')]
+            # Score: how much of the slug appears in the candidate
+            def _similarity(candidate_id: str) -> int:
+                c_slug = candidate_id.split('.', 1)[1] if '.' in candidate_id else candidate_id
+                # Count shared substrings of length >= 3
+                score = 0
+                for n in range(3, len(slug) + 1):
+                    for start in range(len(slug) - n + 1):
+                        if slug[start:start+n] in c_slug:
+                            score += n
+                return score
+
+            suggestions = sorted(same_domain, key=_similarity, reverse=True)[:3]
+            warnings.append({
+                "entity_id": eid,
+                "status": "not_found_in_registry",
+                "suggestions": suggestions,
+                "action": "Fix the entity_id to a known one from suggestions, or remove this automation/reference if the entity no longer exists.",
+            })
+
+        return warnings
+
     async def search_config_files(
         self,
         search_pattern: Optional[str] = None
@@ -427,8 +511,9 @@ class AgentTools:
                 matched_paths = list(config_dir.glob(glob_pattern))
                 logger.info(f"File path pattern matched {len(matched_paths)} files")
             else:
-                # Find all YAML files
+                # Find all YAML files + known text reports (watchman)
                 matched_paths = list(config_dir.glob("**/*.yaml"))
+                matched_paths += [p for p in config_dir.glob("*.txt") if p.is_file()]
 
             # Filter to only files (not directories) and exclude custom_components
             matched_paths = [
@@ -824,11 +909,30 @@ class AgentTools:
                             })
                             continue
 
+                    # Entity ID validation for automation/script/scene YAML
+                    # Soft check: warn LLM about unknown entity_ids without blocking.
+                    # Only run for YAML files that reference entities, skip Lovelace/devices/etc.
+                    entity_warnings: List[Dict] = []
+                    _check_file = (
+                        file_path.endswith('.yaml')
+                        and not file_path.startswith('lovelace/')
+                        and file_path != 'lovelace.yaml'
+                        and not file_path.startswith('devices/')
+                        and not file_path.startswith('entities/')
+                        and not file_path.startswith('areas/')
+                    )
+                    if _check_file and new_content.strip():
+                        try:
+                            entity_warnings = await self._validate_entity_ids_in_yaml(new_content)
+                        except Exception as _ev:
+                            logger.debug(f"Entity ID check skipped for {file_path}: {_ev}")
+
                     # Add to file changes list
                     file_changes.append({
                         "file_path": file_path,
                         "current_content": current_content,
-                        "new_content": new_content
+                        "new_content": new_content,
+                        "entity_warnings": entity_warnings,
                     })
 
                 except ConfigurationError as e:
@@ -892,7 +996,13 @@ class AgentTools:
                     "is_new_file": is_new_file,
                 })
 
-            return {
+            # Collect all entity warnings across files
+            all_entity_warnings = []
+            for fc in file_changes:
+                for w in fc.get("entity_warnings", []):
+                    all_entity_warnings.append({**w, "file": fc["file_path"]})
+
+            result = {
                 "success": True,
                 "changeset_id": changeset_id,
                 "files": [fc["file_path"] for fc in file_changes],
@@ -902,6 +1012,14 @@ class AgentTools:
                 "errors": errors if errors else None,
                 "message": f"Successfully proposed changeset with {len(file_changes)} file(s). Awaiting user approval."
             }
+            if all_entity_warnings:
+                result["entity_warnings"] = all_entity_warnings
+                result["message"] += (
+                    f"\n\nWARNING: {len(all_entity_warnings)} entity_id reference(s) were NOT found in the entity registry. "
+                    "Review each one — fix the entity_id, or remove/comment out the automation if the entity no longer exists. "
+                    "Suggestions are provided where available."
+                )
+            return result
 
         except Exception as e:
             import traceback
@@ -1595,6 +1713,103 @@ class AgentTools:
         except Exception as e:
             logger.error(f"get_entity_states error: {e}", exc_info=True)
             return {"success": False, "error": str(e), "states": [], "count": 0}
+
+    async def get_ha_issues(self) -> Dict[str, Any]:
+        """
+        Get all current Home Assistant issues from Watchman and Spook/Repairs.
+
+        Reads:
+        - Watchman: missing entity references and missing service calls detected in config files
+        - Repair issues: Spook and other integrations that file repair items in HA
+        - watchman_report.txt: text report file (if present in /config)
+
+        Returns:
+            Dict with watchman (missing_entities, missing_services) and repairs lists
+        """
+        result: Dict[str, Any] = {"success": True}
+
+        # 1. Watchman data from entity state attributes
+        try:
+            if self.config_manager.hass is not None:
+                hass = self.config_manager.hass
+                me_state = hass.states.get("sensor.watchman_missing_entities")
+                ms_state = hass.states.get("sensor.watchman_missing_actions")
+            else:
+                supervisor_token = os.getenv('SUPERVISOR_TOKEN')
+                if supervisor_token:
+                    from ..ha.ha_websocket import HomeAssistantWebSocket
+                    ws_client = HomeAssistantWebSocket("ws://supervisor/core/websocket", supervisor_token)
+                    await ws_client.connect()
+                    try:
+                        raw_states = await ws_client.get_states()
+                        states_by_id = {s["entity_id"]: s for s in raw_states}
+                        me_state = states_by_id.get("sensor.watchman_missing_entities")
+                        ms_state = states_by_id.get("sensor.watchman_missing_actions")
+                    finally:
+                        await ws_client.close()
+                else:
+                    me_state = ms_state = None
+
+            if me_state is not None:
+                attrs = me_state.attributes if hasattr(me_state, 'attributes') else me_state.get('attributes', {})
+                missing_entities = attrs.get("entities", []) if attrs else []
+                missing_count = int(me_state.state if hasattr(me_state, 'state') else me_state.get('state', 0))
+
+                ms_attrs = ms_state.attributes if (ms_state and hasattr(ms_state, 'attributes')) else (ms_state or {}).get('attributes', {})
+                missing_services = ms_attrs.get("entities", []) if ms_attrs else []
+                missing_services_count = int(ms_state.state if (ms_state and hasattr(ms_state, 'state')) else (ms_state or {}).get('state', 0))
+
+                result["watchman"] = {
+                    "missing_entities_count": missing_count,
+                    "missing_entities": missing_entities,
+                    "missing_services_count": missing_services_count,
+                    "missing_services": missing_services,
+                }
+            else:
+                result["watchman"] = {"note": "Watchman integration not found or not installed"}
+        except Exception as e:
+            result["watchman_error"] = str(e)
+
+        # 2. HA repair issues (Spook and others)
+        try:
+            if self.config_manager.hass is not None:
+                # Custom component mode — use HA's issues registry directly
+                from homeassistant.components.repairs import async_get_issue_registry
+                issue_reg = async_get_issue_registry(self.config_manager.hass)
+                issues = [
+                    {
+                        "issue_id": issue.issue_id,
+                        "domain": issue.domain,
+                        "severity": str(issue.severity) if issue.severity else None,
+                        "is_fixable": issue.is_fixable,
+                        "translation_key": issue.translation_key,
+                        "ignored": issue.ignored,
+                    }
+                    for issue in issue_reg.issues.values()
+                    if not issue.ignored
+                ]
+            else:
+                supervisor_token = os.getenv('SUPERVISOR_TOKEN')
+                if supervisor_token:
+                    issues = await get_repairs_ws("ws://supervisor/core/websocket", supervisor_token)
+                else:
+                    issues = []
+            result["repairs"] = issues
+            result["repairs_count"] = len(issues)
+        except Exception as e:
+            result["repairs_error"] = str(e)
+            result["repairs"] = []
+            result["repairs_count"] = 0
+
+        # 3. Watchman report text file (optional)
+        try:
+            report = await self.config_manager.read_file_raw("watchman_report.txt", allow_missing=True)
+            if report:
+                result["watchman_report_file"] = report
+        except Exception:
+            pass
+
+        return result
 
     async def reload_config(self) -> Dict[str, Any]:
         """

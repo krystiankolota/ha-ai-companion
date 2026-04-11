@@ -71,17 +71,6 @@ export default function Header() {
         >
           Memory
         </button>
-        <button
-          className={[
-            'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
-            activeTab === 'health'
-              ? 'bg-indigo-600 text-white'
-              : 'text-gray-400 hover:text-gray-200',
-          ].join(' ')}
-          onClick={() => dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'health' })}
-        >
-          Health
-        </button>
       </div>
     </header>
   )

@@ -210,6 +210,9 @@ class HomeAssistantWebSocket:
         """
         logger.info(f"Creating Lovelace dashboard: {title}")
         try:
+            # HA requires hyphens in url_path (underscores are rejected)
+            if url_path:
+                url_path = url_path.replace("_", "-")
             params: Dict[str, Any] = {
                 "title": title,
                 "show_in_sidebar": show_in_sidebar,
@@ -243,6 +246,25 @@ class HomeAssistantWebSocket:
         except Exception as e:
             logger.error(f"Failed to delete Lovelace dashboard '{url_path}': {e}")
             raise
+
+    async def get_repairs(self, include_ignored: bool = False) -> List[Dict[str, Any]]:
+        """
+        Get Home Assistant repair issues (from Spook and other integrations).
+
+        Args:
+            include_ignored: Include ignored/dismissed repair issues
+
+        Returns:
+            List of repair issue dicts with issue_id, domain, title, description, severity, is_fixable
+        """
+        try:
+            result = await self.call("repairs/list", include_ignored=include_ignored)
+            issues = result.get("issues", []) if result else []
+            logger.info(f"Retrieved {len(issues)} repair issue(s)")
+            return issues
+        except Exception as e:
+            logger.warning(f"Could not retrieve repair issues: {e}")
+            return []
 
     async def reload_config(self) -> None:
         """
@@ -648,6 +670,29 @@ async def delete_lovelace_dashboard_ws(url: str, token: str, url_path: str) -> b
     except Exception as e:
         logger.error(f"Failed to delete Lovelace dashboard: {e}")
         return False
+    finally:
+        await ws_client.close()
+
+
+async def get_repairs_ws(url: str, token: str, include_ignored: bool = False) -> List[Dict[str, Any]]:
+    """
+    Helper function to get Home Assistant repair issues.
+
+    Args:
+        url: WebSocket URL
+        token: Access token
+        include_ignored: Include dismissed repair issues
+
+    Returns:
+        List of repair issue dicts
+    """
+    ws_client = HomeAssistantWebSocket(url, token)
+    try:
+        await ws_client.connect()
+        return await ws_client.get_repairs(include_ignored)
+    except Exception as e:
+        logger.warning(f"Could not retrieve repairs: {e}")
+        return []
     finally:
         await ws_client.close()
 
