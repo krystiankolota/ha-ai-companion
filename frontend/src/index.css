@@ -67,6 +67,7 @@
   background-color: theme('colors.surface.800') !important;
   border-color: theme('colors.surface.700') !important;
   color: theme('colors.gray.200') !important;
+  position: relative !important;
 }
 .d2h-file-list-header {
   background-color: theme('colors.surface.800') !important;
@@ -90,6 +91,7 @@
 .d2h-code-linenumber {
   border-color: theme('colors.surface.700') !important;
   color: theme('colors.gray.600') !important;
+  position: relative !important;
 }
 .d2h-diff-table .d2h-del {
   background-color: rgba(239, 68, 68, 0.18) !important;
