@@ -55,7 +55,7 @@ class MemoryManager:
 
     MAX_CONTEXT_CHARS = 6000   # ~1500 tokens — keep memory injection lean
     MAX_FILES = 25             # Hard cap on total memory files
-    MAX_FILE_CHARS = 800       # Max content chars per file (excluding metadata header)
+    MAX_FILE_CHARS = 1500      # Max content chars per file (excluding metadata header)
 
     def __init__(self, memory_dir: str):
         self.memory_dir = Path(memory_dir)

@@ -1126,7 +1126,15 @@ class AgentTools:
             import re
             safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', Path(filename).stem).strip('_') or 'memory'
             safe_name = f"{safe_name}.md"
-            return {"success": ok, "filename": safe_name, "deleted": deleted}
+            if not ok:
+                limit = self.memory_manager.MAX_FILE_CHARS
+                actual = len(content.strip())
+                if actual > limit:
+                    return {"success": False, "filename": safe_name, "deleted": deleted,
+                            "error": f"content too long: {actual} chars exceeds limit {limit}. Shorten the content and retry."}
+                return {"success": False, "filename": safe_name, "deleted": deleted,
+                        "error": "write failed (I/O error or file count limit reached)"}
+            return {"success": True, "filename": safe_name, "deleted": deleted}
         except Exception as e:
             logger.error(f"save_memory error: {e}")
             return {"success": False, "error": str(e)}
