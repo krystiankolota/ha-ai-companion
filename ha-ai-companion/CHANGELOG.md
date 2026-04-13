@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3] - 2026-04-13
+
+### Fixed
+- **Blank page on install** — 1.6.2 was released without a frontend rebuild; the HTML template referenced `bundle.1.6.2.*` assets that didn't exist, causing a blank white page
+
 ## [1.6.2] - 2026-04-12
 
 ### Fixed
