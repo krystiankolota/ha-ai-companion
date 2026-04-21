@@ -1180,6 +1180,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     err_str = str(api_err).lower()
                     if 'stream_options' in err_str or 'usage' in err_str or 'extra' in err_str or 'unknown' in err_str:
                         logger.warning(f"API rejected usage-tracking params, retrying without them: {api_err}")
+                        # Propagate to all slots — if one slot rejects, the same endpoint will reject all.
+                        for slot in self._client_usage_ok:
+                            if self._client_usage_ok[slot] is None:
+                                self._client_usage_ok[slot] = False
                         self._client_usage_ok[client_slot] = False
                         retry_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage')}
                         stream = await active_client.chat.completions.create(**retry_params)

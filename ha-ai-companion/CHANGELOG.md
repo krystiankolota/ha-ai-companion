@@ -5,6 +5,13 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2026-04-21
+
+### Fixed
+- **Suggestions crash on malformed JSON** — when the AI model returned malformed JSON, `generate_suggestions` raised an unhandled `JSONDecodeError`. Now uses a two-stage fallback: extract outermost JSON block via regex; if still unparseable, return empty result gracefully. Also improved code-fence stripping to use proper regex.
+- **Usage-param retry fires twice per session** — when a provider rejects `stream_options`/`usage` params, rejection is now propagated to all client slots at once so only one wasted round-trip occurs per restart instead of two.
+- **Memory extraction error level** — `clear-all` memory extraction failure is now logged as WARNING instead of ERROR; sessions are still deleted correctly when JSON parsing fails.
+
 ## [1.7.0] - 2026-04-21
 
 ### Added

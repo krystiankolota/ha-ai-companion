@@ -18,7 +18,7 @@ from .memory import MemoryManager
 from .conversations import ConversationManager
 from .tasks import TaskManager
 
-version = "1.7.0"
+version = "1.7.2"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -521,7 +521,7 @@ async def clear_all_sessions():
                     if match:
                         data = json_lib.loads(match.group())
                 except Exception as e:
-                    logger.error("Memory extraction failed during clear-all: %s", e)
+                    logger.warning("Memory extraction failed during clear-all (sessions will still be deleted): %s", e)
 
             for mem in data.get("memories", []):
                 fn = mem.get("filename", "")
