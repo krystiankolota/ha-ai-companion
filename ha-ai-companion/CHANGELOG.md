@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-04-21
+
+### Added
+- **Surgical config editing** — two new tools replace noisy full-file rewrites: `patch_config_key` changes a single YAML key by dot-notation path (e.g. `homeassistant.name`); `patch_config_block` replaces a named section. Both create changesets through the same approval workflow. `propose_config_changes` description updated to steer the LLM toward patch tools for targeted edits.
+- **Safe Node-RED editing** — `add_nodered_flow` stages a new flow tab for approval; `edit_nodered_tab` updates a single existing tab. Both use virtual path routing (`nodered/new_flow.json`, `nodered/flow/{tab_id}.json`) so only the intended tab is ever touched. The destructive replace-all path is no longer accessible to the LLM.
+- **Memory consolidation** — new `consolidate_memories` tool reads all memory files and returns a merge/delete/keep plan for the user to review before any files change.
+- **Tool breadcrumbs UI** — each agent turn now shows a compact step-by-step breadcrumb row for every tool call (pending → running → done/error). "Show details" expands full args + result JSON per tool. Replaces the old generic spinner.
+- **AI Task Entities** — `set_ha_text_entity` writes plain text directly to an `input_text` helper in Home Assistant (no approval needed); `schedule_ai_task` creates a recurring task that runs a prompt on a `daily HH:MM` schedule and writes the result to an entity. Tasks are stored in `.ai_agent_tasks/` and survive restarts. Manage tasks via `GET/DELETE /api/scheduled-tasks` and `POST /api/scheduled-tasks/{id}/run`.
+- **Semantic entity search** — `get_entity_states` now accepts an optional `query` parameter. When provided, entity descriptions are embedded via the configured embeddings API (`EMBEDDING_MODEL` env var, default `text-embedding-3-small`) and cosine similarity returns the ~40 most relevant entities rather than dumping all of them. Unavailable entities and those changed in the last 10 minutes are always included. Falls back to full dump if the embeddings API is unavailable.
+- **Tool call error recovery** — when a tool returns a failure (bad entity ID, malformed YAML, etc.), the error is fed back to the LLM with a "correct and retry" directive. Up to 2 retries per tool call. Approval-gated and infrastructure errors are never auto-retried.
+
 ## [1.6.3] - 2026-04-13
 
 ### Fixed

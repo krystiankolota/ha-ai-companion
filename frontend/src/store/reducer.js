@@ -41,6 +41,8 @@ export const Actions = {
   SHOW_CLEAR_ALL_MODAL: 'SHOW_CLEAR_ALL_MODAL',
   HIDE_CLEAR_ALL_MODAL: 'HIDE_CLEAR_ALL_MODAL',
   SET_CHAT_PREFILL: 'SET_CHAT_PREFILL',
+  UPDATE_BREADCRUMBS: 'UPDATE_BREADCRUMBS',
+  APPEND_BREADCRUMB_STEPS: 'APPEND_BREADCRUMB_STEPS',
 }
 
 export function reducer(state, action) {
@@ -197,6 +199,34 @@ export function reducer(state, action) {
 
     case Actions.SET_CHAT_PREFILL:
       return { ...state, chatPrefill: action.payload }
+
+    case Actions.UPDATE_BREADCRUMBS: {
+      // Update a specific step inside a breadcrumbs message, matched by tool_call_id
+      const { id, tool_call_id, updates } = action.payload
+      return {
+        ...state,
+        displayMessages: state.displayMessages.map(m => {
+          if (m.id !== id) return m
+          return {
+            ...m,
+            steps: m.steps.map(s =>
+              s.tool_call_id === tool_call_id ? { ...s, ...updates } : s
+            ),
+          }
+        }),
+      }
+    }
+
+    case Actions.APPEND_BREADCRUMB_STEPS: {
+      // Append new steps to an existing breadcrumbs message (for multi-iteration turns)
+      const { id, steps } = action.payload
+      return {
+        ...state,
+        displayMessages: state.displayMessages.map(m =>
+          m.id === id ? { ...m, steps: [...m.steps, ...steps] } : m
+        ),
+      }
+    }
 
     default:
       return state

@@ -7,9 +7,14 @@ An AI-powered Home Assistant companion that helps you manage configuration, auto
 ## What it does
 
 - **Review, edit and create dashboards** — ask the AI to build or modify Lovelace dashboards
-- **Manage configuration files** — automations, scripts, YAML configs, devices, entities, areas
-- **Suggest automations** — based on live entity states; select which context to include; live progress stream shows what data is being sent
-- **Memory tab** — dedicated tab to browse, inspect and delete the AI's persistent memory files
+- **Surgical config editing** — `patch_config_key` / `patch_config_block` change a single YAML key or section without rewriting the whole file; diffs stay small and readable
+- **Safe Node-RED editing** — stage new flow tabs or update a single existing tab; destructive replace-all is not available to the LLM
+- **AI Task Entities** — write AI-generated text directly to `input_text` helpers for use in automations, dashboards, and TTS; schedule recurring daily tasks (e.g. morning briefings)
+- **Semantic entity search** — for homes with 500+ entities, queries like "bedroom lights" return only the relevant ~40 entities instead of flooding context
+- **Tool breadcrumbs** — each agent turn shows a live step-by-step view of every tool call (pending → running → done/error) with expandable args/result panels
+- **Tool call error recovery** — failed tool calls are automatically retried up to 2 times with the error fed back to the LLM so it can self-correct
+- **Suggest automations** — based on live entity states; live progress stream shows what data is being sent
+- **Memory tab** — browse, inspect and delete the AI's persistent memory files; `consolidate_memories` tool reviews all files and produces a merge plan before taking action
 - **Persistent memory** — remembers your preferences and home layout across sessions
 - **Node-RED integration** — reads your existing flows to avoid duplicate automations
 - **Conversation history** — sessions saved and accessible across page reloads, with a mobile-friendly slide-in sidebar

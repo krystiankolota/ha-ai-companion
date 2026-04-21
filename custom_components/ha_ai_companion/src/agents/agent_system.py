@@ -226,15 +226,14 @@ Available Tools:
 - delete_dashboard: Delete a Lovelace dashboard by url_path
 - get_entity_states: Get live current states of all entities (use for automation suggestions)
 - get_ha_issues: Get Watchman missing entity/service references + Spook repair issues. Call when user mentions issues, Watchman, Spook, broken references, or asks to fix missing entities in config.
-- get_nodered_flows: Read existing Node-RED flows via API or backup file (use before suggesting automations and before creating new flows)
-- propose_config_changes with nodered paths: Deploy flows to Node-RED via approval workflow:
-  * file_path="nodered/new_flow.json" + new_content=JSON array → adds a new flow tab (safe, non-destructive)
-  * file_path="nodered/flow/{tab_id}.json" + new_content=JSON array → updates only that tab (safe; include tab node + its nodes)
-  * file_path="nodered/flows.json" + new_content=JSON array → replaces ALL flows (DESTRUCTIVE — only if user explicitly asks to replace everything)
+- get_nodered_flows: Read existing Node-RED flows via API or backup file (always call before add_nodered_flow or edit_nodered_tab)
+- add_nodered_flow: Stage a NEW flow tab for approval (non-destructive, never touches existing flows)
+- edit_nodered_tab: Stage an update to an EXISTING flow tab for approval (only that tab is changed; requires tab_id from get_nodered_flows)
 - read_memories: Read persistent memory files from previous sessions
 - save_memory: Save a memory file to persist knowledge across sessions
 - delete_memory: Delete an outdated memory file
 - list_memory_stats: Audit memory files — sizes, ages, stale flags
+- consolidate_memories: Review all memory files and propose a MERGE/DELETE/KEEP plan (user must confirm before applying)
 - search_past_sessions: Keyword search across past conversation sessions — use when user references prior work or before starting a topic with likely history
 - reload_config: Reload HA configuration after approved YAML changes (activates new entities without restart)
 
@@ -321,8 +320,8 @@ Automation Suggestion Guidelines:
 - When asked to suggest automations, first call get_entity_states to see what devices exist
 - Also call search_config_files to see what automations already exist (avoid duplicates)
 - If Node-RED is configured, call get_nodered_flows to see existing flows — do NOT suggest automations that are already implemented in Node-RED
-- To create a new Node-RED flow tab: call get_nodered_flows first, generate valid Node-RED JSON (array with tab node + its nodes), then propose_config_changes with file_path="nodered/new_flow.json".
-- To modify nodes in an EXISTING flow tab: call get_nodered_flows to get the tab's id, build the updated array (tab node + all nodes for that tab with your changes applied), then propose_config_changes with file_path="nodered/flow/{tab_id}.json". NEVER use nodered/flows.json for partial edits — it replaces everything.
+- To create a new Node-RED flow tab: call get_nodered_flows first (check for duplicates), generate valid Node-RED JSON (array with tab node + its nodes), then call add_nodered_flow.
+- To modify nodes in an EXISTING flow tab: call get_nodered_flows to get the tab's id and current nodes, build the updated array (tab node + all nodes with your changes applied), then call edit_nodered_tab with the tab_id. NEVER replace all flows — that operation is not available.
 - Node-RED flow JSON format: array containing one {type:"tab", id, label} node plus the flow's functional nodes, each with {id, type, name, wires, x, y, ...}. Use common node types: inject, debug, function, change, switch, delay, http request, mqtt in/out, ha-api, ha-entity, ha-state-changed, ha-call-service, ha-events-all, ha-webhook.
 - Suggest practical, common-sense automations based on the devices present
 - Group suggestions by area/domain and explain the benefit of each
@@ -428,6 +427,26 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 logger.warning("propose_config_changes blocked: no read_config call this turn")
                 return {"success": False, "error": error_msg}
             return await self.tools.propose_config_changes(**function_args)
+        elif function_name == "patch_config_key":
+            if turn_state is not None and not turn_state.get("has_read", False):
+                return {
+                    "success": False,
+                    "error": (
+                        "ERROR: You must read the current file content before patching. "
+                        "Call search_config_files first to see the exact key path."
+                    ),
+                }
+            return await self.tools.patch_config_key(**function_args)
+        elif function_name == "patch_config_block":
+            if turn_state is not None and not turn_state.get("has_read", False):
+                return {
+                    "success": False,
+                    "error": (
+                        "ERROR: You must read the current file content before patching. "
+                        "Call search_config_files first to confirm the anchor path exists."
+                    ),
+                }
+            return await self.tools.patch_config_block(**function_args)
         elif function_name == "list_dashboards":
             return await self.tools.list_dashboards()
         elif function_name == "create_dashboard":
@@ -439,6 +458,26 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 return await asyncio.wait_for(self.tools.get_nodered_flows(), timeout=60.0)
             except asyncio.TimeoutError:
                 return {"success": False, "error": "Tool execution timed out after 60 seconds"}
+        elif function_name == "add_nodered_flow":
+            if turn_state is not None and not turn_state.get("has_read", False):
+                return {
+                    "success": False,
+                    "error": (
+                        "ERROR: Call get_nodered_flows first to confirm the flow doesn't already exist "
+                        "and to understand the existing flow structure."
+                    ),
+                }
+            return await self.tools.add_nodered_flow(**function_args)
+        elif function_name == "edit_nodered_tab":
+            if turn_state is not None and not turn_state.get("has_read", False):
+                return {
+                    "success": False,
+                    "error": (
+                        "ERROR: Call get_nodered_flows first to get the tab_id and current node content "
+                        "before editing a tab."
+                    ),
+                }
+            return await self.tools.edit_nodered_tab(**function_args)
         elif function_name == "get_entity_states":
             try:
                 return await asyncio.wait_for(self.tools.get_entity_states(**function_args), timeout=60.0)
@@ -457,10 +496,16 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             return await self.tools.delete_memory(**function_args)
         elif function_name == "list_memory_stats":
             return await self.tools.list_memory_stats()
+        elif function_name == "consolidate_memories":
+            return await self.tools.consolidate_memories()
         elif function_name == "search_past_sessions":
             return await self.tools.search_past_sessions(**function_args)
         elif function_name == "reload_config":
             return await self.tools.reload_config()
+        elif function_name == "set_ha_text_entity":
+            return await self.tools.set_ha_text_entity(**function_args)
+        elif function_name == "schedule_ai_task":
+            return await self.tools.schedule_ai_task(**function_args)
         else:
             logger.error(f"Unknown tool requested: {function_name}")
             return {"success": False, "error": f"Unknown tool: {function_name}"}
@@ -561,7 +606,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 "type": "function",
                 "function": {
                     "name": "propose_config_changes",
-                    "description": "Propose changes to one or more configuration files for user approval. Use this to batch multiple file changes together. First use search_config_files to read files, then provide complete new content for each as YAML strings.",
+                    "description": "Propose changes to one or more configuration files for user approval. Use for new files, structural rewrites, or multi-file changes. For changing a single existing key use patch_config_key instead. For replacing one named section (e.g. one automation, the logger block) use patch_config_block instead.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -652,6 +697,87 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 },
             ]
 
+            patch_key_tool = {
+                "type": "function",
+                "function": {
+                    "name": "patch_config_key",
+                    "description": (
+                        "Surgical patch: change a single YAML key without rewriting the whole file. "
+                        "Use this for changing one known value (e.g. logger.default, a timeout, a URL). "
+                        "All comments, ordering, and surrounding keys are preserved. "
+                        "Do NOT use for adding new top-level sections or restructuring — use propose_config_changes for those."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Relative path to the config file, e.g. 'configuration.yaml'."
+                            },
+                            "key_path": {
+                                "type": "string",
+                                "description": (
+                                    "Dot-notation path to the key. Examples: "
+                                    "'logger.default', "
+                                    "'homeassistant.name', "
+                                    "'automations[0].trigger', "
+                                    "'automations[alias=Morning light].action[0].service'."
+                                )
+                            },
+                            "new_value": {
+                                "description": "New value to set. Can be a string, number, boolean, list, or object."
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Brief human-readable description of the change for the approval UI."
+                            }
+                        },
+                        "required": ["file_path", "key_path", "new_value"]
+                    }
+                }
+            }
+
+            patch_block_tool = {
+                "type": "function",
+                "function": {
+                    "name": "patch_config_block",
+                    "description": (
+                        "Replace an entire YAML block (subtree) without rewriting the whole file. "
+                        "Use this to replace a named section such as the logger config, one automation entry, "
+                        "or a homeassistant block. All other parts of the file are preserved. "
+                        "Do NOT use for simple scalar changes — use patch_config_key for those. "
+                        "Do NOT use for adding a new top-level key that doesn't exist yet — use propose_config_changes."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Relative path to the config file, e.g. 'automations.yaml'."
+                            },
+                            "anchor": {
+                                "type": "string",
+                                "description": (
+                                    "Dot-notation path identifying the block to replace. Examples: "
+                                    "'logger' (top-level key), "
+                                    "'automations[alias=Morning light]' (list item by alias), "
+                                    "'homeassistant' (replace the homeassistant section)."
+                                )
+                            },
+                            "new_block": {
+                                "type": "string",
+                                "description": "Valid YAML string for the replacement. Must match the structure of the block being replaced."
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Brief human-readable description of the change for the approval UI."
+                            }
+                        },
+                        "required": ["file_path", "anchor", "new_block"]
+                    }
+                }
+            }
+
             tools = [
                 {
                     "type": "function",
@@ -671,12 +797,14 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     }
                 },
                 propose_tool,
+                patch_key_tool,
+                patch_block_tool,
                 *dashboard_tools,
                 {
                     "type": "function",
                     "function": {
                         "name": "get_nodered_flows",
-                        "description": "Fetch Node-RED flows via the Node-RED Admin API (or file fallback). Use when suggesting automations to see what is already built in Node-RED and avoid duplicates. Returns flow tabs and nodes with their wiring.",
+                        "description": "Fetch Node-RED flows via the Node-RED Admin API (or file fallback). Always call this before add_nodered_flow or edit_nodered_tab — you need the tab IDs and existing node content. Also use to check what flows already exist before suggesting automations.",
                         "parameters": {
                             "type": "object",
                             "properties": {},
@@ -687,14 +815,80 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 {
                     "type": "function",
                     "function": {
+                        "name": "add_nodered_flow",
+                        "description": (
+                            "Stage a NEW Node-RED flow tab for user approval. Non-destructive — existing flows are never touched. "
+                            "Always call get_nodered_flows first to confirm the flow doesn't already exist. "
+                            "Do NOT use this to modify an existing flow — use edit_nodered_tab for that."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "flows_json": {
+                                    "type": "string",
+                                    "description": "JSON array with one tab node plus its functional nodes. Example: [{\"type\":\"tab\",\"id\":\"uuid\",\"label\":\"My Flow\"},{\"type\":\"inject\",...}]"
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": "Brief description of what this flow does, for the approval UI."
+                                }
+                            },
+                            "required": ["flows_json"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "edit_nodered_tab",
+                        "description": (
+                            "Stage an update to an EXISTING Node-RED flow tab for user approval. Only the specified tab is changed. "
+                            "Always call get_nodered_flows first to get the tab_id and the current nodes. "
+                            "Include ALL nodes for the tab in flows_json (not just the changed ones). "
+                            "Do NOT use this to create a new flow — use add_nodered_flow for that. "
+                            "NEVER use this to replace all flows — that operation is not available."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "tab_id": {
+                                    "type": "string",
+                                    "description": "The id of the tab to update. Obtained from get_nodered_flows."
+                                },
+                                "flows_json": {
+                                    "type": "string",
+                                    "description": "JSON array with the tab node plus ALL updated functional nodes for this tab."
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": "Brief description of what changed, for the approval UI."
+                                }
+                            },
+                            "required": ["tab_id", "flows_json"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
                         "name": "get_entity_states",
-                        "description": "Get the current live states of all Home Assistant entities. Use this when suggesting automations or when the user asks about current device states. Returns entity_id, friendly_name, state value, attributes (truncated), area name, and last_changed timestamp for each entity.",
+                        "description": (
+                            "Get the current live states of Home Assistant entities. "
+                            "For specific questions about a subset of entities (e.g. 'lights in the bedroom', 'all sensors', 'is the door locked'), "
+                            "pass a *query* — semantic search returns the ~40 most relevant entities rather than flooding context with all of them. "
+                            "Pass *domain_filter* to limit to a single HA domain (e.g. 'light', 'switch', 'sensor'). "
+                            "Omit both arguments only when a broad overview of ALL entities is genuinely needed."
+                        ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "domain_filter": {
                                     "type": "string",
-                                    "description": "Optional HA domain to limit results (e.g. 'light', 'switch', 'sensor', 'binary_sensor', 'climate', 'media_player'). Omit to get all entities."
+                                    "description": "HA domain to limit results (e.g. 'light', 'switch', 'sensor', 'binary_sensor', 'climate', 'media_player'). When set, *query* is ignored."
+                                },
+                                "query": {
+                                    "type": "string",
+                                    "description": "Natural language description of which entities you need (e.g. 'bedroom lights', 'door and window sensors', 'heating climate devices'). Triggers semantic search — returns ~40 most relevant entities. Ignored when domain_filter is set."
                                 }
                             },
                             "required": []
@@ -776,6 +970,24 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 {
                     "type": "function",
                     "function": {
+                        "name": "consolidate_memories",
+                        "description": (
+                            "Audit all memory files and produce a consolidation plan. "
+                            "Call this when the user asks to clean up, review, or consolidate memories, "
+                            "or when list_memory_stats shows many stale/tiny files. "
+                            "Returns file contents for analysis — you then present a MERGE/DELETE/KEEP plan "
+                            "to the user before taking any action."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
                         "name": "search_past_sessions",
                         "description": "Keyword search across past conversation sessions. Use this when the user references something discussed before (e.g. 'that automation we made last week', 'remember when we fixed...'), or before starting work on a topic that likely has prior history. Returns matching sessions with excerpts.",
                         "parameters": {
@@ -819,6 +1031,68 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                         }
                     }
                 },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "set_ha_text_entity",
+                        "description": (
+                            "Write a plain-text value directly to an existing input_text helper in Home Assistant. "
+                            "Use this to deliver AI-generated content (morning briefings, summaries, status reports, advice) "
+                            "so it can be consumed by automations, dashboards, or TTS without going through the chat. "
+                            "The entity must already exist — create it via Settings → Helpers if needed. "
+                            "Max 255 characters (HA hard limit). No approval needed — the write happens immediately."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "entity_id": {
+                                    "type": "string",
+                                    "description": "input_text entity to update, e.g. 'input_text.morning_briefing'."
+                                },
+                                "value": {
+                                    "type": "string",
+                                    "description": "Text to write. Max 255 chars — longer values are truncated."
+                                }
+                            },
+                            "required": ["entity_id", "value"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "schedule_ai_task",
+                        "description": (
+                            "Create a recurring AI task: runs a prompt on a schedule and writes the result to an input_text entity. "
+                            "Use this when the user wants automated periodic content — e.g. 'every morning write a briefing to input_text.briefing'. "
+                            "The task is saved persistently and survives restarts. "
+                            "The entity must already exist as an input_text helper. "
+                            "Call get_entity_states(domain_filter='input_text') first to confirm the entity exists."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Short human-readable label for this task, e.g. 'Morning briefing'."
+                                },
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "The prompt the AI runs each time. Should produce a self-contained plain-text result (max 255 chars)."
+                                },
+                                "entity_id": {
+                                    "type": "string",
+                                    "description": "input_text entity to write the result to, e.g. 'input_text.morning_briefing'."
+                                },
+                                "schedule": {
+                                    "type": "string",
+                                    "description": "When to run. Format: 'daily HH:MM' (24-hour local time). Example: 'daily 08:00'."
+                                }
+                            },
+                            "required": ["name", "prompt", "entity_id", "schedule"]
+                        }
+                    }
+                },
             ]
 
             # Track tool calls and results
@@ -837,7 +1111,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
             self._tool_status_queue = asyncio.Queue()
 
             # Per-turn state (local — safe under concurrent WS connections)
-            turn_state = {"has_read": False}
+            turn_state = {"has_read": False, "retry_counts": {}}
             self.tools.clear_turn_cache()
 
             # Pre-declare so outer except can access partial content on stream errors
@@ -1101,12 +1375,37 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     if function_name in ("search_config_files", "get_nodered_flows") and result.get("success"):
                         turn_state["has_read"] = True
 
+                    # Error recovery: inject a retry directive for correctable failures.
+                    # Skip for: successes, approval-gated results (changeset_id), timed-out calls.
+                    tool_result_content = json.dumps(result)
+                    _is_failure = not result.get("success", True)
+                    _is_approval_gated = "changeset_id" in result
+                    _is_infra_error = "timed out" in result.get("error", "").lower()
+                    if _is_failure and not _is_approval_gated and not _is_infra_error:
+                        _tool_key = f"{tool_call['id']}:{function_name}"
+                        _retry_counts = turn_state["retry_counts"]
+                        _retry_n = _retry_counts.get(_tool_key, 0) + 1
+                        _retry_counts[_tool_key] = _retry_n
+                        if _retry_n <= 2:
+                            tool_result_content += (
+                                f"\n\n[Auto-retry {_retry_n}/2: The above call failed. "
+                                "Analyse the error carefully, correct the parameters, and call the same tool again "
+                                "with fixed arguments before doing anything else.]"
+                            )
+                            logger.info(f"[RETRY] Injecting retry directive {_retry_n}/2 for '{function_name}'")
+                        else:
+                            tool_result_content += (
+                                "\n\n[Max retries (2) reached for this tool call. "
+                                "Stop retrying and inform the user about the error clearly.]"
+                            )
+                            logger.warning(f"[RETRY] Max retries reached for '{function_name}'")
+
                     # Add tool result to messages with cache control on the last tool result
                     is_last_tool = (tool_idx == len(accumulated_tool_calls) - 1)
                     tool_message = {
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
-                        "content": json.dumps(result)
+                        "content": tool_result_content
                     }
                     # Mark the last tool result for caching to preserve full context
                     if self.enable_cache_control and is_last_tool:

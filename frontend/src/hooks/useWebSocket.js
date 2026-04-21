@@ -1,6 +1,8 @@
 import { useRef, useCallback, useState } from 'react'
 import { Actions } from '../store/reducer'
 import { generateId } from '../lib/utils'
+import { getChangeset } from '../lib/api'
+import { toolLabel, makeArgsSummary, makeResultSummary } from '../lib/toolLabels'
 
 // Extract original file contents from search_config_files / get_nodered_flows tool calls in conversation history
 function extractOriginalContents(history, fileChanges) {
@@ -70,6 +72,7 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
   const loadingIndicatorIdRef = useRef(null)
   const toolCallArgumentsRef = useRef({})
   const streamingIdRef = useRef(null)
+  const breadcrumbsMsgIdRef = useRef(null)  // ID of the active breadcrumbs message for this turn
   const reconnectAttemptsRef = useRef(0)
   const reconnectTimerRef = useRef(null)
   const connectRef = useRef(null) // forward ref to break circular dependency
@@ -216,27 +219,45 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
         }
 
         // Add assistant+tool_calls to history
-        // streaming content already captured via message_complete event
         dispatch({
           type: Actions.PUSH_TO_HISTORY,
           payload: {
             role: 'assistant',
-            content: '', // streaming content already captured via message_complete
+            content: '',
             tool_calls: data.tool_calls,
           },
         })
 
-        const toolNames = data.tool_calls.map(tc => tc.function.name).join(', ')
-        dispatch({
-          type: Actions.ADD_DISPLAY_MESSAGE,
-          payload: {
-            type: 'tool_call',
-            toolNames: data.tool_calls.map(tc => tc.function.name),
-            toolCalls: data.tool_calls,
-          },
-        })
+        // Create or extend breadcrumbs message for this turn
+        const steps = (data.tool_calls || []).map(tc => ({
+          tool_call_id: tc.id,
+          name: tc.function?.name || tc.function,
+          label: toolLabel(tc.function?.name || tc.function),
+          status: 'pending',
+          argsSummary: '',
+          resultSummary: '',
+          args: null,
+          result: null,
+        }))
+
+        if (!breadcrumbsMsgIdRef.current) {
+          // First tool_call this turn — create the breadcrumbs message
+          const bcId = generateId()
+          breadcrumbsMsgIdRef.current = bcId
+          dispatch({
+            type: Actions.ADD_DISPLAY_MESSAGE,
+            payload: { id: bcId, type: 'breadcrumbs', steps },
+          })
+        } else {
+          // Subsequent tool_call this turn — append steps to existing breadcrumbs
+          dispatch({
+            type: Actions.APPEND_BREADCRUMB_STEPS,
+            payload: { id: breadcrumbsMsgIdRef.current, steps },
+          })
+        }
 
         // Ensure loading indicator present
+        const toolNames = (data.tool_calls || []).map(tc => tc.function?.name || tc.function).join(', ')
         if (!loadingIndicatorIdRef.current) {
           addLoadingIndicator(`Running: ${toolNames}…`)
         } else {
@@ -248,12 +269,26 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
         if (data.tool_call_id && data.arguments) {
           toolCallArgumentsRef.current[data.tool_call_id] = data.arguments
         }
-        dispatch({ type: Actions.SET_LOADING, payload: `Running: ${data.function}…` })
 
-        dispatch({
-          type: Actions.ADD_DISPLAY_MESSAGE,
-          payload: { type: 'system', content: `▶️ Executing: ${data.function}...` },
-        })
+        // Update breadcrumb step to running + add args summary
+        if (breadcrumbsMsgIdRef.current) {
+          let parsedArgs = data.arguments
+          try { if (typeof parsedArgs === 'string') parsedArgs = JSON.parse(parsedArgs) } catch {}
+          dispatch({
+            type: Actions.UPDATE_BREADCRUMBS,
+            payload: {
+              id: breadcrumbsMsgIdRef.current,
+              tool_call_id: data.tool_call_id,
+              updates: {
+                status: 'running',
+                argsSummary: makeArgsSummary(data.function, parsedArgs),
+                args: parsedArgs,
+              },
+            },
+          })
+        }
+
+        dispatch({ type: Actions.SET_LOADING, payload: `${toolLabel(data.function)}…` })
 
       } else if (eventType === 'tool_status') {
         dispatch({ type: Actions.SET_LOADING, payload: data.message })
@@ -271,21 +306,28 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
           },
         })
 
-        // Display tool result visually
-        dispatch({
-          type: Actions.ADD_DISPLAY_MESSAGE,
-          payload: {
-            type: 'tool_result',
-            functionName: data.function,
-            result: data.result,
-          },
-        })
+        // Update breadcrumb step to done/error with result summary
+        if (breadcrumbsMsgIdRef.current) {
+          dispatch({
+            type: Actions.UPDATE_BREADCRUMBS,
+            payload: {
+              id: breadcrumbsMsgIdRef.current,
+              tool_call_id: data.tool_call_id,
+              updates: {
+                status: data.result?.success === false ? 'error' : 'done',
+                resultSummary: makeResultSummary(data.function, data.result),
+                result: data.result,
+              },
+            },
+          })
+        }
 
-        // Handle propose_config_changes
-        if (data.function === 'propose_config_changes' && data.result.success) {
-          const history = getConversationHistory()
-          const args = data.arguments || toolCallArgumentsRef.current[data.tool_call_id]
+        // Handle all changeset-returning tools — show approval card
+        const CHANGESET_TOOLS_FULL_DIFF = ['propose_config_changes']
+        const CHANGESET_TOOLS_FETCH_DIFF = ['patch_config_key', 'patch_config_block', 'add_nodered_flow', 'edit_nodered_tab']
+        const isChangesetTool = [...CHANGESET_TOOLS_FULL_DIFF, ...CHANGESET_TOOLS_FETCH_DIFF].includes(data.function)
 
+        if (isChangesetTool && data.result.success && data.result.changeset_id) {
           const changesetData = {
             changeset_id: data.result.changeset_id,
             total_files: data.result.total_files,
@@ -294,16 +336,59 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
             diff_stats: data.result.diff_stats || [],
           }
 
-          if (args && args.changes) {
-            changesetData.file_changes_detail = args.changes
-            changesetData.original_contents = extractOriginalContents(history, args.changes)
+          if (CHANGESET_TOOLS_FULL_DIFF.includes(data.function)) {
+            // propose_config_changes: extract original contents from history, dispatch immediately
+            const history = getConversationHistory()
+            const args = data.arguments || toolCallArgumentsRef.current[data.tool_call_id]
+            if (args && args.changes) {
+              changesetData.file_changes_detail = args.changes
+              changesetData.original_contents = extractOriginalContents(history, args.changes)
+            } else {
+              console.warn('propose_config_changes: no arguments found, approval card will have limited info')
+            }
+            dispatch({
+              type: Actions.ADD_DISPLAY_MESSAGE,
+              payload: { type: 'approval', changeset: changesetData },
+            })
           } else {
-            console.warn('propose_config_changes: no arguments found, approval card will have limited info')
+            // Patch/NR tools: fetch new_content from server to build diff.
+            // Pre-generate the message id so we can update it after the async fetch.
+            const msgId = generateId()
+            changesetData._msgId = msgId
+            dispatch({
+              type: Actions.ADD_DISPLAY_MESSAGE,
+              payload: { id: msgId, type: 'approval', changeset: changesetData },
+            })
+            getChangeset(data.result.changeset_id).then(cs => {
+              if (cs && cs.file_changes) {
+                const history = getConversationHistory()
+                const fileChanges = cs.file_changes
+                dispatch({
+                  type: Actions.UPDATE_DISPLAY_MESSAGE,
+                  payload: {
+                    id: msgId,
+                    updates: {
+                      changeset: {
+                        ...changesetData,
+                        file_changes_detail: fileChanges,
+                        original_contents: extractOriginalContents(history, fileChanges),
+                      },
+                    },
+                  },
+                })
+              }
+            }).catch(err => console.warn('Failed to fetch changeset for diff:', err))
           }
+        }
 
+        // Save notification for save_memory
+        if (data.function === 'save_memory' && data.result.success) {
           dispatch({
             type: Actions.ADD_DISPLAY_MESSAGE,
-            payload: { type: 'approval', changeset: changesetData },
+            payload: {
+              type: 'save_notification',
+              filename: data.result.filename || '',
+            },
           })
         }
 
@@ -339,6 +424,7 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
         }
 
         removeLoadingIndicator()
+        breadcrumbsMsgIdRef.current = null  // turn is over — next tool_call starts fresh
         dispatch({ type: Actions.SET_SENDING, payload: false })
 
         if (typeof onAutoSave === 'function') {

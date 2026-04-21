@@ -6,7 +6,9 @@ These wrap the ConfigurationManager for safe AI operations.
 """
 import asyncio
 import logging
+import math
 import os
+import time
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from ..config import ConfigurationManager, ConfigurationError
 from ..ha.ha_websocket import (
@@ -22,7 +24,71 @@ if TYPE_CHECKING:
     from ..memory.manager import MemoryManager
     from ..conversations.manager import ConversationManager
 
+try:
+    import numpy as _np
+    _HAS_NUMPY = True
+except ImportError:
+    _np = None
+    _HAS_NUMPY = False
+
 logger = logging.getLogger(__name__)
+
+_EMBED_BATCH = 100      # entities per embeddings API call
+_EMBED_TOP_K = 40       # entities returned by semantic search
+_EMBED_TTL   = 1800     # cache lifetime in seconds (30 min)
+
+
+class EntityEmbeddingCache:
+    """Lightweight in-memory vector store for entity semantic search."""
+
+    def __init__(self):
+        self.entities: List[Dict] = []
+        self._matrix = None          # numpy float32 (N, D) normalized, or list[list[float]]
+        self._built_at: float = 0.0
+
+    def is_valid(self) -> bool:
+        return self._matrix is not None and (time.monotonic() - self._built_at) < _EMBED_TTL
+
+    def build(self, entities: List[Dict], embeddings: List[List[float]]) -> None:
+        self.entities = entities
+        if _HAS_NUMPY:
+            mat = _np.array(embeddings, dtype=_np.float32)
+            norms = _np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            self._matrix = mat / norms
+        else:
+            normed = []
+            for emb in embeddings:
+                mag = math.sqrt(sum(x * x for x in emb)) or 1.0
+                normed.append([x / mag for x in emb])
+            self._matrix = normed
+        self._built_at = time.monotonic()
+        logger.info(f"EntityEmbeddingCache built: {len(entities)} entities")
+
+    def search(self, query_emb: List[float], top_k: int = _EMBED_TOP_K) -> List[int]:
+        if _HAS_NUMPY:
+            q = _np.array(query_emb, dtype=_np.float32)
+            mag = _np.linalg.norm(q)
+            if mag > 0:
+                q = q / mag
+            scores = self._matrix @ q
+            return _np.argsort(scores)[::-1][:top_k].tolist()
+        else:
+            mag = math.sqrt(sum(x * x for x in query_emb)) or 1.0
+            q = [x / mag for x in query_emb]
+            scores = [sum(a * b for a, b in zip(q, e)) for e in self._matrix]
+            return sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+
+    def invalidate(self) -> None:
+        self._matrix = None
+        self.entities = []
+        self._built_at = 0.0
+
+    @staticmethod
+    def entity_text(e: Dict) -> str:
+        name = e.get("friendly_name") or e.get("entity_id", "")
+        area = f" in {e['area']}" if e.get("area") else ""
+        return f"{name} [{e['entity_id']}]{area}"
 
 
 class AgentTools:
@@ -62,6 +128,7 @@ class AgentTools:
         self._lovelace_cache: Dict[Optional[str], str] = {}  # {url_path: yaml_str}
         self._lovelace_lock = asyncio.Lock()
         self._turn_registry_cache: Dict[str, Any] = {}  # cleared each chat turn
+        self._entity_cache = EntityEmbeddingCache()
         logger.info("AgentTools initialized")
 
     def clear_turn_cache(self) -> None:
@@ -1031,6 +1098,285 @@ class AgentTools:
             }
 
     # ------------------------------------------------------------------
+    # Surgical config patching tools
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_yaml_path(key_path: str) -> List:
+        """Parse dot-notation key path into navigation segments.
+
+        Supports:
+          "logger.default"                     → ["logger", "default"]
+          "automations[0].trigger"             → ["automations", 0, "trigger"]
+          "automations[alias=Morning light]"   → ["automations", {"field": "alias", "value": "Morning light"}]
+        """
+        import re
+        segments = []
+        for part in re.split(r'\.(?![^\[]*\])', key_path):
+            if not part:
+                continue
+            m = re.match(r'^(.*?)\[(.+)\]$', part)
+            if m:
+                key_part, selector = m.group(1), m.group(2)
+                if key_part:
+                    segments.append(key_part)
+                if re.match(r'^\d+$', selector):
+                    segments.append(int(selector))
+                elif '=' in selector:
+                    field, value = selector.split('=', 1)
+                    segments.append({'field': field.strip(), 'value': value.strip()})
+                else:
+                    segments.append(selector)
+            else:
+                segments.append(part)
+        return segments
+
+    @staticmethod
+    def _navigate_yaml(data, segments):
+        """Navigate ruamel.yaml data by path segments.
+
+        Returns:
+            (parent, final_key, success) — caller sets parent[final_key] = new_value.
+            Returns (None, None, False) on navigation failure.
+        """
+        current = data
+        parent = None
+        last_key = None
+
+        for seg in segments:
+            parent = current
+            if isinstance(seg, int):
+                if not isinstance(current, list) or seg >= len(current):
+                    return None, None, False
+                last_key = seg
+                current = current[seg]
+            elif isinstance(seg, dict):
+                # field=value selector for list items
+                if not isinstance(current, list):
+                    return None, None, False
+                field, value = seg['field'], seg['value']
+                idx = next(
+                    (i for i, item in enumerate(current)
+                     if isinstance(item, dict) and str(item.get(field, '')) == value),
+                    None,
+                )
+                if idx is None:
+                    return None, None, False
+                last_key = idx
+                current = current[idx]
+            else:
+                if not isinstance(current, dict) or seg not in current:
+                    return None, None, False
+                last_key = seg
+                current = current[seg]
+
+        return parent, last_key, True
+
+    async def patch_config_key(
+        self,
+        file_path: str,
+        key_path: str,
+        new_value: Any,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Surgical patch: change a single YAML key without rewriting the whole file.
+
+        Use this instead of propose_config_changes when changing one known key.
+        Comments, ordering, and all other keys are preserved exactly.
+
+        Args:
+            file_path:   Relative path to the config file (e.g. 'configuration.yaml').
+            key_path:    Dot-notation path to the key, e.g. 'logger.default'.
+                         List index: 'automations[0].trigger'
+                         List item by field: 'automations[alias=Morning light].trigger'
+            new_value:   New value to set (string, number, bool, list, or dict).
+            description: Optional human-readable description of what this patch does.
+
+        Returns the same changeset dict as propose_config_changes — goes through
+        the normal approval workflow.
+        """
+        try:
+            from ruamel.yaml import YAML
+            from io import StringIO
+            from datetime import datetime, timedelta
+            import uuid
+
+            current_content = await self.config_manager.read_file_raw(file_path, allow_missing=False)
+            if current_content is None:
+                return {"success": False, "error": f"File not found: {file_path}"}
+
+            yaml_parser = YAML()
+            yaml_parser.preserve_quotes = True
+            yaml_parser.default_flow_style = False
+            data = yaml_parser.load(StringIO(current_content))
+            if data is None:
+                return {"success": False, "error": f"File is empty or unparseable: {file_path}"}
+
+            segments = self._parse_yaml_path(key_path)
+            if not segments:
+                return {"success": False, "error": f"Invalid key_path: {key_path!r}"}
+
+            parent, final_key, found = self._navigate_yaml(data, segments)
+            if not found:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Key path {key_path!r} not found in {file_path}. "
+                        "Call search_config_files to read the file and verify the exact path."
+                    ),
+                }
+
+            parent[final_key] = new_value
+
+            buf = StringIO()
+            yaml_parser.dump(data, buf)
+            new_content = buf.getvalue()
+
+            changeset_id = str(uuid.uuid4())[:8]
+            stored_changes = [{"file_path": file_path, "new_content": new_content}]
+            if self.agent_system:
+                changeset_id = self.agent_system.store_changeset({
+                    "changeset_id": changeset_id,
+                    "file_changes": stored_changes,
+                })
+
+            old_lines = current_content.splitlines()
+            new_lines = new_content.splitlines()
+            old_set, new_set = set(old_lines), set(new_lines)
+            diff_stats = [{
+                "file_path": file_path,
+                "added": sum(1 for l in new_lines if l not in old_set),
+                "removed": sum(1 for l in old_lines if l not in new_set),
+                "is_new_file": False,
+            }]
+
+            now = datetime.now()
+            return {
+                "success": True,
+                "changeset_id": changeset_id,
+                "files": [file_path],
+                "total_files": 1,
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "diff_stats": diff_stats,
+                "message": (
+                    f"Patched {key_path!r} in {file_path}."
+                    + (f" {description}" if description else "")
+                    + " Awaiting user approval."
+                ),
+            }
+
+        except Exception as e:
+            import traceback
+            logger.error(f"patch_config_key error: {e}\n{traceback.format_exc()}")
+            return {"success": False, "error": str(e)}
+
+    async def patch_config_block(
+        self,
+        file_path: str,
+        anchor: str,
+        new_block: str,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Replace an entire YAML block (subtree) without rewriting the whole file.
+
+        Use this instead of propose_config_changes when replacing a named section
+        such as one automation entry, the logger block, or a homeassistant section.
+        All other parts of the file are preserved exactly.
+
+        Args:
+            file_path:  Relative path to the config file (e.g. 'automations.yaml').
+            anchor:     Dot-notation path to the block to replace, e.g. 'logger' or
+                        'automations[alias=Morning light]'. Same syntax as patch_config_key.
+            new_block:  Valid YAML string for the replacement block. Must match the
+                        structure of the node being replaced.
+            description: Optional human-readable description of what this patch does.
+
+        Returns the same changeset dict as propose_config_changes — goes through
+        the normal approval workflow.
+        """
+        try:
+            from ruamel.yaml import YAML
+            from io import StringIO
+            from datetime import datetime, timedelta
+            import uuid
+
+            current_content = await self.config_manager.read_file_raw(file_path, allow_missing=False)
+            if current_content is None:
+                return {"success": False, "error": f"File not found: {file_path}"}
+
+            yaml_parser = YAML()
+            yaml_parser.preserve_quotes = True
+            yaml_parser.default_flow_style = False
+            data = yaml_parser.load(StringIO(current_content))
+            if data is None:
+                return {"success": False, "error": f"File is empty or unparseable: {file_path}"}
+
+            try:
+                new_node = yaml_parser.load(StringIO(new_block))
+            except Exception as e:
+                return {"success": False, "error": f"Invalid YAML in new_block: {e}"}
+
+            segments = self._parse_yaml_path(anchor)
+            if not segments:
+                return {"success": False, "error": f"Invalid anchor: {anchor!r}"}
+
+            parent, final_key, found = self._navigate_yaml(data, segments)
+            if not found:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Anchor {anchor!r} not found in {file_path}. "
+                        "Call search_config_files to read the file and verify the exact path."
+                    ),
+                }
+
+            parent[final_key] = new_node
+
+            buf = StringIO()
+            yaml_parser.dump(data, buf)
+            new_content = buf.getvalue()
+
+            changeset_id = str(uuid.uuid4())[:8]
+            stored_changes = [{"file_path": file_path, "new_content": new_content}]
+            if self.agent_system:
+                changeset_id = self.agent_system.store_changeset({
+                    "changeset_id": changeset_id,
+                    "file_changes": stored_changes,
+                })
+
+            old_lines = current_content.splitlines()
+            new_lines = new_content.splitlines()
+            old_set, new_set = set(old_lines), set(new_lines)
+            diff_stats = [{
+                "file_path": file_path,
+                "added": sum(1 for l in new_lines if l not in old_set),
+                "removed": sum(1 for l in old_lines if l not in new_set),
+                "is_new_file": False,
+            }]
+
+            now = datetime.now()
+            return {
+                "success": True,
+                "changeset_id": changeset_id,
+                "files": [file_path],
+                "total_files": 1,
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "diff_stats": diff_stats,
+                "message": (
+                    f"Replaced block at {anchor!r} in {file_path}."
+                    + (f" {description}" if description else "")
+                    + " Awaiting user approval."
+                ),
+            }
+
+        except Exception as e:
+            import traceback
+            logger.error(f"patch_config_block error: {e}\n{traceback.format_exc()}")
+            return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
     # Memory tools
     # ------------------------------------------------------------------
 
@@ -1182,6 +1528,64 @@ class AgentTools:
             return {"success": True, **stats}
         except Exception as e:
             logger.error(f"list_memory_stats error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def consolidate_memories(self) -> Dict[str, Any]:
+        """
+        Audit all memory files and propose a consolidation plan.
+
+        Reads every memory file, identifies: duplicates, near-empty files,
+        contradictions between files, and stale facts. Returns a plain-text
+        consolidation plan for the user to review. The plan is NOT applied
+        automatically — the user confirms and you apply it using save_memory
+        and delete_memory.
+
+        Returns:
+            Dict with success bool and 'plan' string describing proposed actions.
+        """
+        if not self.memory_manager:
+            return {"success": False, "error": "Memory manager not available"}
+
+        try:
+            all_files = await self.memory_manager.get_all_files()
+            if not all_files:
+                return {"success": True, "plan": "No memory files to consolidate.", "file_count": 0}
+
+            stats = await self.memory_manager.get_stats()
+            stale_names = {f["filename"] for f in stats.get("files", []) if f.get("stale")}
+            tiny_names  = {f["filename"] for f in stats.get("files", []) if f.get("chars", 999) < 50}
+
+            # Build a summary for the LLM to analyse
+            summary_parts = [
+                "Review these memory files and produce a consolidation plan.\n",
+                "For each action propose: MERGE (list files to combine + suggested new filename), "
+                "DELETE (with reason), or KEEP.\n\n",
+            ]
+            for name, content in all_files.items():
+                flags = []
+                if name in stale_names:
+                    flags.append("STALE")
+                if name in tiny_names:
+                    flags.append("TINY")
+                flag_str = f" [{', '.join(flags)}]" if flags else ""
+                summary_parts.append(f"=== {name}{flag_str} ===\n{content}\n\n")
+
+            return {
+                "success": True,
+                "files_reviewed": len(all_files),
+                "stale_count": len(stale_names),
+                "tiny_count": len(tiny_names),
+                "memory_content_for_analysis": "".join(summary_parts),
+                "instruction": (
+                    "Analyse the memory_content_for_analysis above. "
+                    "Produce a numbered consolidation plan listing each proposed action "
+                    "(MERGE/DELETE/KEEP) with clear reasoning. "
+                    "Present the plan to the user as readable text before taking any action. "
+                    "Only call save_memory/delete_memory after the user says to proceed."
+                ),
+            }
+        except Exception as e:
+            logger.error(f"consolidate_memories error: {e}")
             return {"success": False, "error": str(e)}
 
     async def search_past_sessions(self, query: str, limit: int = 3) -> Dict[str, Any]:
@@ -1419,6 +1823,117 @@ class AgentTools:
         except aiohttp.ClientError as e:
             return {"status": 0, "error": str(e)}
 
+    async def add_nodered_flow(
+        self,
+        flows_json: str,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Stage a new Node-RED flow tab for user approval (non-destructive).
+
+        This is the safe way to add a new flow. It does NOT touch existing flows.
+        Call get_nodered_flows first to confirm the flow doesn't already exist.
+
+        Args:
+            flows_json: JSON array containing one tab node plus its functional nodes.
+                        Format: [{"type":"tab","id":"...","label":"..."},
+                                 {"type":"inject",...}, ...]
+            description: Brief description of what the flow does.
+
+        Returns the same changeset dict as propose_config_changes.
+        """
+        import json as _json
+        from datetime import datetime, timedelta
+        import uuid
+
+        try:
+            nodes = _json.loads(flows_json)
+        except _json.JSONDecodeError as e:
+            return {"success": False, "error": f"Invalid JSON in flows_json: {e}"}
+        if not isinstance(nodes, list):
+            return {"success": False, "error": "flows_json must be a JSON array"}
+
+        changeset_id = str(uuid.uuid4())[:8]
+        stored_changes = [{"file_path": "nodered/new_flow.json", "new_content": flows_json}]
+        if self.agent_system:
+            changeset_id = self.agent_system.store_changeset({
+                "changeset_id": changeset_id,
+                "file_changes": stored_changes,
+            })
+
+        now = datetime.now()
+        return {
+            "success": True,
+            "changeset_id": changeset_id,
+            "files": ["nodered/new_flow.json"],
+            "total_files": 1,
+            "expires_at": (now + timedelta(hours=1)).isoformat(),
+            "diff_stats": [{"file_path": "nodered/new_flow.json", "added": len(nodes), "removed": 0, "is_new_file": True}],
+            "message": (
+                f"New Node-RED flow staged for approval ({len(nodes)} nodes)."
+                + (f" {description}" if description else "")
+                + " Awaiting user approval."
+            ),
+        }
+
+    async def edit_nodered_tab(
+        self,
+        tab_id: str,
+        flows_json: str,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Stage an update to an existing Node-RED flow tab for user approval.
+
+        This is the safe way to modify an existing flow tab — only that tab is
+        affected. Call get_nodered_flows first to get the tab_id and current nodes.
+
+        Args:
+            tab_id:     The id of the tab to update (from get_nodered_flows).
+            flows_json: JSON array containing the tab node plus all its updated nodes.
+                        Must include ALL nodes for the tab (not just changed ones).
+            description: Brief description of what changed.
+
+        Returns the same changeset dict as propose_config_changes.
+        """
+        import json as _json
+        from datetime import datetime, timedelta
+        import uuid
+
+        if not tab_id or not tab_id.strip():
+            return {"success": False, "error": "tab_id is required. Call get_nodered_flows first to find the tab id."}
+
+        try:
+            nodes = _json.loads(flows_json)
+        except _json.JSONDecodeError as e:
+            return {"success": False, "error": f"Invalid JSON in flows_json: {e}"}
+        if not isinstance(nodes, list):
+            return {"success": False, "error": "flows_json must be a JSON array"}
+
+        file_path = f"nodered/flow/{tab_id}.json"
+        changeset_id = str(uuid.uuid4())[:8]
+        stored_changes = [{"file_path": file_path, "new_content": flows_json}]
+        if self.agent_system:
+            changeset_id = self.agent_system.store_changeset({
+                "changeset_id": changeset_id,
+                "file_changes": stored_changes,
+            })
+
+        now = datetime.now()
+        return {
+            "success": True,
+            "changeset_id": changeset_id,
+            "files": [file_path],
+            "total_files": 1,
+            "expires_at": (now + timedelta(hours=1)).isoformat(),
+            "diff_stats": [{"file_path": file_path, "added": len(nodes), "removed": 0, "is_new_file": False}],
+            "message": (
+                f"Node-RED tab '{tab_id}' update staged for approval ({len(nodes)} nodes)."
+                + (f" {description}" if description else "")
+                + " Awaiting user approval."
+            ),
+        }
+
     async def deploy_nodered_flows(self, flows_json: str, mode: str = "add", tab_id: str = "") -> Dict[str, Any]:
         """
         Deploy flows to Node-RED via the Admin API.
@@ -1621,16 +2136,51 @@ class AgentTools:
             "count": 0,
         }
 
+    async def _embed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
+        """Embed a list of texts using the configured embeddings API. Returns None on failure."""
+        client = getattr(self.agent_system, 'config_client', None)
+        if client is None:
+            return None
+        model = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
+        try:
+            all_embeddings: List[List[float]] = []
+            for i in range(0, len(texts), _EMBED_BATCH):
+                batch = texts[i:i + _EMBED_BATCH]
+                resp = await client.embeddings.create(model=model, input=batch)
+                all_embeddings.extend(item.embedding for item in resp.data)
+            return all_embeddings
+        except Exception as e:
+            logger.warning(f"Embedding API failed ({model}): {e}")
+            return None
+
+    async def _ensure_entity_cache(self, states_list: List[Dict]) -> bool:
+        """Build the entity embedding cache from a freshly fetched states list. Returns True on success."""
+        if self._entity_cache.is_valid():
+            return True
+        texts = [EntityEmbeddingCache.entity_text(e) for e in states_list]
+        embeddings = await self._embed_texts(texts)
+        if embeddings is None or len(embeddings) != len(states_list):
+            return False
+        self._entity_cache.build(states_list, embeddings)
+        return True
+
     async def get_entity_states(
         self,
-        domain_filter: Optional[str] = None
+        domain_filter: Optional[str] = None,
+        query: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Get current live states of all Home Assistant entities.
+        Get current live states of Home Assistant entities.
 
-        This is essential for automation suggestions: it shows what devices
-        exist, their current states, and their attributes so the AI can
-        reason about what automations would be useful.
+        When *query* is provided (and no domain_filter), performs semantic search
+        and returns only the most relevant entities — ideal for large homes where
+        a full dump would be too noisy. Always also includes unavailable entities
+        and those changed in the last 10 minutes.
+
+        When *domain_filter* is provided, returns all entities of that domain
+        regardless of *query* (query is ignored for domain-filtered calls).
+
+        Without either argument, returns all entities (full dump).
 
         Args:
             domain_filter: Optional HA domain to filter by (e.g. 'light',
@@ -1710,6 +2260,44 @@ class AgentTools:
                 finally:
                     await ws_client.close()
                 logger.info(f"Retrieved {len(states_list)} entity states via WebSocket")
+
+            # Semantic search path: filter by query when no domain is requested
+            if query and not domain_filter:
+                total = len(states_list)
+                cache_ok = await self._ensure_entity_cache(states_list)
+                if cache_ok:
+                    # Embed the query
+                    q_embs = await self._embed_texts([query])
+                    if q_embs:
+                        top_indices = set(self._entity_cache.search(q_embs[0], top_k=_EMBED_TOP_K))
+                        # Always include unavailable and recently-changed entities
+                        now_ts = time.time()
+                        for i, e in enumerate(states_list):
+                            if e.get("state") == "unavailable":
+                                top_indices.add(i)
+                                continue
+                            lc = e.get("last_changed")
+                            if lc:
+                                try:
+                                    from datetime import datetime, timezone
+                                    lc_dt = datetime.fromisoformat(lc.replace("Z", "+00:00"))
+                                    age = now_ts - lc_dt.timestamp()
+                                    if age < 600:  # changed within last 10 min
+                                        top_indices.add(i)
+                                except Exception:
+                                    pass
+                        filtered = [states_list[i] for i in sorted(top_indices)]
+                        logger.info(f"Semantic search '{query}': {len(filtered)}/{total} entities returned")
+                        return {
+                            "success": True,
+                            "states": filtered,
+                            "count": len(filtered),
+                            "total_entities": total,
+                            "semantic_search": True,
+                            "query": query,
+                        }
+                # Embedding failed — log and fall through to full dump
+                logger.warning("Semantic entity search failed, falling back to full entity dump")
 
             return {
                 "success": True,
@@ -1847,3 +2435,76 @@ class AgentTools:
         except Exception as e:
             logger.error("reload_config error: %s", e)
             return {"success": False, "message": f"Reload failed: {e}. Try reloading manually via Developer Tools → YAML."}
+
+    async def set_ha_text_entity(self, entity_id: str, value: str) -> Dict[str, Any]:
+        """
+        Set the value of an input_text entity in Home Assistant.
+
+        Writes a plain-text value directly to an input_text helper — no approval needed.
+        Use this after generating AI content (briefings, summaries, advice) so automations
+        and dashboards can consume the result without reading the chat.
+        """
+        if not entity_id.startswith("input_text."):
+            return {"success": False, "error": f"entity_id must be an input_text entity (got: {entity_id}). Create one via Settings → Helpers first."}
+
+        value = str(value)[:255]  # HA hard limit for input_text
+
+        try:
+            if self.config_manager.hass is not None:
+                await self.config_manager.hass.services.async_call(
+                    "input_text", "set_value",
+                    {"entity_id": entity_id, "value": value},
+                    blocking=True,
+                )
+                logger.info(f"Set {entity_id} via hass API")
+                return {"success": True, "entity_id": entity_id, "value": value}
+
+            supervisor_token = os.getenv('SUPERVISOR_TOKEN')
+            if not supervisor_token:
+                return {"success": False, "error": "No SUPERVISOR_TOKEN available — cannot call HA services."}
+
+            from ..ha.ha_websocket import HomeAssistantWebSocket
+            ws_url = "ws://supervisor/core/websocket"
+            ws_client = HomeAssistantWebSocket(ws_url, supervisor_token)
+            await ws_client.connect()
+            try:
+                await ws_client.call(
+                    "call_service",
+                    domain="input_text",
+                    service="set_value",
+                    service_data={"entity_id": entity_id, "value": value},
+                )
+            finally:
+                await ws_client.close()
+
+            logger.info(f"Set {entity_id} via WebSocket")
+            return {"success": True, "entity_id": entity_id, "value": value}
+
+        except Exception as e:
+            logger.error(f"set_ha_text_entity error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def schedule_ai_task(self, name: str, prompt: str, entity_id: str, schedule: str) -> Dict[str, Any]:
+        """
+        Schedule a recurring AI task that runs a prompt on a timetable and writes the result
+        to an input_text entity. Supported schedule: 'daily HH:MM' (24-hour local time).
+        """
+        import re
+        if not entity_id.startswith("input_text."):
+            return {"success": False, "error": f"entity_id must be an input_text entity (got: {entity_id})."}
+        if not re.match(r'^daily \d{2}:\d{2}$', schedule):
+            return {"success": False, "error": "schedule must be 'daily HH:MM' (e.g. 'daily 08:00')."}
+
+        task_manager = getattr(self.agent_system, 'task_manager', None)
+        if task_manager is None:
+            return {"success": False, "error": "Task scheduler is not available."}
+
+        try:
+            task = task_manager.create_task(
+                name=name, prompt=prompt, entity_id=entity_id, schedule=schedule
+            )
+            logger.info(f"Scheduled task '{name}' ({task['id']}) → {entity_id} @ {schedule}")
+            return {"success": True, "task_id": task["id"], "name": name, "entity_id": entity_id, "schedule": schedule}
+        except Exception as e:
+            logger.error(f"schedule_ai_task error: {e}")
+            return {"success": False, "error": str(e)}

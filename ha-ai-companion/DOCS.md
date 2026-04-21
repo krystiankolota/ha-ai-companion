@@ -750,6 +750,28 @@ The **Logs** tab lets you inspect `home-assistant.log` directly from the compani
 - **Raw view** — color-coded output (red = ERROR, amber = WARNING, gray = INFO)
 - **Analyze with AI** — sends fetched lines to the AI and returns a structured report: severity, component, likely cause, and suggested fix per issue
 
+### AI Task Entities
+
+The `set_ha_text_entity` tool writes AI-generated text directly to an existing `input_text` helper — no approval needed. Create the helper first via **Settings → Helpers**, then ask the AI to write content to it:
+
+```
+"Write a morning briefing to input_text.morning_briefing"
+"Summarise today's weather and store it in input_text.weather_summary"
+```
+
+The `schedule_ai_task` tool creates a recurring task that runs a prompt on a daily schedule and writes the result to an entity:
+
+```
+"Every day at 08:00 write a motivational quote to input_text.daily_quote"
+```
+
+Tasks are stored in `/config/.ai_agent_tasks/` and survive add-on restarts. Manage them via the REST API:
+- `GET /api/scheduled-tasks` — list all tasks
+- `DELETE /api/scheduled-tasks/{id}` — delete a task
+- `POST /api/scheduled-tasks/{id}/run` — trigger manually
+
+**Embeddings API note:** Semantic entity search (`get_entity_states` with a `query`) and scheduled task execution both use the same API endpoint as the main model. Set `EMBEDDING_MODEL` (env var) to override the embedding model name (default: `text-embedding-3-small`). If your provider does not support embeddings, semantic search falls back to a full entity dump silently.
+
 ### Virtual Files
 
 The AI can work with "virtual files" that represent registry data:
@@ -1110,5 +1132,5 @@ Follow conventional commits:
 
 ---
 
-**Last Updated:** 2026-04-01
-**Version:** 1.1.20
+**Last Updated:** 2026-04-21
+**Version:** 1.7.0

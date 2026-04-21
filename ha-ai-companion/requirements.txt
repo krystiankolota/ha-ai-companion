@@ -18,6 +18,9 @@ websockets==15.0.1
 redis==7.0.0
 pydantic==2.12.3
 
+# Semantic entity search
+numpy>=1.26.0
+
 # Utilities
 python-multipart==0.0.20
 requests==2.32.5

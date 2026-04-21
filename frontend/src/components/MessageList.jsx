@@ -6,6 +6,7 @@ import SystemMessage from './messages/SystemMessage'
 import ToolCallMessage from './messages/ToolCallMessage'
 import ToolResultMessage from './messages/ToolResultMessage'
 import ApprovalCard from './messages/ApprovalCard'
+import BreadcrumbsMessage from './messages/BreadcrumbsMessage'
 import LoadingMessage from './messages/LoadingMessage'
 
 function MessageItem({ msg }) {
@@ -22,6 +23,15 @@ function MessageItem({ msg }) {
       return <ToolResultMessage functionName={msg.functionName} result={msg.result} />
     case 'approval':
       return <ApprovalCard changeset={msg.changeset} />
+    case 'breadcrumbs':
+      return <BreadcrumbsMessage steps={msg.steps} />
+    case 'save_notification':
+      return (
+        <div className="flex items-center gap-1.5 text-xs text-emerald-400 px-1 py-0.5 my-0.5">
+          <span>💾</span>
+          <span>Saved memory{msg.filename ? `: ${msg.filename}` : ''}</span>
+        </div>
+      )
     case 'loading':
       return <LoadingMessage />
     default:

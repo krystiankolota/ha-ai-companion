@@ -16,8 +16,9 @@ from .config import ConfigurationManager
 from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
+from .tasks import TaskManager
 
-version = "1.6.3"
+version = "1.7.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -38,6 +39,9 @@ memory_manager: Optional[MemoryManager] = None
 
 # Conversation session manager
 conversation_manager: Optional[ConversationManager] = None
+
+# Scheduled AI task manager
+task_manager: Optional[TaskManager] = None
 
 # Phase 2: Pydantic models for API requests
 class RestoreBackupRequest(BaseModel):
@@ -64,7 +68,7 @@ class SaveSessionRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Initialize application on startup."""
-    global config_manager, agent_system, memory_manager, conversation_manager
+    global config_manager, agent_system, memory_manager, conversation_manager, task_manager
 
     logger.info("=== HA AI Companion Starting ===")
     logger.info(f"OpenAI API URL: {os.getenv('OPENAI_API_URL', 'Not configured')}")
@@ -157,10 +161,23 @@ async def lifespan(_: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize agent system: {e}")
 
+    # Initialize task manager and start scheduler
+    try:
+        tasks_dir = os.path.join(os.getenv('HA_CONFIG_DIR', '/config'), '.ai_agent_tasks')
+        task_manager = TaskManager(tasks_dir=tasks_dir)
+        if agent_system:
+            agent_system.task_manager = task_manager
+            await task_manager.start(agent_system)
+        logger.info(f"Task manager initialized at {tasks_dir}")
+    except Exception as e:
+        logger.error(f"Failed to initialize task manager: {e}", exc_info=True)
+
     yield
 
     # Shutdown
     logger.info("=== HA AI Companion Shutting Down ===")
+    if task_manager:
+        await task_manager.stop()
 
 # Initialize FastAPI application with lifespan
 app = FastAPI(
@@ -333,6 +350,65 @@ async def approve_changes(request: ApprovalRequest):
     except Exception as e:
         logger.error(f"Approval error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+@app.get("/api/changeset/{changeset_id}")
+async def get_changeset(changeset_id: str):
+    """Return the file_changes (file_path + new_content) for a pending changeset.
+
+    Used by the frontend DiffModal to show diffs for surgical patch tools
+    (patch_config_key, patch_config_block, add_nodered_flow, edit_nodered_tab)
+    where new_content is computed server-side and not in the tool args.
+    """
+    if not agent_system:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    changeset = agent_system.pending_changesets.get(changeset_id)
+    if not changeset:
+        raise HTTPException(status_code=404, detail="Changeset not found or expired")
+    return {
+        "changeset_id": changeset_id,
+        "file_changes": changeset.file_changes,
+    }
+
+
+# --- Scheduled task endpoints ---
+
+@app.get("/api/scheduled-tasks")
+async def list_scheduled_tasks():
+    """List all scheduled AI tasks."""
+    if not task_manager:
+        raise HTTPException(status_code=503, detail="Task manager not initialized")
+    return {"tasks": task_manager.list_tasks()}
+
+
+@app.delete("/api/scheduled-tasks/{task_id}")
+async def delete_scheduled_task(task_id: str):
+    """Delete a scheduled AI task by ID."""
+    if not task_manager:
+        raise HTTPException(status_code=503, detail="Task manager not initialized")
+    if not task_manager.delete_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"success": True, "task_id": task_id}
+
+
+@app.post("/api/scheduled-tasks/{task_id}/run")
+async def run_scheduled_task(task_id: str):
+    """Manually trigger a scheduled task immediately."""
+    if not task_manager or not agent_system:
+        raise HTTPException(status_code=503, detail="Task manager not initialized")
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        result = await task_manager._run_ai_task(task, agent_system)
+        if result and task.get("entity_id"):
+            await agent_system.tools.set_ha_text_entity(
+                entity_id=task["entity_id"], value=result[:255]
+            )
+        task_manager._mark_run(task_id)
+        return {"success": True, "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Session persistence endpoints ---

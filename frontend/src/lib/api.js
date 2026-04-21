@@ -54,6 +54,10 @@ export function submitApproval(changeId, approved) {
   })
 }
 
+export function getChangeset(changesetId) {
+  return apiFetch(`api/changeset/${changesetId}`)
+}
+
 // Suggestions
 export function getSuggestions() {
   return apiFetch('api/suggestions')
