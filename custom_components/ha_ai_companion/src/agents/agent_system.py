@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
 from ..agents.tools import AgentTools
@@ -2362,12 +2363,30 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
 
             # Strip markdown code fences if present
             if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-                raw = raw.strip()
+                fence_match = re.search(r'^```(?:json)?\s*\n?([\s\S]*?)\n?```', raw)
+                if fence_match:
+                    raw = fence_match.group(1).strip()
+                else:
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+                    raw = raw.strip()
 
-            parsed = json.loads(raw)
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                # LLM sometimes wraps JSON in extra text or produces minor syntax errors.
+                # Try to extract the outermost JSON object as a fallback.
+                m = re.search(r'\{[\s\S]*\}', raw)
+                if m:
+                    try:
+                        parsed = json.loads(m.group())
+                    except json.JSONDecodeError as inner_err:
+                        logger.warning(f"Suggestions JSON unrecoverable after extraction ({inner_err}); returning empty result")
+                        return {"success": True, "suggestions": [], "naming_issues": [], "context_summary": context_summary}
+                else:
+                    logger.warning("Suggestions JSON parse failed, no JSON block found; returning empty result")
+                    return {"success": True, "suggestions": [], "naming_issues": [], "context_summary": context_summary}
             if isinstance(parsed, dict):
                 suggestions = parsed.get("suggestions", [])
                 naming_issues = parsed.get("naming_issues", [])

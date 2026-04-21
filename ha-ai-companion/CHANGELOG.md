@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.3] - 2026-04-21
+
+### Fixed
+- **Suggestions crash on malformed JSON** — when the AI model returned malformed JSON, `generate_suggestions` raised an unhandled `JSONDecodeError`. Now uses a two-stage fallback: extract outermost JSON block via regex; if still unparseable, return empty result gracefully. Also improved code-fence stripping to use proper regex.
+
 ## [1.7.2] - 2026-04-21
 
 ### Fixed
