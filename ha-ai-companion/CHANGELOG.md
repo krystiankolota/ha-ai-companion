@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.4] - 2026-04-22
+
+### Fixed
+- **Retry counter stuck at 1/2** — tool retry counter was keyed by the unique `tool_call_id` (new ID each API call), so the LLM always saw "Auto-retry 1/2" and never reached the "Max retries" stop message — causing runaway retry loops (observed: 4 consecutive `edit_nodered_tab` failures). Counter is now keyed by function name per turn, giving correct 1/2 → 2/2 → stop behaviour.
+- **Tool failures silent in logs** — when a tool returned `success=False`, only the boolean was logged; the actual error message was never surfaced. Error is now logged at WARNING level (up to 300 chars) before the retry directive is injected, making log-based debugging possible.
+
 ## [1.7.3] - 2026-04-21
 
 ### Fixed

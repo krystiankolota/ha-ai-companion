@@ -1387,7 +1387,10 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                     _is_approval_gated = "changeset_id" in result
                     _is_infra_error = "timed out" in result.get("error", "").lower()
                     if _is_failure and not _is_approval_gated and not _is_infra_error:
-                        _tool_key = f"{tool_call['id']}:{function_name}"
+                        _err_msg = result.get("error", "")
+                        if _err_msg:
+                            logger.warning(f"[ITERATION {iteration}] Tool '{function_name}' error: {_err_msg[:300]}")
+                        _tool_key = function_name
                         _retry_counts = turn_state["retry_counts"]
                         _retry_n = _retry_counts.get(_tool_key, 0) + 1
                         _retry_counts[_tool_key] = _retry_n
