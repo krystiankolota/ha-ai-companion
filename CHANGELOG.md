@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.5] - 2026-04-29
+
+### Fixed
+- **400 error on follow-up messages with multiple tool calls** — when the LLM called two or more tools in a single iteration, the `tool_call` event was broadcast during streaming before all tool call IDs were accumulated. The frontend stored an assistant message with only the first tool call, leaving subsequent tool results as orphans. On the next user message, Claude/Azure rejected the request: "unexpected `tool_use_id` found in `tool_result` blocks". Fixed by removing the premature in-stream announcement; the event now fires only after the full stream is processed with all tool calls complete.
+- **Memory consolidation calling unexpected tools** — tool-call-only assistant messages (empty `content`) were included in the slim history passed to the consolidation LLM. These empty messages primed the model to keep calling main agent tools (`search_config_files`, `get_entity_states`) despite the restricted tool list. They are now excluded from slim history.
+
 ## [1.7.4] - 2026-04-22
 
 ### Fixed

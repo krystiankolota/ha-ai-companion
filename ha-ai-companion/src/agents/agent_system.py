@@ -1279,17 +1279,6 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                                 if tool_call_delta.function.arguments:
                                     current_tool_call["function"]["arguments"] += tool_call_delta.function.arguments
 
-                        # Announce tool calls to UI as soon as we know them (may have partial arguments)
-                        if not tool_calls_announced and any(tc.get("function", {}).get("name") for tc in accumulated_tool_calls):
-                            yield {
-                                "event": "tool_call",
-                                "data": json.dumps({
-                                    "tool_calls": accumulated_tool_calls,
-                                    "iteration": iteration
-                                })
-                            }
-                            tool_calls_announced = True
-
                     # Check for finish reason
                     if chunk.choices[0].finish_reason:
                         break
@@ -1761,7 +1750,7 @@ Remember: You're helping manage a production Home Assistant system. Safety and c
                 # Skip tool results (often large JSON) and system_info markers
                 if role in ("tool", "system_info"):
                     continue
-                if isinstance(m.get("content"), str):
+                if isinstance(m.get("content"), str) and m.get("content"):
                     slim_history.append({"role": role, "content": m["content"]})
                 elif isinstance(m.get("content"), list):
                     # Flatten content blocks to plain text
