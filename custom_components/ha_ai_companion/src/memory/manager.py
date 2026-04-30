@@ -55,7 +55,7 @@ class MemoryManager:
 
     MAX_CONTEXT_CHARS = 6000   # ~1500 tokens — keep memory injection lean
     MAX_FILES = 25             # Hard cap on total memory files
-    MAX_FILE_CHARS = 1500      # Max content chars per file (excluding metadata header)
+    MAX_FILE_CHARS = 800       # Max content chars per file — matches system prompt rule
 
     def __init__(self, memory_dir: str):
         self.memory_dir = Path(memory_dir)
@@ -189,13 +189,15 @@ class MemoryManager:
             content = re.sub(r"<!--.*?-->\n?", "", raw, flags=re.DOTALL).strip()
             if not content:
                 continue
-            section = f"### {fname}\n{content}"
+            stem = fname[:-3] if fname.endswith(".md") else fname
+            header = f"[{stem}]\n"
+            section = header + content
             section_chars = len(section)
 
             if total_chars + section_chars > self.MAX_CONTEXT_CHARS:
-                remaining = self.MAX_CONTEXT_CHARS - total_chars - len(f"### {fname}\n") - 50
+                remaining = self.MAX_CONTEXT_CHARS - total_chars - len(header) - 50
                 if remaining > 200:
-                    section = f"### {fname}\n{content[:remaining]}\n*(truncated)*"
+                    section = header + content[:remaining] + "\n*(truncated)*"
                     sections.append(section)
                 break
 
@@ -206,7 +208,7 @@ class MemoryManager:
             return ""
 
         return (
-            "## Agent Memory (persistent knowledge from previous sessions)\n\n"
+            "## Memory\n\n"
             + "\n\n".join(sections)
             + "\n\n---\n"
         )

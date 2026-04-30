@@ -18,7 +18,7 @@ from .memory import MemoryManager
 from .conversations import ConversationManager
 from .tasks import TaskManager
 
-version = "1.7.6"
+version = "1.7.7"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()

@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.7] - 2026-04-30
+
+### Changed
+- **Memory injection token reduction** — compressed `get_context()` format: section header shortened from `## Agent Memory (persistent knowledge from previous sessions)` to `## Memory`, per-file headers from `### filename.md` to `[filename]` (strips `###` prefix and `.md` extension). Saves ~80 tokens per request with 25 files.
+- **`MAX_FILE_CHARS` aligned to system prompt rule** — was 1500, now 800 (matching the "max 800 chars/file" rule the LLM is given). Prevents LLM from writing 1500-char files while believing the limit is 800.
+
 ## [1.7.6] - 2026-04-30
 
 ### Changed
