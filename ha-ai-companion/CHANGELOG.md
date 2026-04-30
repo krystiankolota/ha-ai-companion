@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.6] - 2026-04-30
+
+### Changed
+- **System prompt token reduction (~25%)** — rewrote the default system prompt in compact style: removed the redundant "Key Responsibilities" block (covered by specific rules below it) and the "Response Style" section (inferred by the model), and tightened all prose sections by eliminating articles, filler phrases and verbose explanations. Both CRITICAL rule blocks (automation safety, entity ID rules) kept verbatim. Saves ~750 tokens per request with no quality impact.
+
 ## [1.7.5] - 2026-04-29
 
 ### Fixed
