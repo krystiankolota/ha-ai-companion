@@ -758,13 +758,21 @@ Managing production HA system. Safety and clarity are paramount."""
                     "type": "function",
                     "function": {
                         "name": "search_config_files",
-                        "description": "Search configuration files (all YAML files + all Lovelace dashboards, plus device/entity/area virtual files). The default dashboard is returned as 'lovelace.yaml'; custom dashboards as 'lovelace/{url_path}.yaml'. Devices/entities/areas are ONLY included when search_pattern is provided.",
+                        "description": (
+                            "Search configuration files (all YAML files, plus device/entity/area virtual files). "
+                            "Lovelace dashboards are NOT searched by default — pass include_lovelace=true only when editing or reading dashboard UI. "
+                            "Devices/entities/areas are ONLY included when search_pattern is provided."
+                        ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "search_pattern": {
                                     "type": "string",
                                     "description": "Optional text to search for in file contents (case-insensitive). Only files containing this text will be returned. Omit to return all files."
+                                },
+                                "include_lovelace": {
+                                    "type": "boolean",
+                                    "description": "Set to true to also search Lovelace dashboard files (lovelace.yaml, lovelace/*.yaml). Only needed for dashboard UI work. Default: false."
                                 }
                             },
                             "required": []
@@ -849,9 +857,9 @@ Managing production HA system. Safety and clarity are paramount."""
                         "name": "get_entity_states",
                         "description": (
                             "Get the current live states of Home Assistant entities. "
-                            "For specific questions about a subset of entities (e.g. 'lights in the bedroom', 'all sensors', 'is the door locked'), "
-                            "pass a *query* — semantic search returns the ~40 most relevant entities rather than flooding context with all of them. "
-                            "Pass *domain_filter* to limit to a single HA domain (e.g. 'light', 'switch', 'sensor'). "
+                            "Returns a compact one-line-per-entity format: domain: \"name\"[entity_id]=state. "
+                            "For specific questions, pass *query* — semantic search returns the ~40 most relevant entities. "
+                            "Pass *domain_filter* to limit to a single HA domain (e.g. 'light', 'switch', 'sensor', 'climate'). "
                             "Omit both arguments only when a broad overview of ALL entities is genuinely needed."
                         ),
                         "parameters": {
@@ -2059,11 +2067,13 @@ Managing production HA system. Safety and clarity are paramount."""
             if 'entity_states' in active_types:
                 await _emit("Fetching entity states…")
                 entity_states_result = await self.tools.get_entity_states()
-                states = entity_states_result.get("states", [])
-                entity_states_text = self._format_entity_states_compact(states)
+                states = entity_states_result.get("states", "")
+                # states is now compact text; _format_entity_states_compact no longer needed here
+                entity_states_text = states if isinstance(states, str) else self._format_entity_states_compact(states)
                 context_sections.append(f"## Current entity states\n{entity_states_text}")
-                context_summary.append({"type": "entity_states", "count": len(states), "chars": len(entity_states_text)})
-                await _emit(f"✓ Entity states: {len(states)} entities")
+                entity_count = entity_states_result.get("count", 0)
+                context_summary.append({"type": "entity_states", "count": entity_count, "chars": len(entity_states_text)})
+                await _emit(f"✓ Entity states: {entity_count} entities")
 
             if 'automations' in active_types:
                 await _emit("Loading automations…")

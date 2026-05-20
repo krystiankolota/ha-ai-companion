@@ -36,6 +36,28 @@ logger = logging.getLogger(__name__)
 _EMBED_BATCH = 100      # entities per embeddings API call
 _EMBED_TOP_K = 40       # entities returned by semantic search
 _EMBED_TTL   = 1800     # cache lifetime in seconds (30 min)
+_EMBED_MAX_TOTAL = 80   # hard cap on total entities returned (prevents unavailable/recent inflation)
+
+# Entity/device registry fields exposed to the LLM — keep minimal to reduce token cost
+_ENTITY_SLIM_FIELDS = ("entity_id", "name", "original_name", "platform", "area_id", "device_id")
+_DEVICE_SLIM_FIELDS = ("id", "name", "manufacturer", "model", "area_id")
+
+
+def _compact_states(states: list) -> str:
+    """One-line-per-entity compact format: domain: "name"[entity_id]=state, ..."""
+    from collections import defaultdict
+    by_domain: dict = defaultdict(list)
+    for s in states:
+        eid = s.get("entity_id", "")
+        domain = eid.split(".")[0] if "." in eid else "other"
+        state = s.get("state", "?")
+        fname = s.get("friendly_name")
+        entry = f'"{fname}"[{eid}]={state}' if fname else f"{eid}={state}"
+        by_domain[domain].append(entry)
+    return "\n".join(
+        f"{d}: " + ", ".join(entries)
+        for d, entries in sorted(by_domain.items())
+    )
 
 
 class EntityEmbeddingCache:
@@ -505,7 +527,8 @@ class AgentTools:
 
     async def search_config_files(
         self,
-        search_pattern: Optional[str] = None
+        search_pattern: Optional[str] = None,
+        include_lovelace: bool = False,
     ) -> Dict[str, Any]:
         """
         Search ALL configuration files for a pattern and return matching files with full contents.
@@ -654,7 +677,8 @@ class AgentTools:
                     for device in devices:
                         device_id = device.get('id', 'unknown')
                         device_path = f"devices/{device_id}.json"
-                        device_json = json.dumps(device, indent=2)
+                        slim_device = {k: device[k] for k in _DEVICE_SLIM_FIELDS if k in device}
+                        device_json = json.dumps(slim_device, indent=2)
 
                         # Check both content and filename for matches
                         content_matches = len(re.findall(re.escape(search_pattern), device_json, re.IGNORECASE))
@@ -682,7 +706,8 @@ class AgentTools:
                     for entity in entities:
                         entity_id = entity.get('entity_id', 'unknown')
                         entity_path = f"entities/{entity_id}.json"
-                        entity_json = json.dumps(entity, indent=2)
+                        slim_entity = {k: entity[k] for k in _ENTITY_SLIM_FIELDS if k in entity}
+                        entity_json = json.dumps(slim_entity, indent=2)
 
                         # Check both content and filename for matches
                         content_matches = len(re.findall(re.escape(search_pattern), entity_json, re.IGNORECASE))
@@ -729,34 +754,35 @@ class AgentTools:
                 except Exception as e:
                     logger.debug(f"Could not retrieve areas (not critical): {e}")
 
-            # Handle Lovelace dashboards (default + all custom)
-            try:
-                self._push_status("Reading dashboards…")
-                all_dashboards = await self._get_all_dashboards()
-                # Always include the default dashboard
-                default_paths = {None, 'lovelace'}
-                custom_url_paths = [d.get('url_path') for d in all_dashboards if d.get('url_path') not in default_paths]
+            # Handle Lovelace dashboards — skipped by default to save tokens.
+            # Pass include_lovelace=True only when working on dashboard UI.
+            if include_lovelace:
+                try:
+                    self._push_status("Reading dashboards…")
+                    all_dashboards = await self._get_all_dashboards()
+                    default_paths = {None, 'lovelace'}
+                    custom_url_paths = [d.get('url_path') for d in all_dashboards if d.get('url_path') not in default_paths]
 
-                for dashboard_url_path in [None] + custom_url_paths:
-                    try:
-                        lovelace_content = await self._get_lovelace_config(dashboard_url_path)
-                        if not lovelace_content:
-                            continue
-                        virtual_path = "lovelace.yaml" if dashboard_url_path is None else f"lovelace/{dashboard_url_path}.yaml"
-                        if search_pattern:
-                            content_matches = len(re.findall(re.escape(search_pattern), lovelace_content, re.IGNORECASE))
-                            filename_matches = len(re.findall(re.escape(search_pattern), virtual_path, re.IGNORECASE))
-                            total_matches = content_matches + filename_matches
-                            if total_matches > 0:
-                                files.append({"path": virtual_path, "content": lovelace_content, "matches": total_matches})
-                                logger.info(f"{virtual_path} matched ({total_matches} matches)")
-                        else:
-                            files.append({"path": virtual_path, "content": lovelace_content})
-                            logger.info(f"Included {virtual_path} in results")
-                    except Exception as e:
-                        logger.debug(f"Could not retrieve {dashboard_url_path} dashboard: {e}")
-            except Exception as e:
-                logger.debug(f"Could not retrieve Lovelace dashboards (not critical): {e}")
+                    for dashboard_url_path in [None] + custom_url_paths:
+                        try:
+                            lovelace_content = await self._get_lovelace_config(dashboard_url_path)
+                            if not lovelace_content:
+                                continue
+                            virtual_path = "lovelace.yaml" if dashboard_url_path is None else f"lovelace/{dashboard_url_path}.yaml"
+                            if search_pattern:
+                                content_matches = len(re.findall(re.escape(search_pattern), lovelace_content, re.IGNORECASE))
+                                filename_matches = len(re.findall(re.escape(search_pattern), virtual_path, re.IGNORECASE))
+                                total_matches = content_matches + filename_matches
+                                if total_matches > 0:
+                                    files.append({"path": virtual_path, "content": lovelace_content, "matches": total_matches})
+                                    logger.info(f"{virtual_path} matched ({total_matches} matches)")
+                            else:
+                                files.append({"path": virtual_path, "content": lovelace_content})
+                                logger.info(f"Included {virtual_path} in results")
+                        except Exception as e:
+                            logger.debug(f"Could not retrieve {dashboard_url_path} dashboard: {e}")
+                except Exception as e:
+                    logger.debug(f"Could not retrieve Lovelace dashboards (not critical): {e}")
 
             logger.info(f"Agent found {len(files)} files (searched {len(matched_paths)} YAML files + 3 virtual files)")
 
@@ -2287,10 +2313,13 @@ class AgentTools:
                                 except Exception:
                                     pass
                         filtered = [states_list[i] for i in sorted(top_indices)]
+                        # Hard cap: semantic top-K + unavailable/recent can bloat to 200+
+                        if len(filtered) > _EMBED_MAX_TOTAL:
+                            filtered = filtered[:_EMBED_MAX_TOTAL]
                         logger.info(f"Semantic search '{query}': {len(filtered)}/{total} entities returned")
                         return {
                             "success": True,
-                            "states": filtered,
+                            "states": _compact_states(filtered),
                             "count": len(filtered),
                             "total_entities": total,
                             "semantic_search": True,
@@ -2301,7 +2330,7 @@ class AgentTools:
 
             return {
                 "success": True,
-                "states": states_list,
+                "states": _compact_states(states_list),
                 "count": len(states_list),
                 "domain_filter": domain_filter,
             }

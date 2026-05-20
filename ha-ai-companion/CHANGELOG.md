@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.8] - 2026-05-20
+
+### Changed
+- **Tool result token reduction** — three fixes that cut per-request token cost significantly, especially for automation sessions:
+  - `search_config_files` no longer fetches Lovelace dashboards by default. All 7 dashboards were fetched and matching ones returned as full YAML on every call, even for automation searches. Pass `include_lovelace: true` only when editing dashboard UI.
+  - `get_entity_states` tool result now uses compact format (`"name"[entity_id]=state` per entity) instead of raw JSON attribute dicts. Reduces entity state output by ~10×.
+  - Entity and device records in `search_config_files` trimmed to key fields only (`entity_id`, `name`, `platform`, `area_id`) — verbose registry fields removed.
+- **Entity result hard cap** — `get_entity_states` semantic search now caps total returned at 80 entities. "Unavailable" and recently-changed entity additions could inflate the 40-entity semantic result to 200+.
+
 ## [1.7.7] - 2026-04-30
 
 ### Changed
