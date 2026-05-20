@@ -75,3 +75,13 @@ docs/knowledge/
 .claude/
 .claude/settings.local.json
 /.claude/settings.local.json
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
+chroma.sqlite3
+knowledge_graph.sqlite3
+knowledge_graph.sqlite3-shm
+knowledge_graph.sqlite3-wal
+# MemPalace ChromaDB UUID collection directories
+????????-????-????-????-????????????/
