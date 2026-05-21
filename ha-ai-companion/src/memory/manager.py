@@ -153,11 +153,20 @@ class MemoryManager:
     # Files older than this many days are skipped from context injection (still exist on disk)
     MAX_CONTEXT_AGE_DAYS = int(os.environ.get("MEMORY_MAX_AGE_DAYS", "180"))
 
-    async def get_context(self) -> str:
+    # Prefixes whose files are always injected regardless of query relevance
+    _ALWAYS_INJECT_PREFIXES = ("preference_", "identity_")
+
+    async def get_context(self, query: str = "") -> str:
         """
-        Return memory files sorted by most-recently-updated first, up to
-        MAX_CONTEXT_CHARS (~1500 tokens).  Newer memories take priority.
-        Files older than MAX_CONTEXT_AGE_DAYS are skipped.
+        Return memory files up to MAX_CONTEXT_CHARS.
+
+        When `query` is provided, relevance-gate non-priority files:
+        - Files whose name starts with preference_/identity_ are always injected.
+        - Other files are scored by keyword overlap with the query; zero-score files
+          are skipped so irrelevant memories don't consume context budget.
+        When `query` is empty, falls back to recency-only ordering (original behaviour).
+
+        Files older than MAX_CONTEXT_AGE_DAYS are always skipped.
         Timestamp HTML comments are stripped before injection.
         """
         now_ts = time.time()
@@ -172,23 +181,53 @@ class MemoryManager:
                 p for p in paths
                 if (now_ts - p.stat().st_mtime) / 86400.0 <= self.MAX_CONTEXT_AGE_DAYS
             ]
-            files = [p.name for p in paths]
         except Exception:
-            files = await self.list_files()
-        if not files:
+            paths = []
+
+        if not paths:
             return ""
+
+        # Keyword set from query (lower-case tokens, 3+ chars)
+        query_tokens: set = set()
+        if query:
+            query_tokens = {w.lower() for w in re.split(r'\W+', query) if len(w) >= 3}
+
+        def _is_priority(name: str) -> bool:
+            return any(name.startswith(p) for p in self._ALWAYS_INJECT_PREFIXES)
+
+        def _relevance(name: str, content: str) -> int:
+            if not query_tokens:
+                return 1  # no query — treat all as relevant
+            haystack = (name + " " + content).lower()
+            return sum(1 for tok in query_tokens if tok in haystack)
+
+        # Read and score all candidate files
+        scored: List[Tuple[int, bool, float, str, str]] = []
+        for p in paths:
+            fname = p.name
+            raw = await self.read_file(fname)
+            if not raw:
+                continue
+            content = re.sub(r"<!--.*?-->\n?", "", raw, flags=re.DOTALL).strip()
+            if not content:
+                continue
+            priority = _is_priority(fname)
+            score = _relevance(fname, content)
+            # Skip non-priority files with zero relevance when a query exists
+            if not priority and query_tokens and score == 0:
+                continue
+            scored.append((score, priority, p.stat().st_mtime, fname, content))
+
+        if not scored:
+            return ""
+
+        # Sort: priority first, then by score DESC, then by mtime DESC
+        scored.sort(key=lambda x: (not x[1], -x[0], -x[2]))
 
         sections: List[str] = []
         total_chars = 0
 
-        for fname in files:
-            raw = await self.read_file(fname)
-            if not raw:
-                continue
-            # Strip HTML timestamp comment — it's noise in the AI's context window
-            content = re.sub(r"<!--.*?-->\n?", "", raw, flags=re.DOTALL).strip()
-            if not content:
-                continue
+        for _score, _priority, _mtime, fname, content in scored:
             stem = fname[:-3] if fname.endswith(".md") else fname
             header = f"[{stem}]\n"
             section = header + content

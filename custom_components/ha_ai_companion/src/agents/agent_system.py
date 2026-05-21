@@ -531,7 +531,7 @@ Managing production HA system. Safety and clarity are paramount."""
             system_content = self.system_prompt + f"\n\nCurrent date/time: {now_str}"
             if self.memory_manager:
                 try:
-                    memory_context = await self.memory_manager.get_context()
+                    memory_context = await self.memory_manager.get_context(query=user_message)
                     if memory_context:
                         system_content = system_content + "\n\n" + memory_context
                 except Exception as mem_err:
