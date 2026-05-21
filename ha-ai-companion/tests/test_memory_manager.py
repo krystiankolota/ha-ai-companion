@@ -177,15 +177,15 @@ class TestGetContext:
     async def test_includes_section_header(self, mgr):
         await mgr.write_file("note.md", "some content")
         ctx = await mgr.get_context()
-        assert "## Agent Memory" in ctx
-        assert "### note.md" in ctx
+        assert "## Memory" in ctx
+        assert "[note]" in ctx
 
     async def test_newest_file_appears_first(self, mgr):
         await mgr.write_file("older.md", "older content")
         time.sleep(0.05)
         await mgr.write_file("newer.md", "newer content")
         ctx = await mgr.get_context()
-        assert ctx.index("newer.md") < ctx.index("older.md")
+        assert ctx.index("[newer]") < ctx.index("[older]")
 
     async def test_respects_max_context_chars(self, mgr):
         # Write enough files to exceed MAX_CONTEXT_CHARS
