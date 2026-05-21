@@ -316,6 +316,10 @@ Safety & reversibility:
 - Prefer targeted edits over full-file rewrites to minimise diff size and revert risk.
 - Propose related changes together in one changeset for atomic approve/reject.
 
+Search discipline:
+- Before your first tool call, state in 1-2 sentences: what the user needs and which single tool call gets the most relevant information first. If the answer is already in Memory or Home Layout, answer directly without calling any tools.
+- If after 2 search_config_files calls you still cannot locate the relevant automation or entity, STOP searching. Ask the user one specific clarifying question (e.g. the exact automation name or entity_id) instead of searching further.
+
 Managing production HA system. Safety and clarity are paramount."""
 
     @staticmethod
@@ -1094,7 +1098,7 @@ Managing production HA system. Safety and clarity are paramount."""
             self._tool_status_queue = asyncio.Queue()
 
             # Per-turn state (local — safe under concurrent WS connections)
-            turn_state = {"has_read": False, "retry_counts": {}, "seen_calls": {}}
+            turn_state = {"has_read": False, "retry_counts": {}, "seen_calls": {}, "tool_call_count": 0}
             self.tools.clear_turn_cache()
 
             # Pre-declare so outer except can access partial content on stream errors
@@ -1420,6 +1424,24 @@ Managing production HA system. Safety and clarity are paramount."""
                         )
                         logger.warning(f"[LOOP] Hard volume limit for '{function_name}' (total={_fn_total})")
 
+                    # Reflection nudge: after 2nd and 4th tool call, prompt model to
+                    # assess whether it has enough information before continuing.
+                    turn_state["tool_call_count"] += 1
+                    _tc = turn_state["tool_call_count"]
+                    if _tc == 2:
+                        tool_result_content += (
+                            "\n\n[REFLECT: You have made 2 tool calls this turn. Before calling another tool, "
+                            "briefly state: (1) what you have learned, (2) what specific information is still "
+                            "missing, (3) whether you can now propose the change or answer the user directly. "
+                            "Only call another tool if you can name the exact missing information.]"
+                        )
+                    elif _tc == 4:
+                        tool_result_content += (
+                            "\n\n[REFLECT: 4 tool calls made. You now have enough context. "
+                            "Either call propose_config_changes or answer the user. "
+                            "If you still cannot act, ask the user one clarifying question instead of searching more.]"
+                        )
+
                     # Add tool result to messages with cache control on the last tool result
                     is_last_tool = (tool_idx == len(accumulated_tool_calls) - 1)
                     tool_message = {
@@ -1487,11 +1509,11 @@ Managing production HA system. Safety and clarity are paramount."""
             }
 
             # Fire-and-forget memory consolidation — runs after response is delivered.
-            # Skip if the conversation was too short to contain durable facts.
+            # Gate: only run when message content signals a durable new fact, and session
+            # is established enough (≥5 user turns) to contain worth-keeping information.
             all_messages = messages + new_messages
             user_turns = sum(1 for m in all_messages if m.get("role") == "user")
-            has_tool_activity = any(m.get("role") == "tool" for m in all_messages)
-            if user_turns >= 2 or has_tool_activity:
+            if user_turns >= 5 and self._should_consolidate(user_message, accumulated_content):
                 asyncio.ensure_future(self._run_memory_consolidation(all_messages))
 
         except Exception as e:
@@ -1707,8 +1729,9 @@ Managing production HA system. Safety and clarity are paramount."""
         ]
 
         try:
-            resp = await self.client.chat.completions.create(
-                model=self.model,
+            # Use cheaper suggestion model — summarization is compression, not reasoning.
+            resp = await self.suggestion_client.chat.completions.create(
+                model=self.suggestion_model,
                 messages=summary_prompt,
                 stream=False,
                 max_tokens=600,
@@ -1724,6 +1747,23 @@ Managing production HA system. Safety and clarity are paramount."""
         }
         logger.info(f"Summarized {len(to_summarize)} old messages into a single block ({len(summary_text)} chars)")
         return [system_msg, summary_msg] + keep
+
+    _CONSOLIDATION_TRIGGERS = (
+        # English — explicit preference/correction/identity signals
+        "i prefer", "remember that", "remember:", "from now on", "always ", "never ",
+        "my name", "we always", "you should know", "note that", "keep in mind",
+        "i like", "i don't like", "i hate", "i love", "i want you to",
+        "correct,", "that's wrong", "you were wrong", "actually,",
+        # Polish equivalents
+        "pamiętaj", "zapamiętaj", "wolę", "zawsze ", "nigdy ", "moje imię",
+        "od teraz", "od tej pory", "warto wiedzieć", "chcę żebyś",
+        "lubię", "nie lubię", "popraw", "to nieprawda", "masz rację",
+    )
+
+    def _should_consolidate(self, user_message: str, assistant_content: str) -> bool:
+        """Return True only when conversation signals a durable new fact worth saving."""
+        combined = (user_message + " " + assistant_content).lower()
+        return any(trigger in combined for trigger in self._CONSOLIDATION_TRIGGERS)
 
     async def _run_memory_consolidation(self, conversation_messages: List[Dict[str, Any]]) -> None:
         """
