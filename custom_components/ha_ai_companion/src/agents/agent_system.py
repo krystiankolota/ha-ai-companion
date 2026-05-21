@@ -1082,6 +1082,29 @@ Managing production HA system. Safety and clarity are paramount."""
                 },
             ]
 
+            # Phase-gated tool sets (Unit 5 / P0-3):
+            # Expose only read tools on the first iteration (before any file has been read).
+            # Write tools (propose, patch, reload, Node-RED writes, dashboard edits, etc.)
+            # become available once the model has gathered context (has_tool_results=True).
+            _READ_TOOL_NAMES = {
+                "search_config_files", "get_entity_states", "get_nodered_flows",
+                "get_ha_issues", "list_dashboards", "search_past_sessions",
+                "read_memories", "list_memory_stats",
+            }
+            tools_read = [t for t in tools if t["function"]["name"] in _READ_TOOL_NAMES]
+            tools_all = tools
+
+            # Write-intent detection for plan-before-act (Unit 4 / P0-2).
+            _WRITE_INTENT_KEYWORDS = (
+                "create", "add", "fix", "change", "modify", "update", "edit", "make",
+                "automate", "repair", "delete", "remove", "build", "configure", "set",
+                "enable", "disable", "adjust", "rewrite", "improve", "turn on", "turn off",
+                # Polish
+                "stwórz", "dodaj", "zmień", "napraw", "zmodyfikuj", "zaktualizuj",
+                "edytuj", "zrób", "skonfiguruj", "usuń", "wyłącz", "włącz", "popraw",
+            )
+            _has_write_intent = any(kw in user_message.lower() for kw in _WRITE_INTENT_KEYWORDS)
+
             # Track tool calls and results
             new_messages = []
 
@@ -1123,14 +1146,38 @@ Managing production HA system. Safety and clarity are paramount."""
                 # we reserve 1 for system prompt so allow 3 in the messages list)
                 safe_messages = self._strip_excess_cache_control(messages) if self.enable_cache_control else messages
 
+                # Phase-gate: read-only tools on iter 1 (no tool results yet).
+                # After the model has read at least one file, unlock write tools.
+                active_tools = tools_read if not has_tool_results else tools_all
+                if not has_tool_results and iteration == 1:
+                    logger.debug(f"[PHASE-GATE] Iter 1: exposing {len(active_tools)} read tools (of {len(tools_all)} total)")
+
+                # Plan-before-act (P0-2): on the very first call, force Gemini-family
+                # models to emit a planning text response before calling any tools.
+                # Claude-family models receive the instruction via system prompt (Tier A+).
+                _is_gemini = any(x in active_model.lower() for x in ("gemini", "google", "flash"))
+                _force_text_first = (
+                    iteration == 1
+                    and not has_tool_results
+                    and _is_gemini
+                    and _has_write_intent
+                )
+                if _force_text_first:
+                    logger.info("[PLAN] Tier B: tool_choice=none on iter 1 (Gemini + write intent)")
+
                 # Call OpenAI API with streaming
+                # When forcing text-first (Tier B), omit tools entirely — passing tools=[...]
+                # with tool_choice="none" is redundant and may cause provider validation errors.
                 api_params = {
                     "model": active_model,
                     "messages": safe_messages,
-                    "tools": tools,
-                    "tool_choice": "auto",
                     "stream": True
                 }
+                if _force_text_first:
+                    api_params["tool_choice"] = "none"
+                else:
+                    api_params["tools"] = active_tools
+                    api_params["tool_choice"] = "auto"
 
                 # Add usage tracking based on per-phase mode
                 active_usage_tracking = self.config_usage_tracking if has_tool_results else self.suggestion_usage_tracking
@@ -1471,6 +1518,25 @@ Managing production HA system. Safety and clarity are paramount."""
                         "event": "tool_result",
                         "data": json.dumps(tool_result_data)
                     }
+
+                # Tier A+ retroactive nudge (Claude-family): if model called tools on
+                # iter 1 without emitting any reasoning text, patch the last tool result
+                # so the next iteration is prompted to state its plan.
+                if (iteration == 1
+                        and not _is_gemini
+                        and not accumulated_content.strip()
+                        and new_messages):
+                    for _tm in reversed(new_messages):
+                        if _tm.get("role") == "tool":
+                            _tm["content"] += (
+                                "\n\n[PLAN REQUIRED: You called tools without stating your intent. "
+                                "Before calling more tools, briefly state in 1-2 sentences: "
+                                "(1) what the user needs, (2) what you already know from Memory "
+                                "and Home Layout, (3) your next action. Answer directly without "
+                                "tools if the information is already available.]"
+                            )
+                            logger.info("[PLAN] Tier A+ retroactive nudge injected (iter 1, no plan text)")
+                            break
 
             # Send completion event with all new messages
             if iteration >= max_iterations:
