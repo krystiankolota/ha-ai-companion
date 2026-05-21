@@ -112,6 +112,17 @@ class EntityEmbeddingCache:
         area = f" in {e['area']}" if e.get("area") else ""
         return f"{name} [{e['entity_id']}]{area}"
 
+    @staticmethod
+    def fingerprint(e: Dict) -> str:
+        return f"{e.get('entity_id','')}|{e.get('friendly_name','')}|{e.get('area','')}"
+
+    @staticmethod
+    def disk_path(config_dir) -> 'Path':
+        from pathlib import Path as _Path
+        cache_dir = _Path(config_dir) / ".ai_agent_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / ("entity_embeddings.npz" if _HAS_NUMPY else "entity_embeddings.json")
+
 
 class AgentTools:
     """
@@ -2203,14 +2214,75 @@ class AgentTools:
             return None
 
     async def _ensure_entity_cache(self, states_list: List[Dict]) -> bool:
-        """Build the entity embedding cache from a freshly fetched states list. Returns True on success."""
+        """Build entity embedding cache with delta-only re-embedding and disk persistence."""
         if self._entity_cache.is_valid():
             return True
-        texts = [EntityEmbeddingCache.entity_text(e) for e in states_list]
-        embeddings = await self._embed_texts(texts)
-        if embeddings is None or len(embeddings) != len(states_list):
+
+        fps = [EntityEmbeddingCache.fingerprint(e) for e in states_list]
+        eid_to_fp = {e.get("entity_id", ""): fp for e, fp in zip(states_list, fps)}
+
+        # Load disk cache and extract embeddings whose fingerprints still match
+        cached_embs: Dict[str, List[float]] = {}
+        cache_path = EntityEmbeddingCache.disk_path(self.config_manager.config_dir)
+        try:
+            if cache_path.exists():
+                if _HAS_NUMPY and cache_path.suffix == ".npz":
+                    data = _np.load(str(cache_path), allow_pickle=False)
+                    d_ids = data["entity_ids"].tolist()
+                    d_fps = data["fingerprints"].tolist()
+                    d_embs = data["embeddings"]
+                    for i, (eid, fp) in enumerate(zip(d_ids, d_fps)):
+                        if eid in eid_to_fp and eid_to_fp[eid] == fp:
+                            cached_embs[eid] = d_embs[i].tolist()
+                else:
+                    import json as _j
+                    with open(cache_path) as _f:
+                        _d = _j.load(_f)
+                    for eid, fp, emb in zip(_d.get("entity_ids", []), _d.get("fingerprints", []), _d.get("embeddings", [])):
+                        if eid in eid_to_fp and eid_to_fp[eid] == fp:
+                            cached_embs[eid] = emb
+        except Exception as _e:
+            logger.debug(f"[EmbedCache] Disk load failed (full rebuild): {_e}")
+
+        # Re-embed only new/changed entities
+        needs_embed = [(i, e) for i, e in enumerate(states_list) if e.get("entity_id", "") not in cached_embs]
+        if needs_embed:
+            texts = [EntityEmbeddingCache.entity_text(e) for _, e in needs_embed]
+            new_embs = await self._embed_texts(texts)
+            if new_embs is None or len(new_embs) != len(needs_embed):
+                return False
+            for (_, e), emb in zip(needs_embed, new_embs):
+                cached_embs[e.get("entity_id", "")] = emb
+            logger.info(f"[EmbedCache] Embedded {len(needs_embed)} new/changed (of {len(states_list)} total)")
+        else:
+            logger.info(f"[EmbedCache] All {len(states_list)} entities from disk cache")
+
+        # Assemble in states_list order
+        valid_pairs = [(e, cached_embs[e.get("entity_id", "")]) for e in states_list if e.get("entity_id", "") in cached_embs]
+        if not valid_pairs:
             return False
-        self._entity_cache.build(states_list, embeddings)
+        valid_entities, valid_embs = zip(*valid_pairs)
+        self._entity_cache.build(list(valid_entities), list(valid_embs))
+
+        # Persist updated cache to disk
+        try:
+            all_ids = [e.get("entity_id", "") for e in valid_entities]
+            all_fps = [EntityEmbeddingCache.fingerprint(e) for e in valid_entities]
+            if _HAS_NUMPY and cache_path.suffix == ".npz":
+                _np.savez(
+                    str(cache_path),
+                    entity_ids=_np.array(all_ids),
+                    fingerprints=_np.array(all_fps),
+                    embeddings=_np.array(list(valid_embs), dtype=_np.float32),
+                )
+            else:
+                import json as _j
+                with open(cache_path, "w") as _f:
+                    _j.dump({"entity_ids": all_ids, "fingerprints": all_fps, "embeddings": list(valid_embs)}, _f)
+            logger.info(f"[EmbedCache] Saved {len(valid_entities)} embeddings to disk")
+        except Exception as _e:
+            logger.warning(f"[EmbedCache] Disk save failed: {_e}")
+
         return True
 
     async def get_entity_states(
