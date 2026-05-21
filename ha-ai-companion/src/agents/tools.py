@@ -529,9 +529,14 @@ class AgentTools:
         self,
         search_pattern: Optional[str] = None,
         include_lovelace: bool = False,
+        context_lines: int = 12,
+        full_content: bool = False,
     ) -> Dict[str, Any]:
         """
-        Search ALL configuration files for a pattern and return matching files with full contents.
+        Search ALL configuration files for a pattern and return matching snippets (or full content).
+
+        By default returns ±context_lines around each match (snippet mode) to reduce token cost.
+        Files ≤60 lines always return full content. Pass full_content=True to override.
 
         This tool searches all YAML files, plus virtual files (lovelace.yaml, devices.json,
         entities.json). Returns files that contain the search pattern, or all files if no
@@ -543,47 +548,59 @@ class AgentTools:
                           If None, returns ALL configuration files.
                           If starts with "/", treats as file path pattern and only searches
                           actual files (skips virtual entities/devices/areas).
+            context_lines: Lines of context around each match in snippet mode (default 12).
+            full_content: Return full file content instead of snippets (default False).
 
         Returns:
             Dict with:
                 - success: bool
                 - files: List[Dict] with keys:
                     - path: str (relative file path)
-                    - content: str (file content as string)
+                    - content: str (snippets or full file content)
                     - matches: Optional[int] (number of matches if search_pattern provided)
+                    - truncated: Optional[bool] (True when snippet mode was applied)
                 - count: int (number of files found)
                 - search_pattern: Optional[str]
                 - error: Optional[str]
-
-        Example:
-            >>> await tools.search_config_files(search_pattern="mqtt")
-            {
-                "success": True,
-                "files": [
-                    {
-                        "path": "configuration.yaml",
-                        "content": "mqtt:\\n  broker: ...",
-                        "matches": 3
-                    }
-                ],
-                "count": 1,
-                "search_pattern": "mqtt"
-            }
-
-            >>> await tools.search_config_files(search_pattern="/packages/*.yaml")
-            {
-                "success": True,
-                "files": [
-                    {
-                        "path": "packages/mqtt.yaml",
-                        "content": "...",
-                        "matches": 1
-                    }
-                ],
-                "count": 1,
-                "search_pattern": "/packages/*.yaml"
-            }
         """
+        def _extract_snippets(text: str, pattern: str, ctx: int) -> str:
+            """Return lines around each match, merged when overlapping, separated by '...'."""
+            import re as _re
+            lines = text.splitlines()
+            match_lines = {
+                m.start(0): True
+                for m in _re.finditer(_re.escape(pattern), text, _re.IGNORECASE)
+            }
+            # Convert char offsets to line numbers
+            hit_lines: set = set()
+            char = 0
+            for i, line in enumerate(lines):
+                for offset in list(match_lines.keys()):
+                    if char <= offset < char + len(line) + 1:
+                        hit_lines.add(i)
+                char += len(line) + 1
+            if not hit_lines:
+                return text  # fallback: pattern not found line-wise
+            # Build ranges [start, end] inclusive
+            ranges: list = []
+            for ln in sorted(hit_lines):
+                start = max(0, ln - ctx)
+                end = min(len(lines) - 1, ln + ctx)
+                if ranges and start <= ranges[-1][1] + 1:
+                    ranges[-1][1] = max(ranges[-1][1], end)
+                else:
+                    ranges.append([start, end])
+            parts = []
+            if ranges[0][0] > 0:
+                parts.append("...")
+            for i, (s, e) in enumerate(ranges):
+                parts.append("\n".join(lines[s:e + 1]))
+                if i < len(ranges) - 1:
+                    parts.append("...")
+            if ranges[-1][1] < len(lines) - 1:
+                parts.append("...")
+            return "\n".join(parts)
+
         try:
             from pathlib import Path
             import re
@@ -634,11 +651,17 @@ class AgentTools:
                         total_matches = content_matches + filename_matches
 
                         if total_matches > 0:
-                            files.append({
+                            line_count = content.count("\n") + 1
+                            use_full = full_content or line_count <= 60
+                            out_content = content if use_full else _extract_snippets(content, search_pattern, context_lines)
+                            entry: Dict[str, Any] = {
                                 "path": relative_path,
-                                "content": content,
-                                "matches": total_matches
-                            })
+                                "content": out_content,
+                                "matches": total_matches,
+                            }
+                            if not use_full:
+                                entry["truncated"] = True
+                            files.append(entry)
                     else:
                         # No search pattern OR file path pattern - include all matched files
                         files.append({

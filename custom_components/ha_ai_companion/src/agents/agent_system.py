@@ -777,6 +777,14 @@ Managing production HA system. Safety and clarity are paramount."""
                                 "include_lovelace": {
                                     "type": "boolean",
                                     "description": "Set to true to also search Lovelace dashboard files (lovelace.yaml, lovelace/*.yaml). Only needed for dashboard UI work. Default: false."
+                                },
+                                "context_lines": {
+                                    "type": "integer",
+                                    "description": "Lines of context around each match in snippet mode (default 12). Increase to 40+ when you need more surrounding content."
+                                },
+                                "full_content": {
+                                    "type": "boolean",
+                                    "description": "Return full file content instead of snippets. Use when you need to read an entire file before editing it. Default: false."
                                 }
                             },
                             "required": []
@@ -2226,7 +2234,7 @@ Managing production HA system. Safety and clarity are paramount."""
                 await _emit("Loading automations…")
                 # Read all automation files (supports single-file and split-file setups).
                 # Search for 'alias' which is present in every YAML automation block.
-                automations_result = await self.tools.search_config_files(search_pattern="alias")
+                automations_result = await self.tools.search_config_files(search_pattern="alias", full_content=True)
                 automations_files = automations_result.get("files", [])
                 automation_contents = []
                 for f in automations_files:
@@ -2242,7 +2250,7 @@ Managing production HA system. Safety and clarity are paramount."""
             if 'scenes' in active_types:
                 try:
                     await _emit("Loading scenes…")
-                    scenes_result = await self.tools.search_config_files(search_pattern="scene:")
+                    scenes_result = await self.tools.search_config_files(search_pattern="scene:", full_content=True)
                     scenes_files = [
                         f for f in scenes_result.get("files", [])
                         if "scene" in f.get("path", "").lower() and f.get("path") not in included_paths
@@ -2262,7 +2270,7 @@ Managing production HA system. Safety and clarity are paramount."""
             if 'scripts' in active_types:
                 try:
                     await _emit("Loading scripts…")
-                    scripts_result = await self.tools.search_config_files(search_pattern="sequence:")
+                    scripts_result = await self.tools.search_config_files(search_pattern="sequence:", full_content=True)
                     scripts_files = [
                         f for f in scripts_result.get("files", [])
                         if "script" in f.get("path", "").lower() and f.get("path") not in included_paths
