@@ -1094,7 +1094,7 @@ Managing production HA system. Safety and clarity are paramount."""
             self._tool_status_queue = asyncio.Queue()
 
             # Per-turn state (local — safe under concurrent WS connections)
-            turn_state = {"has_read": False, "retry_counts": {}}
+            turn_state = {"has_read": False, "retry_counts": {}, "seen_calls": {}}
             self.tools.clear_turn_cache()
 
             # Pre-declare so outer except can access partial content on stream errors
@@ -1351,6 +1351,16 @@ Managing production HA system. Safety and clarity are paramount."""
                     if function_name in ("search_config_files", "get_nodered_flows") and result.get("success"):
                         turn_state["has_read"] = True
 
+                    # Loop detection: track (tool, args) pairs and per-function call counts.
+                    _call_key = (function_name, json.dumps(function_args, sort_keys=True))
+                    _seen_calls = turn_state["seen_calls"]
+                    _call_count = _seen_calls.get(_call_key, 0) + 1
+                    _seen_calls[_call_key] = _call_count
+                    # Also track total calls per function name (catches alternating-arg loops).
+                    _fn_count_key = f"__fn__{function_name}"
+                    _fn_total = _seen_calls.get(_fn_count_key, 0) + 1
+                    _seen_calls[_fn_count_key] = _fn_total
+
                     # Error recovery: inject a retry directive for correctable failures.
                     # Skip for: successes, approval-gated results (changeset_id), timed-out calls.
                     tool_result_content = json.dumps(result)
@@ -1378,6 +1388,37 @@ Managing production HA system. Safety and clarity are paramount."""
                                 "Stop retrying and inform the user about the error clearly.]"
                             )
                             logger.warning(f"[RETRY] Max retries reached for '{function_name}'")
+
+                    # Exact-duplicate guard: same tool + same args called again.
+                    if _call_count == 2:
+                        tool_result_content += (
+                            f"\n\n[DUPLICATE CALL: You already called '{function_name}' with these exact arguments "
+                            "and received the same result. Do NOT call it again with the same arguments. "
+                            "Use the information already retrieved — read a different file or call propose_config_changes now.]"
+                        )
+                        logger.warning(f"[LOOP] Duplicate call detected for '{function_name}' (exact, count=2)")
+                    elif _call_count >= 3:
+                        tool_result_content += (
+                            f"\n\n[LOOP DETECTED: '{function_name}' called {_call_count} times with identical arguments. "
+                            "You are stuck. STOP. Either call propose_config_changes with what you have, "
+                            "or respond to the user explaining what you cannot find.]"
+                        )
+                        logger.warning(f"[LOOP] Hard-stop injected for '{function_name}' (exact, count={_call_count})")
+                    # Volume guard: too many calls to the same tool regardless of args (alternating-arg loops).
+                    elif _fn_total == 4 and function_name in ("search_config_files", "get_nodered_flows", "get_entity_states"):
+                        tool_result_content += (
+                            f"\n\n[SEARCH LIMIT: You have called '{function_name}' {_fn_total} times this turn. "
+                            "You have gathered enough information. Stop searching and proceed: "
+                            "call propose_config_changes or respond to the user now.]"
+                        )
+                        logger.warning(f"[LOOP] Volume limit reached for '{function_name}' (total={_fn_total})")
+                    elif _fn_total >= 5 and function_name in ("search_config_files", "get_nodered_flows", "get_entity_states"):
+                        tool_result_content += (
+                            f"\n\n[HARD SEARCH LIMIT: '{function_name}' called {_fn_total} times this turn. "
+                            "Further searches are BLOCKED for this turn. You MUST call propose_config_changes "
+                            "or respond to the user now. Do not call any search tool again.]"
+                        )
+                        logger.warning(f"[LOOP] Hard volume limit for '{function_name}' (total={_fn_total})")
 
                     # Add tool result to messages with cache control on the last tool result
                     is_last_tool = (tool_idx == len(accumulated_tool_calls) - 1)
