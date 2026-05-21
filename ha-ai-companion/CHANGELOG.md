@@ -5,6 +5,32 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] - 2026-05-21
+
+### Added
+- **Entity embedding cache — disk persistence** — entity embeddings now saved to `.ai_agent_cache/entity_embeddings.npz` at first use. Cold starts skip the 9+ API embedding calls if entities haven't changed. Delta-only re-embedding: only new or renamed entities are re-embedded on subsequent starts.
+
+### Changed
+- **Memory relevance injection** — `preference_*` and `identity_*` memory files always injected into context (high-priority). All other files are now keyword-gated against the user's query — zero-score files are skipped, freeing context budget for relevant memories.
+- **`search_config_files` snippet mode** — by default, returns ±12 lines of context around each match instead of full file content. Files ≤60 lines always return full content. Pass `full_content: true` when reading a file before editing it. Reduces tool result tokens significantly for large config repos.
+- **Plan-before-act** — Gemini-family models are forced to emit a planning text response (tool_choice=none) on the first iteration when write intent is detected. Claude-family models receive the same instruction via the system prompt. Reduces impulsive writes without reading first.
+- **Phase-gated tools** — on the first iteration (before any tool results), only read tools are exposed (search, get_entity_states, get_nodered_flows, etc.). Write tools become available after the model has gathered context.
+
+## [1.8.0] - 2026-05-21
+
+### Added
+- **Reflection nudge** — after the 2nd and 4th tool calls per turn, a directive is injected into the tool result prompting the model to reflect before its next action.
+- **Clarification pathway** — system prompt now instructs the model to ask a clarifying question after 2 failed search attempts, rather than continuing to search.
+
+### Changed
+- **Memory consolidation gating** — consolidation no longer fires every turn. Requires ≥5 user turns AND keyword match on correction/preference patterns (`"I prefer"`, `"remember"`, `"no, not"`, etc.).
+- **Summarization model** — `_summarize_old_history()` now uses the suggestion model (Haiku) instead of the config model, matching the intent of dual-model routing.
+
+## [1.7.9] - 2026-05-21
+
+### Fixed
+- **Search loop bug** — Gemini Flash repeatedly exhausted all 10 iterations doing redundant `search_config_files` calls without acting. Added two loop-detection guards: exact-duplicate detection (same tool + same args) injects a hard-stop directive; volume guard (≥4 calls to the same search tool per turn) injects a "stop searching, act now" directive.
+
 ## [1.7.8] - 2026-05-20
 
 ### Changed

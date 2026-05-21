@@ -5,6 +5,32 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] - 2026-05-21
+
+### Added
+- **Entity embedding cache — disk persistence** — entity embeddings now saved to `.ai_agent_cache/entity_embeddings.npz` at first use. Cold starts skip the 9+ API embedding calls if entities haven't changed. Delta-only re-embedding: only new or renamed entities are re-embedded on subsequent starts.
+
+### Changed
+- **Memory relevance injection** — `preference_*` and `identity_*` memory files always injected into context (high-priority). All other files are now keyword-gated against the user's query — zero-score files are skipped, freeing context budget for relevant memories.
+- **`search_config_files` snippet mode** — by default, returns ±12 lines of context around each match instead of full file content. Files ≤60 lines always return full content. Pass `full_content: true` when reading a file before editing it.
+- **Plan-before-act** — Gemini-family models forced to emit a planning response before tool calls on write-intent messages. Claude-family models receive the instruction via system prompt.
+- **Phase-gated tools** — read tools only on the first iteration; write tools unlock after first tool result.
+
+## [1.8.0] - 2026-05-21
+
+### Added
+- Reflection nudge after 2nd and 4th tool calls per turn.
+- Clarification pathway — model asks user after 2 failed searches instead of continuing.
+
+### Changed
+- Memory consolidation gating — requires ≥5 user turns + keyword trigger.
+- Summarization uses suggestion model (Haiku) instead of config model.
+
+## [1.7.9] - 2026-05-21
+
+### Fixed
+- Search loop bug — exact-duplicate and volume guards prevent Gemini Flash from exhausting all iterations on redundant search calls.
+
 ## [1.7.8] - 2026-05-20
 
 ### Changed
