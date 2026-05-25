@@ -53,7 +53,8 @@ class MemoryManager:
     - MAX_CONTEXT_CHARS: total context injected into system prompt
     """
 
-    MAX_CONTEXT_CHARS = 6000   # ~1500 tokens — keep memory injection lean
+    MAX_CONTEXT_CHARS = 3500   # ~875 tokens — reduced from 6000; relevance gate keeps quality
+    MAX_CRITICAL_CHARS = 1500  # Reserved budget for critical-marked files (always injected)
     MAX_FILES = 25             # Hard cap on total memory files
     MAX_FILE_CHARS = 800       # Max content chars per file — matches system prompt rule
 
@@ -96,13 +97,19 @@ class MemoryManager:
             logger.error("MemoryManager.read_file(%s) error: %s", filename, exc)
             return None
 
-    async def write_file(self, filename: str, content: str) -> bool:
+    async def write_file(self, filename: str, content: str, critical: Optional[bool] = None) -> bool:
         """
         Write (create or overwrite) a memory file.
 
         Enforces per-file and total-file limits before writing:
         - Rejects content exceeding MAX_FILE_CHARS
         - Deletes the oldest file when MAX_FILES would be exceeded
+
+        Args:
+            critical: Controls the ``<!-- critical -->`` marker:
+                - None (default): preserve the marker if the file already has one.
+                - True: add the marker (file always injected into every session).
+                - False: remove the marker (demote from critical tier).
 
         Returns True on success, False on validation failure or I/O error.
         """
@@ -128,10 +135,23 @@ class MemoryManager:
                     oldest.unlink()
                     logger.warning("MemoryManager evicted oldest file %s (MAX_FILES=%d reached)", oldest.name, self.MAX_FILES)
 
+            # Determine critical marker
+            if critical is None:
+                # Preserve existing marker when caller doesn't specify
+                try:
+                    existing_raw = path.read_text(encoding="utf-8") if path.exists() else ""
+                except Exception:
+                    existing_raw = ""
+                critical_marker = "<!-- critical -->\n" if "<!-- critical -->" in existing_raw else ""
+            elif critical:
+                critical_marker = "<!-- critical -->\n"
+            else:
+                critical_marker = ""
+
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-            full_content = f"<!-- updated: {timestamp} -->\n{content.strip()}\n"
+            full_content = f"{critical_marker}<!-- updated: {timestamp} -->\n{content.strip()}\n"
             path.write_text(full_content, encoding="utf-8")
-            logger.info("MemoryManager wrote %s (%d chars)", path.name, len(full_content))
+            logger.info("MemoryManager wrote %s (%d chars, critical=%s)", path.name, len(full_content), critical)
             return True
         except Exception as exc:
             logger.error("MemoryManager.write_file(%s) error: %s", filename, exc)
@@ -153,21 +173,23 @@ class MemoryManager:
     # Files older than this many days are skipped from context injection (still exist on disk)
     MAX_CONTEXT_AGE_DAYS = int(os.environ.get("MEMORY_MAX_AGE_DAYS", "180"))
 
-    # Prefixes whose files are always injected regardless of query relevance
+    # Prefixes whose files are always injected regardless of query relevance (Tier 2)
     _ALWAYS_INJECT_PREFIXES = ("preference_", "identity_")
 
     async def get_context(self, query: str = "") -> str:
         """
-        Return memory files up to MAX_CONTEXT_CHARS.
+        Return memory files up to MAX_CONTEXT_CHARS using 3-tier injection priority.
 
-        When `query` is provided, relevance-gate non-priority files:
-        - Files whose name starts with preference_/identity_ are always injected.
-        - Other files are scored by keyword overlap with the query; zero-score files
-          are skipped so irrelevant memories don't consume context budget.
-        When `query` is empty, falls back to recency-only ordering (original behaviour).
+        Tier 1 — Critical (``<!-- critical -->`` marker): always injected first,
+            guaranteed budget of MAX_CRITICAL_CHARS chars regardless of query.
+        Tier 2 — Priority (``preference_``/``identity_`` prefix): always injected
+            after critical files, using remaining total budget.
+        Tier 3 — Gated: scored by keyword overlap with ``query``; zero-score files
+            are skipped when a query is provided.
 
-        Files older than MAX_CONTEXT_AGE_DAYS are always skipped.
-        Timestamp HTML comments are stripped before injection.
+        When ``query`` is empty, all non-stale files are treated as relevant.
+        Files older than MAX_CONTEXT_AGE_DAYS are always excluded.
+        All HTML comments (including markers) are stripped before injection.
         """
         now_ts = time.time()
         try:
@@ -201,47 +223,66 @@ class MemoryManager:
             haystack = (name + " " + content).lower()
             return sum(1 for tok in query_tokens if tok in haystack)
 
-        # Read and score all candidate files
-        scored: List[Tuple[int, bool, float, str, str]] = []
+        # Read and score all candidate files.
+        # Tuple: (is_critical, score, priority, mtime, fname, content)
+        scored: List[Tuple[bool, int, bool, float, str, str]] = []
         for p in paths:
             fname = p.name
             raw = await self.read_file(fname)
             if not raw:
                 continue
+            # Detect critical marker BEFORE stripping comments
+            is_critical = "<!-- critical -->" in raw
             content = re.sub(r"<!--.*?-->\n?", "", raw, flags=re.DOTALL).strip()
             if not content:
                 continue
             priority = _is_priority(fname)
             score = _relevance(fname, content)
-            # Skip non-priority files with zero relevance when a query exists
-            if not priority and query_tokens and score == 0:
+            # Skip non-critical, non-priority files with zero relevance when a query exists
+            if not is_critical and not priority and query_tokens and score == 0:
                 continue
-            scored.append((score, priority, p.stat().st_mtime, fname, content))
+            scored.append((is_critical, score, priority, p.stat().st_mtime, fname, content))
 
         if not scored:
             return ""
 
-        # Sort: priority first, then by score DESC, then by mtime DESC
-        scored.sort(key=lambda x: (not x[1], -x[0], -x[2]))
+        # Sort: Tier 1 (critical) → Tier 2 (priority) → Tier 3 (relevance score DESC, mtime DESC)
+        scored.sort(key=lambda x: (not x[0], not x[2], -x[1], -x[3]))
 
         sections: List[str] = []
+        critical_chars = 0
         total_chars = 0
 
-        for _score, _priority, _mtime, fname, content in scored:
+        for is_critical, _score, _priority, _mtime, fname, content in scored:
             stem = fname[:-3] if fname.endswith(".md") else fname
             header = f"[{stem}]\n"
             section = header + content
             section_chars = len(section)
 
-            if total_chars + section_chars > self.MAX_CONTEXT_CHARS:
-                remaining = self.MAX_CONTEXT_CHARS - total_chars - len(header) - 50
-                if remaining > 200:
-                    section = header + content[:remaining] + "\n*(truncated)*"
+            if is_critical:
+                # Critical files get their own reserved budget
+                if critical_chars + section_chars <= self.MAX_CRITICAL_CHARS:
                     sections.append(section)
-                break
-
-            sections.append(section)
-            total_chars += section_chars
+                    critical_chars += section_chars
+                    total_chars += section_chars
+                else:
+                    remaining = self.MAX_CRITICAL_CHARS - critical_chars - len(header) - 50
+                    if remaining > 200:
+                        section = header + content[:remaining] + "\n*(truncated)*"
+                        sections.append(section)
+                        critical_chars = self.MAX_CRITICAL_CHARS
+                        total_chars += len(section)
+                    # else: critical budget exhausted — skip remainder of this file
+            else:
+                # Non-critical files fill whatever total budget remains
+                if total_chars + section_chars > self.MAX_CONTEXT_CHARS:
+                    remaining = self.MAX_CONTEXT_CHARS - total_chars - len(header) - 50
+                    if remaining > 200:
+                        section = header + content[:remaining] + "\n*(truncated)*"
+                        sections.append(section)
+                    break
+                sections.append(section)
+                total_chars += section_chars
 
         if not sections:
             return ""

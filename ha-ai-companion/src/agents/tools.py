@@ -1479,6 +1479,7 @@ class AgentTools:
         filename: str,
         content: str,
         replaces: Optional[List[str]] = None,
+        critical: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Save or update a persistent memory file.
@@ -1527,7 +1528,7 @@ class AgentTools:
                         deleted.append(old_file)
                         logger.info(f"save_memory: deleted superseded file '{old_file}'")
 
-            ok = await self.memory_manager.write_file(filename, content)
+            ok = await self.memory_manager.write_file(filename, content, critical=critical)
             from pathlib import Path
             import re
             safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', Path(filename).stem).strip('_') or 'memory'

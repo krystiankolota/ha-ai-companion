@@ -111,6 +111,46 @@ class TestWriteFile:
         assert not (mgr.memory_dir / "my file!.md").exists()
         assert len(list(mgr.memory_dir.glob("*.md"))) == 1
 
+    # --- critical marker ---
+
+    async def test_critical_true_writes_marker(self, mgr):
+        await mgr.write_file("device.md", "pumpa=basement pump", critical=True)
+        raw = (mgr.memory_dir / "device.md").read_text()
+        assert raw.startswith("<!-- critical -->")
+
+    async def test_critical_false_no_marker(self, mgr):
+        await mgr.write_file("device.md", "pumpa=basement pump", critical=False)
+        raw = (mgr.memory_dir / "device.md").read_text()
+        assert "<!-- critical -->" not in raw
+
+    async def test_critical_none_new_file_no_marker(self, mgr):
+        # Default (critical=None) on a new file — no marker
+        await mgr.write_file("device.md", "pumpa=basement pump")
+        raw = (mgr.memory_dir / "device.md").read_text()
+        assert "<!-- critical -->" not in raw
+
+    async def test_critical_preserved_on_update(self, mgr):
+        # Mark critical, then update content without specifying critical — marker preserved
+        await mgr.write_file("device.md", "original content", critical=True)
+        await mgr.write_file("device.md", "updated content")  # critical=None default
+        raw = (mgr.memory_dir / "device.md").read_text()
+        assert "<!-- critical -->" in raw
+        assert "updated content" in raw
+
+    async def test_critical_demoted(self, mgr):
+        # Mark critical, then explicitly demote with critical=False
+        await mgr.write_file("device.md", "content", critical=True)
+        await mgr.write_file("device.md", "content", critical=False)
+        raw = (mgr.memory_dir / "device.md").read_text()
+        assert "<!-- critical -->" not in raw
+
+    async def test_critical_none_non_critical_stays_non_critical(self, mgr):
+        # Update a non-critical file without specifying critical — marker stays absent
+        await mgr.write_file("prefs.md", "original", critical=False)
+        await mgr.write_file("prefs.md", "updated")  # critical=None
+        raw = (mgr.memory_dir / "prefs.md").read_text()
+        assert "<!-- critical -->" not in raw
+
 
 # ---------------------------------------------------------------------------
 # read_file
@@ -233,3 +273,58 @@ class TestGetStats:
         stats = await mgr.get_stats()
         assert stats["total"] == 0
         assert stats["files"] == []
+
+
+# ---------------------------------------------------------------------------
+# get_context — critical tier (Tier 1)
+# ---------------------------------------------------------------------------
+
+class TestGetContextCritical:
+    async def test_critical_file_always_injected_with_no_query_match(self, mgr):
+        """Critical file injected even when query keywords don't match its content."""
+        await mgr.write_file("device_pumps.md", "pumpa=basement pump", critical=True)
+        time.sleep(0.02)
+        await mgr.write_file("preference_language.md", "respond in Polish")
+        ctx = await mgr.get_context(query="heating temperature climate")
+        # Critical file has zero keyword overlap with "heating temperature climate"
+        # but must still appear because it's critical
+        assert "pumpa=basement pump" in ctx
+
+    async def test_critical_appears_before_priority_file(self, mgr):
+        """Critical file (Tier 1) appears before prefix-priority file (Tier 2)."""
+        await mgr.write_file("preference_language.md", "respond in Polish", critical=False)
+        time.sleep(0.02)
+        # Write critical AFTER priority so mtime is newer for the priority file —
+        # but critical should still win the sort.
+        await mgr.write_file("device_pumps.md", "pumpa=basement pump", critical=True)
+        ctx = await mgr.get_context()
+        assert ctx.index("[device_pumps]") < ctx.index("[preference_language]")
+
+    async def test_critical_marker_stripped_from_context_output(self, mgr):
+        """The <!-- critical --> marker must not appear in the returned context string."""
+        await mgr.write_file("device_pumps.md", "pumpa=basement pump", critical=True)
+        ctx = await mgr.get_context()
+        assert "<!-- critical -->" not in ctx
+        assert "pumpa=basement pump" in ctx
+
+    async def test_context_within_max_chars_with_critical_files(self, mgr):
+        """Total context stays within MAX_CONTEXT_CHARS even when critical files are present."""
+        chunk = "a" * 600
+        for i in range(3):
+            time.sleep(0.01)
+            await mgr.write_file(f"critical_{i}.md", chunk, critical=True)
+        for i in range(5):
+            time.sleep(0.01)
+            await mgr.write_file(f"regular_{i}.md", chunk)
+        ctx = await mgr.get_context()
+        assert len(ctx) <= MemoryManager.MAX_CONTEXT_CHARS + 200
+
+    async def test_non_critical_zero_relevance_still_skipped(self, mgr):
+        """Non-critical, non-priority file with zero query overlap is still skipped."""
+        await mgr.write_file("device_pumps.md", "pumpa=basement pump", critical=False)
+        await mgr.write_file("preference_language.md", "respond in Polish")
+        ctx = await mgr.get_context(query="heating temperature climate")
+        # preference_ file always injected (Tier 2)
+        assert "respond in Polish" in ctx
+        # device_ file with zero overlap is gated out
+        assert "pumpa=basement pump" not in ctx
