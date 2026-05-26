@@ -259,6 +259,11 @@ After a successful fetch, distill the returned readme, changelog, and examples i
 - pattern_<SLUG>_changelog.md — breaking changes, removed fields, migration notes (skip if no changelog)
 Each file: ≤800 chars, bullet points only, caveman style (no articles/filler). critical=false.
 
+fetch_url rules (CRITICAL — prevents infinite loops):
+- Call fetch_url at most 2 times per topic per turn (once for README, once for a second file if needed).
+- If fetch_url returns truncated=true: do NOT retry with higher max_chars. Use the content you have.
+- If you searched for a term (e.g. "pop-up") and the README doesn't contain it in the fetched portion: STOP fetching. Tell the user the term wasn't found in the documentation retrieved and offer to proceed with what is available.
+
 Helper entities:
 - Define input_number, input_boolean, input_text, input_select directly in configuration.yaml as YAML blocks. Never tell user to create them in UI.
 - After approved changes that add helpers or template sensors, call reload_config immediately. No restart needed.
@@ -1562,20 +1567,36 @@ Managing production HA system. Safety and clarity are paramount."""
                         )
                         logger.warning(f"[LOOP] Hard-stop injected for '{function_name}' (exact, count={_call_count})")
                     # Volume guard: too many calls to the same tool regardless of args (alternating-arg loops).
-                    elif _fn_total == 4 and function_name in ("search_config_files", "get_nodered_flows", "get_entity_states"):
+                    _SEARCH_TOOLS = {"search_config_files", "get_nodered_flows", "get_entity_states"}
+                    _FETCH_TOOLS  = {"fetch_url", "learn_hacs_component"}
+                    if _fn_total == 4 and function_name in _SEARCH_TOOLS:
                         tool_result_content += (
                             f"\n\n[SEARCH LIMIT: You have called '{function_name}' {_fn_total} times this turn. "
                             "You have gathered enough information. Stop searching and proceed: "
                             "call propose_config_changes or respond to the user now.]"
                         )
                         logger.warning(f"[LOOP] Volume limit reached for '{function_name}' (total={_fn_total})")
-                    elif _fn_total >= 5 and function_name in ("search_config_files", "get_nodered_flows", "get_entity_states"):
+                    elif _fn_total >= 5 and function_name in _SEARCH_TOOLS:
                         tool_result_content += (
                             f"\n\n[HARD SEARCH LIMIT: '{function_name}' called {_fn_total} times this turn. "
                             "Further searches are BLOCKED for this turn. You MUST call propose_config_changes "
                             "or respond to the user now. Do not call any search tool again.]"
                         )
                         logger.warning(f"[LOOP] Hard volume limit for '{function_name}' (total={_fn_total})")
+                    elif _fn_total == 3 and function_name in _FETCH_TOOLS:
+                        tool_result_content += (
+                            f"\n\n[FETCH LIMIT: You have called '{function_name}' {_fn_total} times this turn. "
+                            "Do NOT fetch more URLs. Use the content already retrieved — "
+                            "distill what you have into memory files or respond to the user now.]"
+                        )
+                        logger.warning(f"[LOOP] Fetch volume limit reached for '{function_name}' (total={_fn_total})")
+                    elif _fn_total >= 4 and function_name in _FETCH_TOOLS:
+                        tool_result_content += (
+                            f"\n\n[HARD FETCH LIMIT: '{function_name}' called {_fn_total} times this turn. "
+                            "Further fetches are BLOCKED. You MUST save what you have via save_memory "
+                            "or respond to the user. Do not call fetch_url or learn_hacs_component again.]"
+                        )
+                        logger.warning(f"[LOOP] Hard fetch volume limit for '{function_name}' (total={_fn_total})")
 
                     # Reflection nudge: after 2nd and 4th tool call, prompt model to
                     # assess whether it has enough information before continuing.
