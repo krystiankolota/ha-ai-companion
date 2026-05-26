@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-05-26
+
+### Fixed
+- Blank white screen on install — frontend bundle was missing for 1.9.0 (version bump ran without `npm run build`). Bundle `1.9.1` now included.
+
 ## [1.9.0] - 2026-05-26
 
 ### Added
