@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.6] - 2026-05-26
+
+### Fixed
+- **fetch_url infinite loop** — volume guards appended warning text to tool results but never blocked execution; LLM ignored text and kept calling. Now a pre-dispatch guard intercepts `fetch_url` / `learn_hacs_component` BEFORE the HTTP call: blocks if same exact args called ≥2 times, or same function called ≥3 times total per turn. Blocked calls return `{"blocked": true}` and never trigger retry directives.
+- **Verbose "Wait..." reasoning flood** — LLM wrote thousands of characters of "Wait, let me check..." chain-of-thought before tool calls, streaming it all to the user. Added system prompt VERBOSITY RULE (≤1 sentence before tool calls) and a code guard: if response text exceeds 1500 chars before tool calls, injects a correction nudge into the first tool result.
+
 ## [1.9.5] - 2026-05-26
 
 ### Fixed

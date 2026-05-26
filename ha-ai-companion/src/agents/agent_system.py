@@ -277,6 +277,12 @@ Guidelines:
 - Validate changes against Home Assistant documentation. Warn about breaking changes.
 - Search terms are case-insensitive.
 
+VERBOSITY RULE (CRITICAL — violation wastes user money):
+- NEVER write step-by-step reasoning as response text. No "Wait...", "But wait...", "Hmm...", "Let me think...", "Actually...", "Let's check..." patterns. Think silently, then act.
+- Text before a tool call: ≤ 1 sentence (e.g. "Fetching Bubble-Card docs."). Then immediately call the tool.
+- Text in final responses: ≤ 3 sentences unless you are delivering YAML, a list, or the user asked for an explanation.
+- If you find yourself writing more than 2 sentences before calling a tool, STOP and call the tool instead.
+
 Language:
 - Detect primary language from entity friendly_names, automation names, and notification text in the Home Layout section below.
 - Respond in that language. Generate all new HA content — automation names, descriptions, notifications, comments — in that language.
@@ -1245,7 +1251,7 @@ Managing production HA system. Safety and clarity are paramount."""
             self._tool_status_queue = asyncio.Queue()
 
             # Per-turn state (local — safe under concurrent WS connections)
-            turn_state = {"has_read": False, "retry_counts": {}, "seen_calls": {}, "tool_call_count": 0}
+            turn_state = {"has_read": False, "retry_counts": {}, "seen_calls": {}, "tool_call_count": 0, "verbosity_warned": False, "verbosity_chars": 0}
             self.tools.clear_turn_cache()
 
             # Pre-declare so outer except can access partial content on stream errors
@@ -1470,6 +1476,14 @@ Managing production HA system. Safety and clarity are paramount."""
                 # We have tool calls - add assistant message to history
                 logger.info(f"[ITERATION {iteration}] Processing {len(accumulated_tool_calls)} tool call(s)")
 
+                # Verbosity guard: if LLM wrote a wall of "Wait..." reasoning before calling tools,
+                # flag it so the first tool result can inject a correction nudge.
+                _verbose_chars = len(accumulated_content)
+                if _verbose_chars > 1500:
+                    turn_state["verbosity_warned"] = True
+                    turn_state["verbosity_chars"] = _verbose_chars
+                    logger.warning(f"[VERBOSITY] {_verbose_chars} chars of reasoning text before tool calls — will warn in next tool result")
+
                 assistant_message = {
                     "role": "assistant",
                     "content": accumulated_content,
@@ -1507,20 +1521,50 @@ Managing production HA system. Safety and clarity are paramount."""
                         })
                     }
 
-                    # Execute the tool via a task, yielding status events while waiting
-                    tool_task = asyncio.create_task(self._dispatch_tool(function_name, function_args, turn_state))
-                    while not tool_task.done():
+                    # PRE-DISPATCH GUARD: block repeated fetch calls before they execute.
+                    # Appending text to results is not enough — LLM ignores it and keeps calling.
+                    # Blocking before execution is the only reliable way to stop infinite fetch loops.
+                    _FETCH_GUARD_TOOLS = {"fetch_url", "learn_hacs_component"}
+                    _pre_call_key = (function_name, json.dumps(function_args, sort_keys=True))
+                    _pre_call_count = turn_state["seen_calls"].get(_pre_call_key, 0)
+                    _pre_fn_total = turn_state["seen_calls"].get(f"__fn__{function_name}", 0)
+                    _blocked_error = None
+                    if function_name in _FETCH_GUARD_TOOLS:
+                        if _pre_call_count >= 2:
+                            _blocked_error = (
+                                f"BLOCKED: '{function_name}' with these exact arguments already called "
+                                f"{_pre_call_count} times — result will not change. "
+                                "Do NOT retry. Use content already retrieved. "
+                                "Call propose_config_changes or respond to the user now."
+                            )
+                        elif _pre_fn_total >= 3:
+                            _blocked_error = (
+                                f"BLOCKED: '{function_name}' called {_pre_fn_total} times this turn — "
+                                "no more fetches allowed. Use what you already have. "
+                                "Call propose_config_changes or respond to the user now."
+                            )
+
+                    if _blocked_error:
+                        result = {"success": False, "blocked": True, "error": _blocked_error}
+                        logger.warning(
+                            f"[LOOP] PRE-DISPATCH BLOCKED '{function_name}' "
+                            f"(exact_count={_pre_call_count}, fn_total={_pre_fn_total})"
+                        )
+                    else:
+                        # Execute the tool via a task, yielding status events while waiting
+                        tool_task = asyncio.create_task(self._dispatch_tool(function_name, function_args, turn_state))
+                        while not tool_task.done():
+                            while not self._tool_status_queue.empty():
+                                yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
+                            await asyncio.sleep(0.05)
+                        # Drain any remaining status events before announcing the result
                         while not self._tool_status_queue.empty():
                             yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
-                        await asyncio.sleep(0.05)
-                    # Drain any remaining status events before announcing the result
-                    while not self._tool_status_queue.empty():
-                        yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
-                    try:
-                        result = tool_task.result()
-                    except Exception as e:
-                        result = {"success": False, "error": str(e)}
-                    logger.info(f"[ITERATION {iteration}] Tool '{function_name}' done: success={result.get('success')}")
+                        try:
+                            result = tool_task.result()
+                        except Exception as e:
+                            result = {"success": False, "error": str(e)}
+                    logger.info(f"[ITERATION {iteration}] Tool '{function_name}' done: success={result.get('success')}, blocked={result.get('blocked', False)}")
 
                     # Update read-before-write guard (local per-turn state)
                     if function_name in ("search_config_files", "get_nodered_flows") and result.get("success"):
@@ -1549,9 +1593,9 @@ Managing production HA system. Safety and clarity are paramount."""
                     _seen_calls[_fn_count_key] = _fn_total
 
                     # Error recovery: inject a retry directive for correctable failures.
-                    # Skip for: successes, approval-gated results (changeset_id), timed-out calls.
+                    # Skip for: successes, approval-gated results (changeset_id), timed-out calls, blocked calls.
                     tool_result_content = json.dumps(result)
-                    _is_failure = not result.get("success", True)
+                    _is_failure = not result.get("success", True) and not result.get("blocked", False)
                     _is_approval_gated = "changeset_id" in result
                     _is_infra_error = "timed out" in result.get("error", "").lower()
                     if _is_failure and not _is_approval_gated and not _is_infra_error:
@@ -1670,6 +1714,18 @@ Managing production HA system. Safety and clarity are paramount."""
                             "You are BLOCKED from calling any tool except propose_config_changes, patch_config_key, or patch_config_block. "
                             "Write the YAML now with what you have. Imperfect output is better than no output.]"
                         )
+
+                    # Verbosity nudge: warn LLM on first tool result if it wrote a wall of reasoning text.
+                    if tool_idx == 0 and turn_state.get("verbosity_warned"):
+                        _vc = turn_state.get("verbosity_chars", 0)
+                        tool_result_content += (
+                            f"\n\n[VERBOSITY WARNING: You wrote {_vc} characters of 'Wait...' reasoning text "
+                            "before calling tools. This wastes the user's money. "
+                            "From now on: ≤ 1 sentence before each tool call. Think silently, then act. "
+                            "Do NOT narrate your reasoning process.]"
+                        )
+                        turn_state["verbosity_warned"] = False
+                        logger.warning(f"[VERBOSITY] Injected verbosity warning into tool result (chars={_vc})")
 
                     # Add tool result to messages with cache control on the last tool result
                     is_last_tool = (tool_idx == len(accumulated_tool_calls) - 1)
