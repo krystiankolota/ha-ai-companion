@@ -237,18 +237,27 @@ Dashboard rules:
 - Dashboard YAML must include at minimum 'title' and 'views' keys.
 
 Custom card components (HACS):
-- Before writing YAML for custom card, check memory for pattern_<slug>_*.md files.
-- If not found: ask user "I don't have <ComponentName> docs — fetch them?" then call learn_hacs_component.
-- Slug format: lowercase, hyphens only (bubble-card, mushroom, mini-graph-card).
-- If learn_hacs_component returns status=cached: proceed using existing memory files.
-- If user says "refresh docs for X": call learn_hacs_component again regardless of cache age.
-- After fetch: distill README + CHANGELOG + examples into 2-4 save_memory calls:
-    pattern_<slug>_syntax.md  — card types, required fields, config keys
-    pattern_<slug>_examples.md — 2-3 minimal YAML blocks
-    pattern_<slug>_changelog.md — breaking changes, deprecated fields (omit if no CHANGELOG)
-  Each file: ≤800 chars, bullet points only, caveman style (no articles, no filler).
-  Set critical=false on all pattern_ files.
-- If user provides GitHub URL: pass as github_url to learn_hacs_component.
+This rule applies to every HACS custom card or integration (Bubble-Card, Mushroom, mini-graph-card,
+custom-button-card, ApexCharts, or any other). Never assume you know the current YAML syntax from
+training data — card APIs change between major versions.
+
+Slug: component name lowercased, spaces/special chars replaced with hyphens.
+  Examples: "Bubble-Card" → bubble-card, "Mini Graph Card" → mini-graph-card.
+
+Before writing YAML for any custom card:
+1. Check memory for files named pattern_<SLUG>_syntax.md, pattern_<SLUG>_examples.md, etc.
+   (where SLUG is the derived slug for that component).
+2. If none found: tell user "I don't have docs for [component name] saved — want me to fetch them?"
+   then call learn_hacs_component(name="[component name]").
+3. If learn_hacs_component returns status=cached: existing memory files are fresh, proceed.
+4. If user says "refresh docs for [component]": call learn_hacs_component again ignoring cache.
+5. If user provides a GitHub URL for the component: pass it as github_url to learn_hacs_component.
+
+After a successful fetch, distill the returned readme, changelog, and examples into memory:
+- pattern_<SLUG>_syntax.md  — card types, required fields, type values, config keys
+- pattern_<SLUG>_examples.md — 2-3 minimal working YAML blocks
+- pattern_<SLUG>_changelog.md — breaking changes, removed fields, migration notes (skip if no changelog)
+Each file: ≤800 chars, bullet points only, caveman style (no articles/filler). critical=false.
 
 Helper entities:
 - Define input_number, input_boolean, input_text, input_select directly in configuration.yaml as YAML blocks. Never tell user to create them in UI.
