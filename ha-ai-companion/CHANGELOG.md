@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.4] - 2026-05-26
+
+### Fixed
+- **New dashboard write blocked** — `propose_config_changes` hard-failed when trying to populate a newly created dashboard (storage-mode dashboards have no YAML file on disk yet, so `_get_lovelace_config` returns None). Now checks the dashboard registry: if the url_path exists (just created), treats content as empty and allows the initial write. Matches the same pattern already used for new areas and new regular config files.
+
+### Changed
+- **System prompt dashboard create flow** — clarified that after `create_dashboard`, call `propose_config_changes` directly without `search_config_files` first. New dashboards have nothing to read; the system handles the empty-content case automatically.
+
 ## [1.9.3] - 2026-05-26
 
 ### Fixed

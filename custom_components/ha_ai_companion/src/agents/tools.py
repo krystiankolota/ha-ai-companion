@@ -919,11 +919,26 @@ class AgentTools:
                             lovelace_url_path = file_path[len("lovelace/"):].removesuffix(".yaml") or None
                         current_content = await self._get_lovelace_config(lovelace_url_path)
                         if not current_content:
-                            errors.append({
-                                "file_path": file_path,
-                                "error": f"Could not retrieve Lovelace config for '{lovelace_url_path or 'default'}'"
-                            })
-                            continue
+                            # New dashboard: verify it exists in registry before allowing write.
+                            # A newly created dashboard has no content yet (storage mode) — treat as empty.
+                            if lovelace_url_path is not None:
+                                all_dashboards = await self._get_all_dashboards()
+                                known_paths = {d.get('url_path') for d in all_dashboards}
+                                if lovelace_url_path in known_paths:
+                                    current_content = ""  # New dashboard — allow write
+                                    logger.info(f"Lovelace dashboard '{lovelace_url_path}' is new/empty — proceeding with initial write")
+                                else:
+                                    errors.append({
+                                        "file_path": file_path,
+                                        "error": f"Dashboard '{lovelace_url_path}' not found. Call create_dashboard first or check url_path."
+                                    })
+                                    continue
+                            else:
+                                errors.append({
+                                    "file_path": file_path,
+                                    "error": "Could not retrieve default Lovelace config"
+                                })
+                                continue
                     elif file_path.startswith("devices/"):
                         # Individual device file: devices/{device_id}.json
                         device_id = file_path.replace("devices/", "").replace(".json", "")

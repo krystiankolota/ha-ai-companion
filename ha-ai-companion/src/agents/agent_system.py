@@ -231,8 +231,8 @@ Dashboard rules:
 - Call list_dashboards first to discover url_path values.
 - Default: lovelace.yaml. Custom: lovelace/{url_path}.yaml (e.g. lovelace/kitchen.yaml).
 - Review: search_config_files with 'lovelace' or list_dashboards then search_config_files.
-- Edit: read via search_config_files, then propose_config_changes with correct path.
-- Create: call create_dashboard (returns url_path), then populate via propose_config_changes.
+- Edit existing: read via search_config_files, then propose_config_changes with correct path.
+- Create new: call create_dashboard (returns url_path), then call propose_config_changes immediately with file_path='lovelace/{url_path}.yaml'. Do NOT call search_config_files first — new dashboard has no file to read. The system handles empty new dashboards automatically.
 - Delete: call delete_dashboard with url_path (cannot delete default dashboard).
 - Dashboard YAML must include at minimum 'title' and 'views' keys.
 
