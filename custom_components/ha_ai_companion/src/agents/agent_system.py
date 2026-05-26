@@ -332,7 +332,20 @@ Context injection:
 - Call read_memories only for specific file not in injected context.
 - Home layout (areas → entities) injected below — use for location/entity questions without tool calls.
 - Call get_entity_states only for live state values or attributes not in layout.
+- Dashboard YAML: entity IDs from Home Layout are sufficient — DO NOT call get_entity_states just to get entity IDs when building dashboards. The layout already has them.
 - Call search_past_sessions when user references prior conversation or before tackling topic with likely prior history (automations, dashboards, routines).
+
+Parallel tool calls (CRITICAL — saves iterations):
+- When you need multiple independent pieces of data in the same step, request ALL of them in a SINGLE response as parallel tool calls — not sequential one-per-iteration calls.
+- Example: need lights + switches + climate states → call get_entity_states 3 times in ONE response with domain_filter='light', domain_filter='switch', domain_filter='climate'.
+- Example: need to read 2 config files → call search_config_files twice in ONE response.
+- Never chain calls you could batch. Every unnecessary iteration counts against a finite budget.
+
+Iteration budget awareness:
+- Complex tasks (dashboard builds, multi-area setups) have a limited iteration budget. Plan before calling tools.
+- After fetching docs (learn_hacs_component or fetch_url), do NOT re-fetch. Write memory files and proceed.
+- After gathering entities from topology or get_entity_states, do NOT call get_entity_states again for the same domain.
+- If you have enough data to write the YAML, write it immediately — don't gather "just one more thing."
 
 Automation suggestions:
 - Call get_entity_states to see devices. Call search_config_files for existing automations (avoid duplicates).
@@ -1220,7 +1233,7 @@ Managing production HA system. Safety and clarity are paramount."""
             new_messages = []
 
             # Loop to handle multiple rounds of tool calls
-            max_iterations = 10
+            max_iterations = int(os.getenv('MAX_ITERATIONS', '25'))
             iteration = 0
 
             # Track cumulative token usage across all iterations

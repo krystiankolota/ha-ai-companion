@@ -42,6 +42,7 @@ from .const import (
     CONF_MAX_SESSIONS,
     CONF_MAX_SUGGESTIONS,
     CONF_SUGGESTION_TEMPERATURE,
+    CONF_MAX_ITERATIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -193,6 +194,7 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
         (CONF_CONFIG_MAX_TOKENS, "CONFIG_MAX_TOKENS"),
         (CONF_MAX_SESSIONS, "MAX_SESSIONS"),
         (CONF_MAX_SUGGESTIONS, "MAX_SUGGESTIONS"),
+        (CONF_MAX_ITERATIONS, "MAX_ITERATIONS"),
     ]:
         if config.get(_conf) is not None:
             os.environ[_env] = str(config.get(_conf))

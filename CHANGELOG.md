@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3] - 2026-05-26
+
+### Fixed
+- **Max iteration limit on complex tasks** — hardcoded limit of 10 caused "Maximum iteration limit reached" on multi-step tasks (dashboard builds, multi-area setups). Default raised to 25. Configurable via new `max_iterations` option in HA add-on settings and `MAX_ITERATIONS` env var.
+
+### Changed
+- **Smarter iteration budget** — system prompt now instructs the model to (1) batch parallel tool calls in a single response instead of sequential iterations, (2) use entity IDs from the already-injected Home Layout for dashboard YAML instead of calling `get_entity_states` per domain, (3) stop gathering data when it has enough to propose.
+
 ## [1.9.2] - 2026-05-26
 
 ### Fixed

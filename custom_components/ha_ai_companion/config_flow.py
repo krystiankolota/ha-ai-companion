@@ -41,6 +41,7 @@ from .const import (
     CONF_MAX_SESSIONS,
     CONF_MAX_SUGGESTIONS,
     CONF_SUGGESTION_TEMPERATURE,
+    CONF_MAX_ITERATIONS,
     DEFAULT_API_URL,
     DEFAULT_MODEL,
     DEFAULT_LOG_LEVEL,
@@ -80,6 +81,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
     vol.Optional(CONF_MAX_SESSIONS): cv.positive_int,
     vol.Optional(CONF_MAX_SUGGESTIONS): cv.positive_int,
     vol.Optional(CONF_SUGGESTION_TEMPERATURE): cv.string,
+    vol.Optional(CONF_MAX_ITERATIONS): cv.positive_int,
 })
 
 
@@ -198,6 +200,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(CONF_USAGE_TRACKING, default=self._get(CONF_USAGE_TRACKING, DEFAULT_USAGE_TRACKING)): vol.In(["stream_options", "usage", "disabled"]),
                 vol.Optional(CONF_ENABLE_CACHE_CONTROL, default=self._get(CONF_ENABLE_CACHE_CONTROL, False)): cv.boolean,
                 vol.Optional(CONF_MAX_SESSIONS, default=self._get(CONF_MAX_SESSIONS, DEFAULT_MAX_SESSIONS)): cv.positive_int,
+                vol.Optional(CONF_MAX_ITERATIONS, default=self._get(CONF_MAX_ITERATIONS, 25)): cv.positive_int,
                 vol.Optional(CONF_INPUT_PRICE_PER_1M, default=self._get(CONF_INPUT_PRICE_PER_1M, 0.0)): vol.Coerce(float),
                 vol.Optional(CONF_OUTPUT_PRICE_PER_1M, default=self._get(CONF_OUTPUT_PRICE_PER_1M, 0.0)): vol.Coerce(float),
             }),

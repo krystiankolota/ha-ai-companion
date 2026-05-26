@@ -31,6 +31,7 @@ CONF_CONFIG_MAX_TOKENS = "config_max_tokens"
 CONF_SUGGESTION_TEMPERATURE = "suggestion_temperature"
 CONF_MAX_SESSIONS = "max_sessions"
 CONF_MAX_SUGGESTIONS = "max_suggestions"
+CONF_MAX_ITERATIONS = "max_iterations"
 
 # Default values
 DEFAULT_API_URL = "https://api.openai.com/v1"
