@@ -1526,6 +1526,18 @@ Managing production HA system. Safety and clarity are paramount."""
                     if function_name in ("search_config_files", "get_nodered_flows") and result.get("success"):
                         turn_state["has_read"] = True
 
+                    # After learn_hacs_component succeeds, inject a hard "write now" directive.
+                    # This is the most common trigger for post-doc research spirals.
+                    if function_name == "learn_hacs_component" and result.get("status") in ("ok", "cached"):
+                        tool_result_content = json.dumps(result)
+                        tool_result_content += (
+                            "\n\n[DOCS READY: learn_hacs_component succeeded. You now have all the documentation "
+                            "you need. Do NOT fetch more URLs, do NOT read more config files, do NOT search history. "
+                            "Your NEXT action must be propose_config_changes with the complete YAML. "
+                            "Use entity IDs from the Home Layout section already in your context.]"
+                        )
+                        logger.info("[DIRECTIVE] Injected post-learn_hacs write directive")
+
                     # Loop detection: track (tool, args) pairs and per-function call counts.
                     _call_key = (function_name, json.dumps(function_args, sort_keys=True))
                     _seen_calls = turn_state["seen_calls"]
@@ -1580,8 +1592,22 @@ Managing production HA system. Safety and clarity are paramount."""
                         )
                         logger.warning(f"[LOOP] Hard-stop injected for '{function_name}' (exact, count={_call_count})")
                     # Volume guard: too many calls to the same tool regardless of args (alternating-arg loops).
-                    _SEARCH_TOOLS = {"search_config_files", "get_nodered_flows", "get_entity_states"}
-                    _FETCH_TOOLS  = {"fetch_url", "learn_hacs_component"}
+                    _SEARCH_TOOLS   = {"search_config_files", "get_nodered_flows", "get_entity_states"}
+                    _FETCH_TOOLS    = {"fetch_url", "learn_hacs_component"}
+                    _CONTEXT_TOOLS  = {"search_past_sessions", "read_memories", "list_memory_stats", "list_dashboards"}
+                    if _fn_total == 2 and function_name in _CONTEXT_TOOLS:
+                        tool_result_content += (
+                            f"\n\n[CONTEXT LIMIT: You have called '{function_name}' {_fn_total} times this turn. "
+                            "Do NOT call context-lookup tools again. You have enough background. "
+                            "Proceed to propose_config_changes or answer the user now.]"
+                        )
+                        logger.warning(f"[LOOP] Context volume limit for '{function_name}' (total={_fn_total})")
+                    elif _fn_total >= 3 and function_name in _CONTEXT_TOOLS:
+                        tool_result_content += (
+                            f"\n\n[HARD CONTEXT LIMIT: '{function_name}' called {_fn_total} times this turn. "
+                            "Further context lookups are BLOCKED. Call propose_config_changes now.]"
+                        )
+                        logger.warning(f"[LOOP] Hard context volume limit for '{function_name}' (total={_fn_total})")
                     if _fn_total == 4 and function_name in _SEARCH_TOOLS:
                         tool_result_content += (
                             f"\n\n[SEARCH LIMIT: You have called '{function_name}' {_fn_total} times this turn. "
@@ -1611,22 +1637,38 @@ Managing production HA system. Safety and clarity are paramount."""
                         )
                         logger.warning(f"[LOOP] Hard fetch volume limit for '{function_name}' (total={_fn_total})")
 
-                    # Reflection nudge: after 2nd and 4th tool call, prompt model to
-                    # assess whether it has enough information before continuing.
+                    # Reflection nudge: escalating pressure after each checkpoint.
                     turn_state["tool_call_count"] += 1
                     _tc = turn_state["tool_call_count"]
                     if _tc == 2:
                         tool_result_content += (
-                            "\n\n[REFLECT: You have made 2 tool calls this turn. Before calling another tool, "
-                            "briefly state: (1) what you have learned, (2) what specific information is still "
-                            "missing, (3) whether you can now propose the change or answer the user directly. "
-                            "Only call another tool if you can name the exact missing information.]"
+                            "\n\n[REFLECT: 2 tool calls made. Before calling another tool, "
+                            "state: (1) what you know, (2) what is still missing, "
+                            "(3) whether you can propose now. Only continue if missing info is specific and named.]"
                         )
                     elif _tc == 4:
                         tool_result_content += (
-                            "\n\n[REFLECT: 4 tool calls made. You now have enough context. "
-                            "Either call propose_config_changes or answer the user. "
-                            "If you still cannot act, ask the user one clarifying question instead of searching more.]"
+                            "\n\n[REFLECT: 4 tool calls made. You have enough context. "
+                            "Call propose_config_changes now or answer the user. "
+                            "If still blocked, ask ONE clarifying question — do not search more.]"
+                        )
+                    elif _tc == 6:
+                        tool_result_content += (
+                            "\n\n[WARNING: 6 tool calls this turn. Stop gathering. "
+                            "You MUST call propose_config_changes on the next action or explain to the user why you cannot. "
+                            "Any further searches waste the user's money and will be stopped.]"
+                        )
+                    elif _tc == 8:
+                        tool_result_content += (
+                            "\n\n[CRITICAL: 8 tool calls this turn. This is your last opportunity to gather information. "
+                            "The NEXT action must be propose_config_changes or a direct answer to the user. "
+                            "Do NOT call any read/search/fetch tool again.]"
+                        )
+                    elif _tc >= 10:
+                        tool_result_content += (
+                            f"\n\n[HARD STOP: {_tc} tool calls made this turn. "
+                            "You are BLOCKED from calling any tool except propose_config_changes, patch_config_key, or patch_config_block. "
+                            "Write the YAML now with what you have. Imperfect output is better than no output.]"
                         )
 
                     # Add tool result to messages with cache control on the last tool result

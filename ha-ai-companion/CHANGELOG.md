@@ -5,6 +5,13 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.5] - 2026-05-26
+
+### Fixed
+- **Over-research spiral burns iterations/money** — agent called `search_past_sessions` 5× and `read_memories` 3× with no volume guard, burning iterations after already having sufficient context. Added volume guards for context-lookup tools (`search_past_sessions`, `read_memories`, `list_memory_stats`, `list_dashboards`): warn at 2 calls, hard-block at 3.
+- **Reflect nudges too sparse** — previously only fired at call 2 and 4, leaving 20+ unchecked calls after. Now fire at 2, 4, 6, 8, and 10 with escalating pressure. Call 10+ injects a hard stop blocking everything except propose/patch tools.
+- **Post-doc research spiral** — after `learn_hacs_component` succeeds, agent continued reading configs and searching history instead of writing YAML. Now injects a hard directive after successful doc fetch: "NEXT action must be propose_config_changes."
+
 ## [1.9.4] - 2026-05-26
 
 ### Fixed
