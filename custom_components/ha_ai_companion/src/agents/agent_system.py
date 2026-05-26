@@ -288,7 +288,7 @@ NEVER save (not even if unsure):
 
 Anti-bloat rules (enforced by system, also your responsibility):
 - Max 25 files — merge related facts into one file
-- Max 800 chars/file — bullet points only, no prose
+- Max 800 chars/file — bullet points only, no prose, no articles (a/an/the), no filler words
 - Updating memory: overwrite whole file, never append stale info
 - Use `replaces` field when correcting previous memory to delete old file atomically
 - Call list_memory_stats periodically; proactively delete/merge stale or oversized files
