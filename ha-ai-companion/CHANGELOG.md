@@ -5,6 +5,18 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] - 2026-05-25
+
+### Added
+- **Critical memory tagging** — `save_memory(critical=true)` marks a file as always injected into every session, regardless of query relevance. Use for essential facts: home language, primary resident, key device aliases. `critical=false` demotes the file back to normal tier. `critical` omitted on an update preserves the existing status.
+
+### Changed
+- **Memory context budget** — reduced from 6,000 → 3,500 chars. Critical files get a guaranteed 1,500-char sub-budget; remaining 2,000 chars filled by `preference_`/`identity_` and query-gated files.
+- **Conditional Node-RED tools** — NR tool schemas (~3,000 chars) no longer added to the tools list unless `NODERED_API_URL` env var is set. Saves tokens on every turn for users not using Node-RED.
+- **History pruning** — `keep_blocks` reduced from 6 → 3. Older tool-result blocks pruned sooner; very long sessions trade off older context for lower cost.
+- **Topology reduction** — `_build_home_topology` max chars 2,000 → 1,500; per-area entity cap 8 → 5.
+- **Compact Node-RED suggestions JSON** — `indent=2` removed from `json.dumps` in `generate_suggestions`, reducing Node-RED flow JSON size.
+
 ## [1.8.4] - 2026-05-21
 
 ### Added

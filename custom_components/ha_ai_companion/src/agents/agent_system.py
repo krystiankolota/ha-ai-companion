@@ -293,6 +293,12 @@ Anti-bloat rules (enforced by system, also your responsibility):
 - Use `replaces` field when correcting previous memory to delete old file atomically
 - Call list_memory_stats periodically; proactively delete/merge stale or oversized files
 
+Critical memories (save_memory with critical=true):
+- Always injected into every session regardless of query.
+- Use only for facts without which the AI would behave incorrectly every session: home language (automations in Polish vs English), primary resident name/device mapping, device aliases that are meaningless without context.
+- Max 3-4 critical files — over-marking defeats the purpose; prefer specific files (preference_language.md) over generic ones.
+- Omit critical param to preserve a file's existing critical status. Pass critical=false to demote.
+
 Context injection:
 - Memory injected into this prompt at session start — NEVER reproduce or quote memory content in responses.
 - Call read_memories only for specific file not in injected context.
@@ -757,6 +763,10 @@ Managing production HA system. Safety and clarity are paramount."""
                 }
             }
 
+            # Node-RED tools only available when NODERED_API_URL is configured.
+            # Avoids sending ~3000 chars of NR tool schemas to users who don't use it.
+            _has_nodered = bool(os.getenv("NODERED_API_URL"))
+
             tools = [
                 {
                     "type": "function",
@@ -795,74 +805,6 @@ Managing production HA system. Safety and clarity are paramount."""
                 patch_key_tool,
                 patch_block_tool,
                 *dashboard_tools,
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_nodered_flows",
-                        "description": "Fetch Node-RED flows via the Node-RED Admin API (or file fallback). Always call this before add_nodered_flow or edit_nodered_tab — you need the tab IDs and existing node content. Also use to check what flows already exist before suggesting automations.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "add_nodered_flow",
-                        "description": (
-                            "Stage a NEW Node-RED flow tab for user approval. Non-destructive — existing flows are never touched. "
-                            "Always call get_nodered_flows first to confirm the flow doesn't already exist. "
-                            "Do NOT use this to modify an existing flow — use edit_nodered_tab for that."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "flows_json": {
-                                    "type": "string",
-                                    "description": "JSON array with one tab node plus its functional nodes. Example: [{\"type\":\"tab\",\"id\":\"uuid\",\"label\":\"My Flow\"},{\"type\":\"inject\",...}]"
-                                },
-                                "description": {
-                                    "type": "string",
-                                    "description": "Brief description of what this flow does, for the approval UI."
-                                }
-                            },
-                            "required": ["flows_json"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "edit_nodered_tab",
-                        "description": (
-                            "Stage an update to an EXISTING Node-RED flow tab for user approval. Only the specified tab is changed. "
-                            "Always call get_nodered_flows first to get the tab_id and the current nodes. "
-                            "Include ALL nodes for the tab in flows_json (not just the changed ones). "
-                            "Do NOT use this to create a new flow — use add_nodered_flow for that. "
-                            "NEVER use this to replace all flows — that operation is not available."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "tab_id": {
-                                    "type": "string",
-                                    "description": "The id of the tab to update. Obtained from get_nodered_flows."
-                                },
-                                "flows_json": {
-                                    "type": "string",
-                                    "description": "JSON array with the tab node plus ALL updated functional nodes for this tab."
-                                },
-                                "description": {
-                                    "type": "string",
-                                    "description": "Brief description of what changed, for the approval UI."
-                                }
-                            },
-                            "required": ["tab_id", "flows_json"]
-                        }
-                    }
-                },
                 {
                     "type": "function",
                     "function": {
@@ -927,6 +869,10 @@ Managing production HA system. Safety and clarity are paramount."""
                                     "type": "array",
                                     "items": {"type": "string"},
                                     "description": "Optional list of memory filenames this new entry supersedes (e.g. when the user corrects a preference). Those files are deleted atomically."
+                                },
+                                "critical": {
+                                    "type": "boolean",
+                                    "description": "Mark this file as critical — injected into every session regardless of query. Use sparingly for facts the AI must always know: home language, primary resident identity, device aliases that have no context without this memory. Omit to preserve the file's existing critical status. Pass false to demote a previously critical file."
                                 }
                             },
                             "required": ["filename", "content"]
@@ -1090,15 +1036,92 @@ Managing production HA system. Safety and clarity are paramount."""
                 },
             ]
 
+            # Conditionally add Node-RED tools when NODERED_API_URL is configured.
+            # Saves ~3000 chars of tool schema tokens per iteration for users without NR.
+            if _has_nodered:
+                tools.extend([
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_nodered_flows",
+                            "description": "Fetch Node-RED flows via the Node-RED Admin API (or file fallback). Always call this before add_nodered_flow or edit_nodered_tab — you need the tab IDs and existing node content. Also use to check what flows already exist before suggesting automations.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {},
+                                "required": []
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "add_nodered_flow",
+                            "description": (
+                                "Stage a NEW Node-RED flow tab for user approval. Non-destructive — existing flows are never touched. "
+                                "Always call get_nodered_flows first to confirm the flow doesn't already exist. "
+                                "Do NOT use this to modify an existing flow — use edit_nodered_tab for that."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "flows_json": {
+                                        "type": "string",
+                                        "description": "JSON array with one tab node plus its functional nodes. Example: [{\"type\":\"tab\",\"id\":\"uuid\",\"label\":\"My Flow\"},{\"type\":\"inject\",...}]"
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": "Brief description of what this flow does, for the approval UI."
+                                    }
+                                },
+                                "required": ["flows_json"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "edit_nodered_tab",
+                            "description": (
+                                "Stage an update to an EXISTING Node-RED flow tab for user approval. Only the specified tab is changed. "
+                                "Always call get_nodered_flows first to get the tab_id and the current nodes. "
+                                "Include ALL nodes for the tab in flows_json (not just the changed ones). "
+                                "Do NOT use this to create a new flow — use add_nodered_flow for that. "
+                                "NEVER use this to replace all flows — that operation is not available."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "tab_id": {
+                                        "type": "string",
+                                        "description": "The id of the tab to update. Obtained from get_nodered_flows."
+                                    },
+                                    "flows_json": {
+                                        "type": "string",
+                                        "description": "JSON array with the tab node plus ALL updated functional nodes for this tab."
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": "Brief description of what changed, for the approval UI."
+                                    }
+                                },
+                                "required": ["tab_id", "flows_json"]
+                            }
+                        }
+                    },
+                ])
+
             # Phase-gated tool sets (Unit 5 / P0-3):
             # Expose only read tools on the first iteration (before any file has been read).
             # Write tools (propose, patch, reload, Node-RED writes, dashboard edits, etc.)
             # become available once the model has gathered context (has_tool_results=True).
             _READ_TOOL_NAMES = {
-                "search_config_files", "get_entity_states", "get_nodered_flows",
+                "search_config_files", "get_entity_states",
                 "get_ha_issues", "list_dashboards", "search_past_sessions",
                 "read_memories", "list_memory_stats",
             }
+            # Include get_nodered_flows in read phase only when NR is configured
+            if _has_nodered:
+                _READ_TOOL_NAMES.add("get_nodered_flows")
             tools_read = [t for t in tools if t["function"]["name"] in _READ_TOOL_NAMES]
             tools_all = tools
 
@@ -1142,7 +1165,7 @@ Managing production HA system. Safety and clarity are paramount."""
                 # Prune old tool exchange blocks only in long conversations to keep context lean.
                 # Don't prune in short single-turn operations — AI needs file content it just read.
                 if iteration > 1 and len(messages) > 30:
-                    messages = self._prune_old_tool_messages(messages)
+                    messages = self._prune_old_tool_messages(messages, keep_blocks=3)
 
                 # Select client+model: config once tool results exist, suggestion before that.
                 has_tool_results = any(m.get("role") == "tool" for m in messages)
@@ -1739,13 +1762,13 @@ Managing production HA system. Safety and clarity are paramount."""
                 else:
                     unassigned_count += 1
 
-            # Format each area (max 8 entities shown per area to keep it compact)
-            MAX_CHARS = 2000
+            # Format each area (max 5 entities shown per area to keep it compact)
+            MAX_CHARS = 1500
             for aid, aname in areas.items():
                 bucket = area_buckets.get(aid, [])
                 if not bucket:
                     continue
-                shown = bucket[:8]
+                shown = bucket[:5]
                 rest = len(bucket) - len(shown)
                 line = f"**{aname}**: {', '.join(shown)}"
                 if rest:
@@ -1930,7 +1953,8 @@ Managing production HA system. Safety and clarity are paramount."""
                             "properties": {
                                 "filename": {"type": "string", "description": "Filename with category prefix (e.g. 'preference_lighting.md'). Only letters, numbers, hyphens and underscores kept; .md forced."},
                                 "content": {"type": "string", "description": "Full markdown content to store. Concise factual bullet points preferred."},
-                                "replaces": {"type": "array", "items": {"type": "string"}, "description": "Optional list of memory filenames this entry supersedes."}
+                                "replaces": {"type": "array", "items": {"type": "string"}, "description": "Optional list of memory filenames this entry supersedes."},
+                                "critical": {"type": "boolean", "description": "Mark as critical (always injected). Omit to preserve existing status. Pass false to demote."}
                             },
                             "required": ["filename", "content"]
                         }
@@ -2317,7 +2341,7 @@ Managing production HA system. Safety and clarity are paramount."""
                     await _emit("Loading Node-RED flows…")
                     nodered_result = await self.tools.get_nodered_flows()
                     if nodered_result.get("success"):
-                        nodered_text = json.dumps(nodered_result.get("flows", []), indent=2)
+                        nodered_text = json.dumps(nodered_result.get("flows", []))  # compact — indent=2 wastes ~30% tokens
                 except Exception:
                     pass
                 if nodered_text:
