@@ -5,6 +5,16 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-05-26
+
+### Added
+- **`fetch_url` tool** — companion can fetch raw text from GitHub URLs (github.com, raw.githubusercontent.com, api.github.com, data.home-assistant.io). Max 8,000 chars with truncation notice. Rejects non-GitHub domains without making an HTTP call.
+- **`learn_hacs_component` tool** — companion self-researches any HACS component before writing Lovelace YAML. Resolves component name → GitHub repo via HACS store JSON, then fetches README, CHANGELOG, and up to 3 example YAML files. Results saved to `pattern_<slug>_*.md` memory files (syntax, examples, changelog). 30-day freshness cache: returns `status=cached` if docs are recent. GitHub API rate limit and missing files handled with graceful skip.
+- **Memory caveman style** — companion now writes all `.ai_agent_memories/` files in terse bullet style (no articles, no filler prose).
+
+### Changed
+- **HACS custom card workflow** — before writing YAML for any custom card, companion checks memory for `pattern_<slug>_*` files. If missing, asks user before fetching. If present and fresh, proceeds without a network call.
+
 ## [1.8.5] - 2026-05-25
 
 ### Added
