@@ -236,6 +236,20 @@ Dashboard rules:
 - Delete: call delete_dashboard with url_path (cannot delete default dashboard).
 - Dashboard YAML must include at minimum 'title' and 'views' keys.
 
+Custom card components (HACS):
+- Before writing YAML for custom card, check memory for pattern_<slug>_*.md files.
+- If not found: ask user "I don't have <ComponentName> docs — fetch them?" then call learn_hacs_component.
+- Slug format: lowercase, hyphens only (bubble-card, mushroom, mini-graph-card).
+- If learn_hacs_component returns status=cached: proceed using existing memory files.
+- If user says "refresh docs for X": call learn_hacs_component again regardless of cache age.
+- After fetch: distill README + CHANGELOG + examples into 2-4 save_memory calls:
+    pattern_<slug>_syntax.md  — card types, required fields, config keys
+    pattern_<slug>_examples.md — 2-3 minimal YAML blocks
+    pattern_<slug>_changelog.md — breaking changes, deprecated fields (omit if no CHANGELOG)
+  Each file: ≤800 chars, bullet points only, caveman style (no articles, no filler).
+  Set critical=false on all pattern_ files.
+- If user provides GitHub URL: pass as github_url to learn_hacs_component.
+
 Helper entities:
 - Define input_number, input_boolean, input_text, input_select directly in configuration.yaml as YAML blocks. Never tell user to create them in UI.
 - After approved changes that add helpers or template sensors, call reload_config immediately. No restart needed.
@@ -491,6 +505,16 @@ Managing production HA system. Safety and clarity are paramount."""
             return await self.tools.set_ha_text_entity(**function_args)
         elif function_name == "schedule_ai_task":
             return await self.tools.schedule_ai_task(**function_args)
+        elif function_name == "fetch_url":
+            try:
+                return await asyncio.wait_for(self.tools.fetch_url(**function_args), timeout=30.0)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "fetch_url timed out after 30 seconds"}
+        elif function_name == "learn_hacs_component":
+            try:
+                return await asyncio.wait_for(self.tools.learn_hacs_component(**function_args), timeout=90.0)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "learn_hacs_component timed out after 90 seconds"}
         else:
             logger.error(f"Unknown tool requested: {function_name}")
             return {"success": False, "error": f"Unknown tool: {function_name}"}
@@ -945,6 +969,48 @@ Managing production HA system. Safety and clarity are paramount."""
                                 }
                             },
                             "required": ["query"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "fetch_url",
+                        "description": "Fetch raw text content from a GitHub URL. Restricted to github.com, raw.githubusercontent.com, api.github.com, data.home-assistant.io. Use for fetching README files, changelogs, or YAML examples from GitHub repos.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "url": {
+                                    "type": "string",
+                                    "description": "Full HTTPS URL to fetch. Must be a GitHub domain."
+                                },
+                                "max_chars": {
+                                    "type": "integer",
+                                    "description": "Max chars to return (default 4000, max 8000). Use higher for full READMEs."
+                                }
+                            },
+                            "required": ["url"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "learn_hacs_component",
+                        "description": "Fetch documentation for a HACS component (custom integration or Lovelace card) from its GitHub repo. Resolves the repo from the HACS default store. Returns README, CHANGELOG, and example YAML files. Call this before writing YAML for any custom card you don't have in memory.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Component display name (e.g. 'Bubble-Card', 'Mushroom'). Used for HACS store lookup."
+                                },
+                                "github_url": {
+                                    "type": "string",
+                                    "description": "Direct GitHub repo URL (e.g. 'https://github.com/Clooos/Bubble-Card'). Use when name lookup fails or user provides URL directly."
+                                }
+                            },
+                            "required": []
                         }
                     }
                 },
