@@ -1677,6 +1677,254 @@ class AgentTools:
             return {"success": False, "error": str(e), "sessions": []}
 
     # ------------------------------------------------------------------
+    # Web fetch tools
+    # ------------------------------------------------------------------
+
+    _FETCH_ALLOWED_DOMAINS = frozenset({
+        "raw.githubusercontent.com",
+        "github.com",
+        "api.github.com",
+        "data.home-assistant.io",
+    })
+
+    async def fetch_url(self, url: str, max_chars: int = 4000) -> Dict[str, Any]:
+        """
+        Fetch raw text content from a GitHub URL.
+
+        Restricted to: raw.githubusercontent.com, github.com, api.github.com,
+        data.home-assistant.io. Returns truncated text if content exceeds max_chars.
+
+        Args:
+            url: Full HTTPS URL. Must be from an allowed GitHub domain.
+            max_chars: Max chars to return (default 4000, max 8000).
+
+        Returns:
+            Dict with success, content (str), url, truncated (bool).
+        """
+        import aiohttp
+        from urllib.parse import urlparse
+
+        # Domain allowlist check — never make an HTTP call for disallowed domains
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+        except Exception:
+            return {"success": False, "error": "Invalid URL", "url": url}
+
+        if domain not in self._FETCH_ALLOWED_DOMAINS:
+            return {
+                "success": False,
+                "error": f"Domain '{domain}' not allowed. Only GitHub domains permitted.",
+                "url": url,
+            }
+
+        max_chars = min(max_chars, 8000)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                    allow_redirects=True,
+                ) as resp:
+                    content_type = resp.headers.get("Content-Type", "")
+                    if resp.status != 200:
+                        return {"success": False, "error": f"HTTP {resp.status}", "url": url}
+                    # Reject binary content
+                    if content_type and not any(
+                        t in content_type for t in ("text/", "application/json", "application/yaml", "application/xml")
+                    ) and "charset" not in content_type:
+                        return {"success": False, "error": "Non-text response", "url": url}
+                    text = await resp.text(encoding="utf-8", errors="replace")
+                    truncated = len(text) > max_chars
+                    if truncated:
+                        text = text[:max_chars] + f"\n[truncated — {len(text)} total chars]"
+                    return {"success": True, "content": text, "url": url, "truncated": truncated}
+        except aiohttp.ClientError as e:
+            return {"success": False, "error": str(e), "url": url}
+        except Exception as e:
+            logger.error(f"fetch_url error: {e}")
+            return {"success": False, "error": str(e), "url": url}
+
+    async def learn_hacs_component(
+        self,
+        name: str = None,
+        github_url: str = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch documentation for a HACS component from its GitHub repo.
+
+        Resolves the repo via HACS default store (integration + plugin stores).
+        Returns README, CHANGELOG, and example YAML/MD files for the companion
+        to distill into pattern_<slug>_*.md memory files.
+
+        Args:
+            name: Component display name (e.g. 'Bubble-Card', 'Mushroom').
+            github_url: Direct GitHub repo URL — skips HACS store lookup.
+
+        Returns:
+            Dict with status ('ok'/'cached'/'not_found'), slug, readme,
+            changelog, examples list, and repo_url.
+        """
+        import re as _re
+
+        if not name and not github_url:
+            return {"success": False, "error": "Provide name or github_url"}
+
+        # Build slug from name (or from github_url path as fallback)
+        if name:
+            slug = _re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+        else:
+            # Derive slug from last path component of github_url
+            slug = _re.sub(r'[^a-z0-9]+', '-', github_url.rstrip('/').split('/')[-1].lower()).strip('-')
+
+        # Step 1 — freshness check
+        if self.memory_manager:
+            try:
+                files = await self.memory_manager.list_files()
+                pattern_files = [f for f in files if f.startswith(f"pattern_{slug}_")]
+                if pattern_files:
+                    import time as _time
+                    mtimes = []
+                    for fname in pattern_files:
+                        fpath = self.memory_manager.memory_dir / fname
+                        if fpath.exists():
+                            mtimes.append(fpath.stat().st_mtime)
+                    if mtimes:
+                        age_days = (_time.time() - min(mtimes)) / 86400.0
+                        if age_days < 30:
+                            return {
+                                "status": "cached",
+                                "slug": slug,
+                                "files": pattern_files,
+                                "age_days": round(age_days, 1),
+                            }
+            except Exception as e:
+                logger.warning(f"learn_hacs_component freshness check error: {e}")
+
+        # Step 2 — HACS store lookup (resolve name → github_url)
+        if name and not github_url:
+            # HACS default store JSON endpoints
+            HACS_STORE_URLS = [
+                "https://data.home-assistant.io/custom_components.json",
+                "https://raw.githubusercontent.com/hacs/default/main/integration",
+                "https://raw.githubusercontent.com/hacs/default/main/plugin",
+            ]
+            # Try the data.home-assistant.io combined store first (HACS v2+)
+            store_result = await self.fetch_url(
+                "https://data.home-assistant.io/custom_components.json", max_chars=8000
+            )
+            full_name = None
+            if store_result.get("success"):
+                import json as _json
+                try:
+                    store_data = _json.loads(store_result["content"])
+                    # store_data may be a list of dicts or a dict with 'integration'/'plugin' keys
+                    entries = []
+                    if isinstance(store_data, list):
+                        entries = store_data
+                    elif isinstance(store_data, dict):
+                        for key in ("integration", "plugin", "integrations", "plugins"):
+                            if key in store_data:
+                                v = store_data[key]
+                                if isinstance(v, list):
+                                    entries.extend(v)
+                    for entry in entries:
+                        entry_name = (entry.get("full_name") or entry.get("name") or "").lower()
+                        if slug in entry_name or name.lower() in entry_name:
+                            full_name = entry.get("full_name") or entry.get("name")
+                            break
+                except Exception:
+                    pass
+
+            # Fallback: try raw plugin list from hacs/default repo
+            if not full_name:
+                for store_url in [
+                    "https://raw.githubusercontent.com/hacs/default/main/plugin",
+                    "https://raw.githubusercontent.com/hacs/default/main/integration",
+                ]:
+                    res = await self.fetch_url(store_url, max_chars=8000)
+                    if res.get("success"):
+                        for line in res["content"].splitlines():
+                            line = line.strip()
+                            if line and slug in line.lower().replace("/", "-").replace("_", "-"):
+                                full_name = line
+                                break
+                    if full_name:
+                        break
+
+            if not full_name:
+                return {
+                    "status": "not_found",
+                    "slug": slug,
+                    "message": "Component not found in HACS store. Provide github_url directly.",
+                }
+            github_url = f"https://github.com/{full_name}"
+
+        # Step 3 — parse owner/repo from github_url
+        import re as _re2
+        m = _re2.search(r'github\.com/([^/]+/[^/]+?)(?:\.git|/?$)', github_url)
+        if not m:
+            return {"success": False, "error": f"Cannot parse owner/repo from github_url: {github_url}"}
+        owner_repo = m.group(1).rstrip('/')
+        raw_base = f"https://raw.githubusercontent.com/{owner_repo}"
+
+        # Fetch README
+        readme = None
+        for branch in ("main", "master"):
+            res = await self.fetch_url(f"{raw_base}/{branch}/README.md", max_chars=6000)
+            if res.get("success"):
+                readme = res["content"]
+                break
+
+        # Fetch CHANGELOG (try common filenames)
+        changelog = None
+        for branch in ("main", "master"):
+            for fname in ("CHANGELOG.md", "CHANGELOG", "CHANGES.md", "RELEASES.md"):
+                res = await self.fetch_url(f"{raw_base}/{branch}/{fname}", max_chars=4000)
+                if res.get("success"):
+                    changelog = res["content"]
+                    break
+            if changelog:
+                break
+
+        # Fetch examples dir (graceful skip on any error)
+        examples = []
+        try:
+            api_url = f"https://api.github.com/repos/{owner_repo}/contents/examples"
+            dir_res = await self.fetch_url(api_url, max_chars=8000)
+            if dir_res.get("success"):
+                import json as _json2
+                dir_entries = _json2.loads(dir_res["content"])
+                if isinstance(dir_entries, list):
+                    # Pick up to 3 yaml/md files, smallest first
+                    yaml_files = [
+                        e for e in dir_entries
+                        if isinstance(e, dict)
+                        and e.get("type") == "file"
+                        and any(e.get("name", "").endswith(ext) for ext in (".yaml", ".yml", ".md"))
+                    ]
+                    yaml_files.sort(key=lambda e: e.get("size", 0))
+                    for entry in yaml_files[:3]:
+                        file_res = await self.fetch_url(entry["download_url"], max_chars=2000)
+                        if file_res.get("success"):
+                            examples.append({
+                                "filename": entry["name"],
+                                "content": file_res["content"],
+                            })
+        except Exception as e:
+            logger.debug(f"learn_hacs_component examples fetch skipped: {e}")
+
+        return {
+            "status": "ok",
+            "slug": slug,
+            "repo_url": github_url,
+            "readme": readme,
+            "changelog": changelog,
+            "examples": examples,
+        }
+
+    # ------------------------------------------------------------------
     # Dashboard management tools
     # ------------------------------------------------------------------
 
