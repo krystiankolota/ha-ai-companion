@@ -9,6 +9,8 @@ import {
 } from '../lib/api'
 import { generateSessionId } from '../lib/utils'
 
+const LAST_SESSION_KEY = 'ha_ai_last_session_id'
+
 // Helper: find tool name from history by tool_call_id
 function findToolName(messages, toolCallId) {
   for (const m of messages) {
@@ -63,12 +65,36 @@ function buildDisplayMessages(history) {
 export function useSessions() {
   const { state, dispatch } = useAppContext()
   const retryRef = useRef(false)
+  const hasRestoredRef = useRef(false)
 
   const loadSessions = useCallback(async (retryOnEmpty = true) => {
     try {
       const data = await getSessions()
       const sessions = data.sessions || data
       dispatch({ type: Actions.SET_SESSIONS, payload: sessions })
+
+      // Auto-restore last session on first load (page reload / initial mount)
+      if (!hasRestoredRef.current && sessions && sessions.length > 0) {
+        hasRestoredRef.current = true
+        const lastId = localStorage.getItem(LAST_SESSION_KEY)
+        if (lastId && sessions.some(s => s.id === lastId)) {
+          try {
+            const session = await getSession(lastId)
+            const messages = session.messages || []
+            dispatch({
+              type: Actions.SELECT_SESSION,
+              payload: {
+                id: lastId,
+                messages,
+                displayMessages: buildDisplayMessages(messages),
+              },
+            })
+          } catch (e) {
+            console.error('Failed to restore last session:', e)
+          }
+        }
+      }
+
       if (retryOnEmpty && (!sessions || sessions.length === 0) && !retryRef.current) {
         retryRef.current = true
         setTimeout(() => {
@@ -89,6 +115,7 @@ export function useSessions() {
         ? String(firstUser.content).substring(0, 60).trim()
         : 'New conversation'
       await apiSaveSession(sessionId, title, conversationHistory)
+      localStorage.setItem(LAST_SESSION_KEY, sessionId)
       await loadSessions(false)
     } catch (e) {
       console.error('Auto-save error:', e)
@@ -132,6 +159,7 @@ export function useSessions() {
           ],
         },
       })
+      localStorage.setItem(LAST_SESSION_KEY, sessionId)
       dispatch({ type: Actions.CLOSE_SIDEBAR })
       await loadSessions(false)
     } catch (e) {
