@@ -5,6 +5,25 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.8] - 2026-05-27
+
+### Added
+- **Copy button on code blocks** — every code block in assistant messages now has a top-right Copy button; turns green on success, falls back to `execCommand` for Safari.
+
+### Fixed
+- **Session lost on page reload** — last active session ID now persisted in `localStorage`; on reload the app auto-restores it instead of starting a blank chat.
+
+## [1.9.7] - 2026-05-27
+
+### Fixed
+- **`edit_nodered_tab` fails with wrong parameter names** — model sometimes calls the tool using `new_nodes` or `nodes` instead of the schema-defined `flows_json`, causing `unexpected keyword argument` errors and two wasted retry iterations (expensive output tokens). Dispatch layer now normalises `new_nodes`, `nodes`, `updated_nodes`, `flow_nodes` → `flows_json` before the call. Same guard added to `add_nodered_flow`. List inputs are auto-serialised to JSON string.
+
+## [1.9.6] - 2026-05-26
+
+### Fixed
+- **fetch_url infinite loop** — volume guards appended warning text to tool results but never blocked execution; LLM ignored text and kept calling. Now a pre-dispatch guard intercepts `fetch_url` / `learn_hacs_component` BEFORE the HTTP call: blocks if same exact args called ≥2 times, or same function called ≥3 times total per turn. Blocked calls return `{"blocked": true}` and never trigger retry directives.
+- **Verbose "Wait..." reasoning flood** — LLM wrote thousands of characters of "Wait, let me check..." chain-of-thought before tool calls, streaming it all to the user. Added system prompt VERBOSITY RULE (≤1 sentence before tool calls) and a code guard: if response text exceeds 1500 chars before tool calls, injects a correction nudge into the first tool result.
+
 ## [1.9.5] - 2026-05-26
 
 ### Fixed
