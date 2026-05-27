@@ -499,6 +499,15 @@ Managing production HA system. Safety and clarity are paramount."""
                         "and to understand the existing flow structure."
                     ),
                 }
+            # Normalize alternative param names Gemini sometimes uses
+            import json as _json
+            for alt in ("nodes", "flow_nodes", "new_nodes", "flow"):
+                if alt in function_args and "flows_json" not in function_args:
+                    function_args["flows_json"] = function_args.pop(alt)
+                    logger.debug(f"add_nodered_flow: normalized '{alt}' -> 'flows_json'")
+            if isinstance(function_args.get("flows_json"), list):
+                function_args["flows_json"] = _json.dumps(function_args["flows_json"])
+                logger.debug("add_nodered_flow: serialized list flows_json to JSON string")
             return await self.tools.add_nodered_flow(**function_args)
         elif function_name == "edit_nodered_tab":
             if turn_state is not None and not turn_state.get("has_read", False):
@@ -509,6 +518,16 @@ Managing production HA system. Safety and clarity are paramount."""
                         "before editing a tab."
                     ),
                 }
+            # Normalize alternative param names Gemini sometimes uses
+            import json as _json
+            for alt in ("new_nodes", "nodes", "updated_nodes", "flow_nodes"):
+                if alt in function_args and "flows_json" not in function_args:
+                    function_args["flows_json"] = function_args.pop(alt)
+                    logger.debug(f"edit_nodered_tab: normalized '{alt}' -> 'flows_json'")
+            # If LLM passed a list instead of JSON string, serialize it
+            if isinstance(function_args.get("flows_json"), list):
+                function_args["flows_json"] = _json.dumps(function_args["flows_json"])
+                logger.debug("edit_nodered_tab: serialized list flows_json to JSON string")
             return await self.tools.edit_nodered_tab(**function_args)
         elif function_name == "get_entity_states":
             try:
