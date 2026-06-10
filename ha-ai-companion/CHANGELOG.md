@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.9] - 2026-06-10
+
+### Fixed
+- **YAML-mode dashboard save fails with "Not supported"** — dashboards configured in YAML mode reject WebSocket writes; `_write_lovelace_yaml` now falls back to writing the file directly to `/homeassistant/lovelace/{url_path}.yaml` when HA returns this error.
+
 ## [1.9.8] - 2026-05-27
 
 ### Added

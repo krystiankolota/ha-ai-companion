@@ -520,8 +520,23 @@ class ConfigurationManager:
 
         try:
             await ws_client.connect()
-            await ws_client.save_lovelace_config(config, url_path)
-            logger.info(f"Updated Lovelace config ({label}) via WebSocket")
+            try:
+                await ws_client.save_lovelace_config(config, url_path)
+                logger.info(f"Updated Lovelace config ({label}) via WebSocket")
+            except Exception as e:
+                if "Not supported" in str(e):
+                    # YAML-mode dashboard — HA rejects WebSocket writes; write file directly
+                    logger.info(f"WebSocket save not supported for '{label}' (YAML mode) — writing file directly")
+                    if url_path is None:
+                        lv_file = self.config_dir / "lovelace.yaml"
+                    else:
+                        lv_file = self.config_dir / "lovelace" / f"{url_path}.yaml"
+                    lv_file.parent.mkdir(parents=True, exist_ok=True)
+                    with open(lv_file, 'w', encoding='utf-8') as f:
+                        f.write(yaml_content)
+                    logger.info(f"Wrote Lovelace config ({label}) directly to {lv_file}")
+                else:
+                    raise
         finally:
             await ws_client.close()
 
