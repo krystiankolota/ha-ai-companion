@@ -14,10 +14,17 @@ from ..config import ConfigurationManager, ConfigurationError
 from ..ha.ha_websocket import (
     get_lovelace_config_as_yaml,
     get_repairs_ws,
+    get_system_log_ws,
+    get_lovelace_resources_ws,
     list_lovelace_dashboards_ws,
     create_lovelace_dashboard_ws,
     delete_lovelace_dashboard_ws,
     reload_homeassistant_config,
+)
+from .card_schemas import (
+    validate_lovelace_cards,
+    format_system_log_entries,
+    format_lovelace_resources,
 )
 
 if TYPE_CHECKING:
@@ -1048,6 +1055,30 @@ class AgentTools:
                             errors.append({
                                 "file_path": file_path,
                                 "error": f"Invalid YAML in new_content: {str(e)}"
+                            })
+                            continue
+
+                    # Custom-card schema guard for Lovelace files (blocking).
+                    # LLM-invented card schemas fail only as browser JS errors the
+                    # backend can't see — block them here with a self-correction hint.
+                    _is_lovelace = file_path == 'lovelace.yaml' or file_path.startswith('lovelace/')
+                    if _is_lovelace and new_content.strip():
+                        try:
+                            import json as _json
+                            _parsed = (_json.loads(new_content) if file_path.endswith('.json')
+                                       else yaml.load(StringIO(new_content)))
+                            _card_violations = validate_lovelace_cards(_parsed)
+                        except Exception as _cs_err:
+                            _card_violations = []
+                            logger.debug(f"Card schema check skipped for {file_path}: {_cs_err}")
+                        if _card_violations:
+                            errors.append({
+                                "file_path": file_path,
+                                "error": (
+                                    "CARD SCHEMA ERROR — config would render blank in the browser. "
+                                    "Fix each violation exactly as hinted, then re-propose:\n- "
+                                    + "\n- ".join(_card_violations)
+                                )
                             })
                             continue
 
@@ -2794,6 +2825,74 @@ class AgentTools:
             pass
 
         return result
+
+    async def get_ha_error_log(self) -> Dict[str, Any]:
+        """
+        Get Home Assistant core errors and warnings (system_log integration).
+
+        Structured + deduplicated by HA — logger name, message, occurrence count.
+        Use to diagnose integration failures, config errors, broken entities.
+        """
+        try:
+            entries: List[Dict[str, Any]] = []
+            if self.config_manager.hass is not None:
+                # Custom component mode: read system_log records directly
+                handler = self.config_manager.hass.data.get("system_log")
+                records = getattr(handler, "records", None)
+                if records is not None:
+                    entries = [
+                        r.to_dict() if hasattr(r, "to_dict") else dict(r)
+                        for r in records.values()
+                    ]
+                else:
+                    return {"success": False, "error": "system_log integration not available"}
+            else:
+                supervisor_token = os.getenv('SUPERVISOR_TOKEN')
+                if not supervisor_token:
+                    return {"success": False, "error": "No SUPERVISOR_TOKEN — error log requires add-on mode"}
+                entries = await get_system_log_ws("ws://supervisor/core/websocket", supervisor_token)
+
+            lines = format_system_log_entries(entries)
+            errors = sum(1 for e in entries if e.get("level") == "ERROR")
+            return {
+                "success": True,
+                "total": len(entries),
+                "error_count": errors,
+                "warning_count": len(entries) - errors,
+                "entries": lines,
+            }
+        except Exception as e:
+            logger.error(f"get_ha_error_log error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_lovelace_resources(self) -> Dict[str, Any]:
+        """
+        List registered Lovelace frontend resources (custom card JS modules).
+
+        Call before using any custom: card type to confirm its JS is installed.
+        Returns loaded_cards slugs (e.g. 'bubble-card', 'mushroom').
+        """
+        try:
+            resources: List[Dict[str, Any]] = []
+            if self.config_manager.hass is not None:
+                lovelace_data = self.config_manager.hass.data.get("lovelace")
+                coll = getattr(lovelace_data, "resources", None)
+                if coll is not None and hasattr(coll, "async_items"):
+                    resources = [dict(item) for item in coll.async_items()]
+                else:
+                    return {"success": False, "error": "Lovelace resources not available"}
+            else:
+                supervisor_token = os.getenv('SUPERVISOR_TOKEN')
+                if not supervisor_token:
+                    return {"success": False, "error": "No SUPERVISOR_TOKEN — resources require add-on mode"}
+                resources = await get_lovelace_resources_ws("ws://supervisor/core/websocket", supervisor_token)
+
+            result = format_lovelace_resources(resources)
+            result["success"] = True
+            return result
+        except Exception as e:
+            logger.error(f"get_lovelace_resources error: {e}")
+            return {"success": False, "error": str(e)}
 
     async def reload_config(self) -> Dict[str, Any]:
         """

@@ -266,6 +266,39 @@ class HomeAssistantWebSocket:
             logger.warning(f"Could not retrieve repair issues: {e}")
             return []
 
+    async def get_system_log(self) -> List[Dict[str, Any]]:
+        """
+        Get Home Assistant core error/warning log entries (system_log integration).
+
+        Returns:
+            List of log entry dicts with name, message, level, source, timestamp,
+            count, first_occurred. Deduplicated by HA — no journal noise.
+        """
+        try:
+            result = await self.call("system_log/list")
+            entries = result or []
+            logger.info(f"Retrieved {len(entries)} system log entr(ies)")
+            return entries
+        except Exception as e:
+            logger.warning(f"Could not retrieve system log: {e}")
+            return []
+
+    async def get_lovelace_resources(self) -> List[Dict[str, Any]]:
+        """
+        Get registered Lovelace frontend resources (custom card JS modules).
+
+        Returns:
+            List of resource dicts with id, url, type.
+        """
+        try:
+            result = await self.call("lovelace/resources")
+            resources = result or []
+            logger.info(f"Retrieved {len(resources)} Lovelace resource(s)")
+            return resources
+        except Exception as e:
+            logger.warning(f"Could not retrieve Lovelace resources: {e}")
+            return []
+
     async def reload_config(self) -> None:
         """
         Reload Home Assistant configuration (calls homeassistant.reload_all service).
@@ -692,6 +725,50 @@ async def get_repairs_ws(url: str, token: str, include_ignored: bool = False) ->
         return await ws_client.get_repairs(include_ignored)
     except Exception as e:
         logger.warning(f"Could not retrieve repairs: {e}")
+        return []
+    finally:
+        await ws_client.close()
+
+
+async def get_system_log_ws(url: str, token: str) -> List[Dict[str, Any]]:
+    """
+    Helper function to get Home Assistant system log entries.
+
+    Args:
+        url: WebSocket URL
+        token: Access token
+
+    Returns:
+        List of system log entry dicts
+    """
+    ws_client = HomeAssistantWebSocket(url, token)
+    try:
+        await ws_client.connect()
+        return await ws_client.get_system_log()
+    except Exception as e:
+        logger.warning(f"Could not retrieve system log: {e}")
+        return []
+    finally:
+        await ws_client.close()
+
+
+async def get_lovelace_resources_ws(url: str, token: str) -> List[Dict[str, Any]]:
+    """
+    Helper function to get registered Lovelace frontend resources.
+
+    Args:
+        url: WebSocket URL
+        token: Access token
+
+    Returns:
+        List of resource dicts with url, type
+    """
+    ws_client = HomeAssistantWebSocket(url, token)
+    try:
+        await ws_client.connect()
+        return await ws_client.get_lovelace_resources()
+    except Exception as e:
+        logger.warning(f"Could not retrieve Lovelace resources: {e}")
         return []
     finally:
         await ws_client.close()

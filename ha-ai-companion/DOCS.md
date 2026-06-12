@@ -741,6 +741,7 @@ All conversations are saved automatically to the server. Use the sidebar to swit
 - **Clear all conversations** — button in the sidebar footer: analyzes all sessions for memorable facts (saves them to memory), then deletes all sessions
 - **Max sessions** — configure `max_sessions` (default 50); oldest sessions are pruned automatically when the limit is exceeded
 - **Past session search** — the agent automatically searches previous sessions when you reference prior work ("that automation we made last week"); no action required from you
+- **Runs survive tab switches** — if you switch HA panels or close the tab while the AI is working, the run continues server-side. Returning to the Companion resumes the live stream; if the run finished while you were away, the result is saved into the session automatically.
 
 ### Log Viewer
 

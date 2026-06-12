@@ -5,6 +5,20 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-06-12
+
+### Added
+- **Sessions survive tab switches** — agent execution is now decoupled from the WebSocket connection (run registry with sequence-numbered event replay). Switching HA panels or closing the tab mid-response no longer kills the run: the agent keeps working server-side, the UI auto-resumes the stream on return, and if you never return the result is persisted to the session file.
+- **`get_ha_error_log` tool** — the AI can now read Home Assistant core errors and warnings (`system_log`, structured and deduplicated) to diagnose broken integrations, failed config, and entity errors.
+- **`get_lovelace_resources` tool** — lists installed custom card JS modules so the AI verifies a card (e.g. Bubble Card) is actually installed before using it in a dashboard.
+- **Custom-card schema guard** — `propose_config_changes` now validates Bubble Card structures (required `card_type`, numbered-prop `horizontal-buttons-stack`, pop-up `hash`) and blocks invented schemas with a correction hint before they can render a blank dashboard.
+
+### Changed
+- **Storage-mode dashboards only** — system prompt now forbids adding `lovelace:` entries to `configuration.yaml`; new dashboards are always created UI-editable via `create_dashboard`, with migration guidance for legacy YAML-mode dashboards. New dashboards prefer the responsive `sections` layout.
+
+### Fixed
+- **Double-fault on disconnected WebSocket** — error handler no longer raises `Cannot call "send" once a close message has been sent` when the client is already gone.
+
 ## [1.9.9] - 2026-06-10
 
 ### Fixed

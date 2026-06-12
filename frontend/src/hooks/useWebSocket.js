@@ -67,7 +67,37 @@ function extractOriginalContents(history, fileChanges) {
   return originalContents
 }
 
-export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
+// Marker for a run that may still be executing server-side. Survives the HA
+// panel iframe being destroyed (tab switch) so the next mount can resume.
+const ACTIVE_RUN_KEY = 'ha_ai_active_run'
+const ACTIVE_RUN_MAX_AGE_MS = 15 * 60 * 1000
+
+function readRunMarker() {
+  try {
+    const raw = localStorage.getItem(ACTIVE_RUN_KEY)
+    if (!raw) return null
+    const marker = JSON.parse(raw)
+    if (!marker.sessionId || Date.now() - (marker.ts || 0) > ACTIVE_RUN_MAX_AGE_MS) {
+      localStorage.removeItem(ACTIVE_RUN_KEY)
+      return null
+    }
+    return marker
+  } catch {
+    return null
+  }
+}
+
+function writeRunMarker(sessionId, lastSeq) {
+  try {
+    localStorage.setItem(ACTIVE_RUN_KEY, JSON.stringify({ sessionId, lastSeq, ts: Date.now() }))
+  } catch { /* storage full/blocked — resume degrades gracefully */ }
+}
+
+function clearRunMarker() {
+  try { localStorage.removeItem(ACTIVE_RUN_KEY) } catch {}
+}
+
+export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSessionId) {
   const wsRef = useRef(null)
   const loadingIndicatorIdRef = useRef(null)
   const toolCallArgumentsRef = useRef({})
@@ -77,6 +107,8 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
   const reconnectTimerRef = useRef(null)
   const connectRef = useRef(null) // forward ref to break circular dependency
   const handleMessageRef = useRef(null) // forward ref to break circular dependency
+  const lastSeqRef = useRef(-1)          // highest event seq seen for the active run
+  const activeRunRef = useRef(null)      // session_id of the in-flight run, or null
   const [isConnected, setIsConnected] = useState(false)
 
   const addLoadingIndicator = useCallback((status = '') => {
@@ -123,6 +155,20 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
       console.log('WebSocket connected')
       reconnectAttemptsRef.current = 0
       setIsConnected(true)
+
+      // A run was in flight when the connection dropped — resume it
+      if (activeRunRef.current) {
+        console.log(`Resuming run for session ${activeRunRef.current} from seq ${lastSeqRef.current}`)
+        try {
+          ws.send(JSON.stringify({
+            type: 'resume',
+            session_id: activeRunRef.current,
+            last_seq: lastSeqRef.current,
+          }))
+        } catch (e) {
+          console.error('Resume send failed:', e)
+        }
+      }
     }
 
     ws.onerror = (error) => {
@@ -138,18 +184,24 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
       wsRef.current = null
       setIsConnected(false)
 
-      // If we were mid-response, clean up so the UI doesn't freeze
-      if (loadingIndicatorIdRef.current) {
-        removeLoadingIndicator()
-        dispatch({
-          type: Actions.ADD_DISPLAY_MESSAGE,
-          payload: {
-            type: 'system',
-            content: '⚠️ Connection lost. Your message may not have been processed — please try again.',
-          },
-        })
+      if (activeRunRef.current) {
+        // Run keeps executing server-side — keep the UI in "working" state
+        // and let the reconnect + resume flow pick the stream back up.
+        dispatch({ type: Actions.SET_LOADING, payload: 'Connection lost — AI still working, reconnecting…' })
+      } else {
+        // If we were mid-response, clean up so the UI doesn't freeze
+        if (loadingIndicatorIdRef.current) {
+          removeLoadingIndicator()
+          dispatch({
+            type: Actions.ADD_DISPLAY_MESSAGE,
+            payload: {
+              type: 'system',
+              content: '⚠️ Connection lost. Your message may not have been processed — please try again.',
+            },
+          })
+        }
+        dispatch({ type: Actions.SET_SENDING, payload: false })
       }
-      dispatch({ type: Actions.SET_SENDING, payload: false })
 
       if (typeof onAutoSave === 'function') {
         onAutoSave()
@@ -176,7 +228,39 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
 
     console.log('WebSocket event:', eventType)
 
+    // Sequence tracking: drop duplicates from replay overlap, advance the
+    // resume cursor, and persist the marker (skipped for token events — too
+    // chatty for localStorage; message_complete carries the full text anyway).
+    if (typeof message.seq === 'number') {
+      if (message.seq <= lastSeqRef.current) return
+      lastSeqRef.current = message.seq
+      if (activeRunRef.current && eventType !== 'token') {
+        writeRunMarker(activeRunRef.current, message.seq)
+      }
+    }
+
     try {
+      if (eventType === 'resumed') {
+        console.log('Run resumed:', data)
+        if (!loadingIndicatorIdRef.current) addLoadingIndicator('Resumed — AI is working…')
+        return
+      }
+      if (eventType === 'resume_failed') {
+        console.warn('Resume failed:', data)
+        clearRunMarker()
+        activeRunRef.current = null
+        lastSeqRef.current = -1
+        removeLoadingIndicator()
+        dispatch({ type: Actions.SET_SENDING, payload: false })
+        dispatch({
+          type: Actions.ADD_DISPLAY_MESSAGE,
+          payload: {
+            type: 'system',
+            content: '⚠️ The AI finished while you were away. Reopen this conversation from the sidebar to see the result.',
+          },
+        })
+        return
+      }
       if (eventType === 'token') {
         // Remove loading indicator on first token
         if (loadingIndicatorIdRef.current) {
@@ -202,7 +286,21 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
         // Finalize streaming message
         if (streamingIdRef.current) {
           dispatch({ type: Actions.COMPLETE_STREAMING })
+          // Then replace with the authoritative full text — heals token gaps after resume
+          // (COMPLETE_STREAMING writes accumulated tokens, which may be partial)
+          if (data.message?.content) {
+            dispatch({
+              type: Actions.UPDATE_DISPLAY_MESSAGE,
+              payload: { id: streamingIdRef.current, updates: { content: data.message.content } },
+            })
+          }
           streamingIdRef.current = null
+        } else if (data.message?.content) {
+          // Resumed past all token events — render the message directly
+          dispatch({
+            type: Actions.ADD_DISPLAY_MESSAGE,
+            payload: { type: 'assistant', content: data.message.content, isStreaming: false },
+          })
         }
 
         // If still sending (more tool calls coming), add loading indicator
@@ -425,6 +523,9 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
 
         removeLoadingIndicator()
         breadcrumbsMsgIdRef.current = null  // turn is over — next tool_call starts fresh
+        activeRunRef.current = null
+        lastSeqRef.current = -1
+        clearRunMarker()
         dispatch({ type: Actions.SET_SENDING, payload: false })
 
         if (typeof onAutoSave === 'function') {
@@ -437,6 +538,9 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
           payload: { type: 'system', content: `❌ Error: ${data.error}` },
         })
         removeLoadingIndicator()
+        activeRunRef.current = null
+        lastSeqRef.current = -1
+        clearRunMarker()
         dispatch({ type: Actions.SET_SENDING, payload: false })
       }
     } catch (e) {
@@ -487,22 +591,62 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
 
       // Send — filter system_info messages (display-only, never sent to LLM)
       const history = getConversationHistory()
+      const sessionId = typeof getSessionId === 'function' ? getSessionId() : null
+      if (sessionId) {
+        activeRunRef.current = sessionId
+        lastSeqRef.current = -1
+        writeRunMarker(sessionId, -1)
+      }
       ws.send(JSON.stringify({
         type: 'chat',
         message: text,
+        session_id: sessionId,
         conversation_history: history.slice(0, -1).filter(m => m.role !== 'system_info'),
       }))
 
     } catch (error) {
       console.error('WebSocket send error:', error)
       removeLoadingIndicator()
+      activeRunRef.current = null
+      clearRunMarker()
       dispatch({
         type: Actions.ADD_DISPLAY_MESSAGE,
         payload: { type: 'system', content: `❌ Error: ${error.message}` },
       })
       dispatch({ type: Actions.SET_SENDING, payload: false })
     }
-  }, [dispatch, connect, addLoadingIndicator, removeLoadingIndicator, getConversationHistory])
+  }, [dispatch, connect, addLoadingIndicator, removeLoadingIndicator, getConversationHistory, getSessionId])
+
+  // Resume a run that was in flight when the page (HA panel iframe) was destroyed.
+  // Call once on mount, after the last session has been restored.
+  const tryResume = useCallback((currentSessionId) => {
+    const marker = readRunMarker()
+    if (!marker) return false
+    if (currentSessionId && marker.sessionId !== currentSessionId) {
+      // Restored a different session than the one with the active run — skip
+      clearRunMarker()
+      return false
+    }
+    activeRunRef.current = marker.sessionId
+    lastSeqRef.current = typeof marker.lastSeq === 'number' ? marker.lastSeq : -1
+    dispatch({ type: Actions.SET_SENDING, payload: true })
+    addLoadingIndicator('Resuming — AI was still working…')
+    const ws = connect()
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Socket was already open before the marker refs were set — onopen
+      // won't fire again, send the resume directly.
+      try {
+        ws.send(JSON.stringify({
+          type: 'resume',
+          session_id: activeRunRef.current,
+          last_seq: lastSeqRef.current,
+        }))
+      } catch (e) {
+        console.error('Resume send failed:', e)
+      }
+    }
+    return true
+  }, [dispatch, addLoadingIndicator, connect])
 
   const resetWS = useCallback(() => {
     if (wsRef.current) {
@@ -519,6 +663,10 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
     removeLoadingIndicator()
     streamingIdRef.current = null
     toolCallArgumentsRef.current = {}
+    // Detach from the run view — the run itself keeps executing server-side
+    // and its result lands in the session file via the backend persister.
+    activeRunRef.current = null
+    lastSeqRef.current = -1
     dispatch({ type: Actions.SET_SENDING, payload: false })
     setIsConnected(false)
   }, [dispatch, removeLoadingIndicator])
@@ -527,5 +675,5 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave) {
   connectRef.current = connect
   handleMessageRef.current = handleMessage
 
-  return { sendMessage, resetWS, isConnected, connect }
+  return { sendMessage, resetWS, isConnected, connect, tryResume }
 }

@@ -31,8 +31,9 @@ function AppInner() {
   const stateRef = useRef(state)
   stateRef.current = state
 
-  // Stable getter for conversation history (avoids stale closure in WS hook)
+  // Stable getters (avoid stale closures in WS hook)
   const getConversationHistory = useCallback(() => stateRef.current.conversationHistory, [])
+  const getSessionId = useCallback(() => stateRef.current.currentSessionId, [])
 
   // Auto-save implementation
   const autoSaveFn = useCallback(async () => {
@@ -55,15 +56,20 @@ function AppInner() {
 
   const { loadSessions, deleteSession, switchSession, newChat } = useSessions()
 
-  const { sendMessage, resetWS, connect } = useWebSocket(
+  const { sendMessage, resetWS, connect, tryResume } = useWebSocket(
     dispatch,
     getConversationHistory,
     debouncedAutoSave,
+    getSessionId,
   )
 
   // Initial setup
   useEffect(() => {
-    loadSessions()
+    loadSessions().then(() => {
+      // A run may still be executing server-side from before this mount
+      // (tab switch destroys the HA panel iframe) — resume its stream.
+      tryResume(stateRef.current.currentSessionId)
+    })
     connect()
 
     fetch('health')

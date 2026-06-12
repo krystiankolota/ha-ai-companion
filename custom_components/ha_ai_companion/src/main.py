@@ -17,8 +17,9 @@ from .agents import AgentSystem
 from .memory import MemoryManager
 from .conversations import ConversationManager
 from .tasks import TaskManager
+from .runs import RunRegistry
 
-version = "1.9.9"
+version = "1.10.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -42,6 +43,9 @@ conversation_manager: Optional[ConversationManager] = None
 
 # Scheduled AI task manager
 task_manager: Optional[TaskManager] = None
+
+# Agent run registry — keeps runs alive across WebSocket disconnects
+run_registry = RunRegistry()
 
 # Phase 2: Pydantic models for API requests
 class RestoreBackupRequest(BaseModel):
@@ -260,56 +264,173 @@ async def chat_websocket(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket connection accepted")
 
+    pump_task: Optional[asyncio.Task] = None
+    subscribed: Optional[tuple] = None  # (run_key, queue)
+
+    async def send_safe(message) -> bool:
+        """Send or report dead socket — never raise (fixes double-fault on closed WS)."""
+        try:
+            await websocket.send_json(message)
+            return True
+        except Exception:
+            return False
+
+    async def detach():
+        nonlocal pump_task, subscribed
+        if pump_task:
+            pump_task.cancel()
+            try:
+                await pump_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            pump_task = None
+        if subscribed:
+            await run_registry.unsubscribe(subscribed[0], subscribed[1])
+            subscribed = None
+
+    async def pump(run_key: str, replay: list, queue: Optional[asyncio.Queue]):
+        """Relay replayed + live events to this socket. Dead socket = silent stop."""
+        for message in replay:
+            if not await send_safe(message):
+                return
+        if queue is None:
+            return
+        while True:
+            item = await queue.get()
+            if item is None:  # run finished sentinel
+                return
+            if not await send_safe(item):
+                await run_registry.unsubscribe(run_key, queue)
+                return
+
+    async def attach(run_key: str, last_seq: int) -> Optional[str]:
+        """Subscribe this socket to a run; returns error string or None."""
+        nonlocal pump_task, subscribed
+        await detach()
+        replay, queue, err = await run_registry.subscribe(run_key, last_seq)
+        if err:
+            return err
+        if queue is not None:
+            subscribed = (run_key, queue)
+        pump_task = asyncio.create_task(pump(run_key, replay, queue))
+        return None
+
     try:
         while True:
-            # Receive message from client
             data = await websocket.receive_json()
-            logger.info(f"WebSocket received: type={data.get('type')}, message_len={len(data.get('message', ''))}")
+            msg_type = data.get("type")
+            logger.info(f"WebSocket received: type={msg_type}, message_len={len(data.get('message', ''))}")
 
-            if data.get("type") != "chat":
-                await websocket.send_json({
+            if msg_type == "chat":
+                if not agent_system:
+                    await send_safe({
+                        "event": "error",
+                        "data": {"error": "Agent system not initialized. Please configure OPENAI_API_KEY."}
+                    })
+                    continue
+
+                session_id = data.get("session_id") or f"anon-{id(websocket)}"
+                user_message = data.get("message", "")
+                conversation_history = data.get("conversation_history")
+
+                ok, err = await run_registry.start(
+                    session_id,
+                    stream_factory=lambda um=user_message, ch=conversation_history: _agent_event_stream(um, ch),
+                    on_finish=_make_run_persister(data.get("session_id"), user_message),
+                )
+                if not ok:
+                    await send_safe({"event": "error", "data": {"error": err, "code": "run_active"}})
+                    continue
+                await attach(session_id, -1)
+
+            elif msg_type == "resume":
+                session_id = data.get("session_id")
+                last_seq = data.get("last_seq", -1)
+                if not session_id:
+                    await send_safe({"event": "resume_failed", "data": {"reason": "missing_session_id"}})
+                    continue
+                err = await attach(session_id, last_seq if isinstance(last_seq, int) else -1)
+                if err:
+                    await send_safe({"event": "resume_failed", "data": {"reason": err}})
+                else:
+                    await send_safe({"event": "resumed", "data": {"session_id": session_id}})
+
+            else:
+                await send_safe({
                     "event": "error",
                     "data": {"error": "Invalid message type"}
                 })
-                continue
-
-            if not agent_system:
-                await websocket.send_json({
-                    "event": "error",
-                    "data": {"error": "Agent system not initialized. Please configure OPENAI_API_KEY."}
-                })
-                continue
-
-            # Stream responses
-            try:
-                async for event in agent_system.chat_stream(
-                    user_message=data.get("message", ""),
-                    conversation_history=data.get("conversation_history")
-                ):
-                    # Parse the JSON data if it's a string
-                    event_data = event.get("data", "{}")
-                    if isinstance(event_data, str):
-                        event_data = json_lib.loads(event_data)
-
-                    # Send each event immediately
-                    message = {
-                        "event": event.get("event"),
-                        "data": event_data
-                    }
-                    await websocket.send_json(message)
-                    logger.debug(f"WebSocket sent: {event.get('event')}")
-
-            except Exception as e:
-                logger.error(f"Stream error: {e}", exc_info=True)
-                await websocket.send_json({
-                    "event": "error",
-                    "data": {"error": str(e)}
-                })
 
     except WebSocketDisconnect:
-        logger.info("WebSocket disconnected")
+        logger.info("WebSocket disconnected (run keeps executing if active)")
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
+    finally:
+        await detach()
+
+
+async def _agent_event_stream(user_message: str, conversation_history):
+    """Adapt agent_system.chat_stream into normalized {event, data} messages."""
+    async for event in agent_system.chat_stream(
+        user_message=user_message,
+        conversation_history=conversation_history,
+    ):
+        event_data = event.get("data", "{}")
+        if isinstance(event_data, str):
+            event_data = json_lib.loads(event_data)
+        yield {"event": event.get("event"), "data": event_data}
+
+
+def _make_run_persister(session_id: Optional[str], user_message: str):
+    """
+    Build the on_finish callback that persists run output to the session file.
+
+    Fallback only — the frontend's session PUT (richer: breadcrumbs, approvals)
+    overwrites this when the client is still around. This path matters when the
+    user never returns: tab closed mid-run, result must land in the session.
+    """
+    if not session_id or not conversation_manager:
+        return None
+
+    async def persist(status: str, events: list):
+        try:
+            assistant_parts = [
+                e["data"].get("content", "")
+                for e in events
+                if e.get("event") == "message_complete" and isinstance(e.get("data"), dict)
+            ]
+            assistant_text = "\n\n".join(p for p in assistant_parts if p).strip()
+            if not assistant_text:
+                return
+
+            session = await conversation_manager.load_session(session_id)
+            messages = (session or {}).get("messages", [])
+
+            def _content(m):
+                return m.get("content") if isinstance(m.get("content"), str) else None
+
+            # Frontend may have saved the user message already (debounced PUT/sendBeacon).
+            # Find it near the tail; if an assistant reply follows it, the frontend
+            # persisted the full exchange and this fallback has nothing to do.
+            last_user_idx = None
+            for i in range(len(messages) - 1, max(-1, len(messages) - 6), -1):
+                if messages[i].get("role") == "user" and _content(messages[i]) == user_message:
+                    last_user_idx = i
+                    break
+            if last_user_idx is not None:
+                if any(m.get("role") == "assistant" for m in messages[last_user_idx + 1:]):
+                    return
+            else:
+                messages.append({"role": "user", "content": user_message})
+            messages.append({"role": "assistant", "content": assistant_text})
+
+            title = (session or {}).get("title") or user_message[:60].strip() or "New conversation"
+            await conversation_manager.save_session(session_id, title, messages)
+            logger.info(f"Run result persisted to session {session_id} (status={status})")
+        except Exception as e:
+            logger.error(f"Run persistence failed for {session_id}: {e}", exc_info=True)
+
+    return persist
 
 
 @app.post("/api/approve")

@@ -216,6 +216,8 @@ Tools:
 - delete_dashboard: Delete Lovelace dashboard by url_path.
 - get_entity_states: Live current states of all entities (use for automation suggestions).
 - get_ha_issues: Watchman missing entity/service refs + Spook repair issues. Call when user mentions issues, Watchman, Spook, broken refs, or asks to fix missing entities.
+- get_ha_error_log: HA core errors/warnings (system_log, deduplicated). Call when user reports something broken or after config changes to verify nothing failed.
+- get_lovelace_resources: Installed custom card JS modules. Call before writing dashboard YAML with custom: card types.
 - get_nodered_flows: Read Node-RED flows via API or backup (always call before add_nodered_flow or edit_nodered_tab).
 - add_nodered_flow: Stage NEW flow tab for approval (non-destructive, never touches existing flows).
 - edit_nodered_tab: Stage update to EXISTING flow tab (only that tab; requires tab_id from get_nodered_flows).
@@ -235,6 +237,10 @@ Dashboard rules:
 - Create new: call create_dashboard (returns url_path), then call propose_config_changes immediately with file_path='lovelace/{url_path}.yaml'. Do NOT call search_config_files first — new dashboard has no file to read. The system handles empty new dashboards automatically.
 - Delete: call delete_dashboard with url_path (cannot delete default dashboard).
 - Dashboard YAML must include at minimum 'title' and 'views' keys.
+- STORAGE MODE ONLY: never add 'lovelace:' or 'dashboards:' entries to configuration.yaml — YAML-mode dashboards are not UI-editable and break the save flow. Always use create_dashboard.
+- YAML-mode dashboard detected (list_dashboards entry without 'id')? Offer migration: create_dashboard storage twin, copy config via propose_config_changes, then tell user to remove the configuration.yaml entry and restart HA.
+- Custom card configs are schema-checked on propose. On CARD SCHEMA ERROR: fix exactly per the hint, re-propose. Do not retry the same structure.
+- Prefer 'sections' view layout (type: sections, heading cards) for new dashboards — responsive on desktop + mobile.
 
 Custom card components (HACS):
 This rule applies to every HACS custom card or integration (Bubble-Card, Mushroom, mini-graph-card,
@@ -537,6 +543,16 @@ Managing production HA system. Safety and clarity are paramount."""
         elif function_name == "get_ha_issues":
             try:
                 return await asyncio.wait_for(self.tools.get_ha_issues(), timeout=30.0)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Tool execution timed out after 30 seconds"}
+        elif function_name == "get_ha_error_log":
+            try:
+                return await asyncio.wait_for(self.tools.get_ha_error_log(), timeout=30.0)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Tool execution timed out after 30 seconds"}
+        elif function_name == "get_lovelace_resources":
+            try:
+                return await asyncio.wait_for(self.tools.get_lovelace_resources(), timeout=30.0)
             except asyncio.TimeoutError:
                 return {"success": False, "error": "Tool execution timed out after 30 seconds"}
         elif function_name == "read_memories":
@@ -1081,6 +1097,30 @@ Managing production HA system. Safety and clarity are paramount."""
                 {
                     "type": "function",
                     "function": {
+                        "name": "get_ha_error_log",
+                        "description": "Get Home Assistant core errors and warnings (system_log). Structured + deduplicated: logger name, message, occurrence count. Call when user reports something broken, asks about errors, or after config changes to verify nothing failed.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_lovelace_resources",
+                        "description": "List registered Lovelace frontend resources (custom card JS modules) with derived card slugs like 'bubble-card'. Call before writing dashboard YAML with custom: card types to confirm the card is installed.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
                         "name": "reload_config",
                         "description": "Reload Home Assistant configuration (homeassistant.reload_all) without restarting. Call this after the user approves YAML changes that add new entities — input_number helpers, template sensors, scripts, automations, etc. — to activate them immediately.",
                         "parameters": {
@@ -1234,7 +1274,8 @@ Managing production HA system. Safety and clarity are paramount."""
             # become available once the model has gathered context (has_tool_results=True).
             _READ_TOOL_NAMES = {
                 "search_config_files", "get_entity_states",
-                "get_ha_issues", "list_dashboards", "search_past_sessions",
+                "get_ha_issues", "get_ha_error_log", "get_lovelace_resources",
+                "list_dashboards", "search_past_sessions",
                 "read_memories", "list_memory_stats",
             }
             # Include get_nodered_flows in read phase only when NR is configured
