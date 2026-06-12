@@ -364,6 +364,7 @@ Automation suggestions:
 - If Node-RED configured, call get_nodered_flows — do NOT suggest automations already in Node-RED.
 - New Node-RED tab: call get_nodered_flows first (check duplicates), generate valid JSON (array: tab node + nodes), call add_nodered_flow.
 - Modify existing tab: call get_nodered_flows for tab id + current nodes, build updated array (tab node + all nodes with changes applied), call edit_nodered_tab with tab_id. NEVER replace all flows — that operation is not available.
+- When editing an existing tab: PRESERVE existing node ids, x/y positions, names and the tab node (with its label) exactly as returned by get_nodered_flows. Change only the properties that need changing; add new nodes with new ids only where needed. Inventing new ids for existing nodes is rejected.
 - Node-RED JSON format: array with one {type:"tab", id, label} node + functional nodes, each {id, type, name, wires, x, y, ...}. Node types: inject, debug, function, change, switch, delay, http request, mqtt in/out, ha-api, ha-entity, ha-state-changed, ha-call-service, ha-events-all, ha-webhook.
 - Group suggestions by area/domain. Explain benefit of each.
 - When Node-RED flows available, note whether suggestion fits HA automations or Node-RED.
@@ -526,7 +527,7 @@ Managing production HA system. Safety and clarity are paramount."""
                 }
             # Normalize alternative param names Gemini sometimes uses
             import json as _json
-            for alt in ("new_nodes", "nodes", "updated_nodes", "flow_nodes"):
+            for alt in ("new_nodes", "nodes", "updated_nodes", "flow_nodes", "new_flow", "flow", "flows"):
                 if alt in function_args and "flows_json" not in function_args:
                     function_args["flows_json"] = function_args.pop(alt)
                     logger.debug(f"edit_nodered_tab: normalized '{alt}' -> 'flows_json'")

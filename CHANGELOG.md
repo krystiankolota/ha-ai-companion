@@ -5,7 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.11.0] - 2026-06-12
+## [1.11.1] - 2026-06-13
+
+### Fixed — Node-RED tab edit safety
+- **Tab metadata no longer wiped on edit** — `PUT /flow/{id}` replaces the whole tab object; deploying a tab update now fetches the current tab first and preserves `label`, `disabled`, `info`, `env` and tab-scoped config nodes when the AI's payload omits them. Previously the tab name was silently erased and config nodes dropped.
+- **Full-rewrite guard** — staging a tab edit is rejected when none of the submitted node ids match the tab's existing nodes (catches the LLM rebuilding the flow from scratch with invented ids, which destroyed the original flow layout and identity). An empty tab label in the payload is self-healed from the live flow.
+- **`tab_id` validation** — ids are checked against a safe character set before being used in Node-RED API URLs.
+- **Parameter-name drift** — `edit_nodered_tab` now also accepts `new_flow`/`flow`/`flows` argument names some models emit (previously failed with "unexpected keyword argument").
+
+
 
 ### Changed — token cost reduction
 - **History tool-payload diet** — tool results and `propose_config_changes` arguments from turns older than the last completed one are truncated to ~1KB before being sent to the LLM (they were re-billed in full on every iteration of every later turn). The model re-reads files when it genuinely needs them.

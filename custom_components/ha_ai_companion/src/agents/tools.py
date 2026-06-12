@@ -8,6 +8,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import time
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from ..config import ConfigurationManager, ConfigurationError
@@ -2257,6 +2258,9 @@ class AgentTools:
 
         if not tab_id or not tab_id.strip():
             return {"success": False, "error": "tab_id is required. Call get_nodered_flows first to find the tab id."}
+        # tab_id goes into the API URL — reject path traversal / injection
+        if not re.fullmatch(r"[A-Za-z0-9_.\-]+", tab_id):
+            return {"success": False, "error": f"Invalid tab_id '{tab_id}'. Use an id returned by get_nodered_flows."}
 
         try:
             nodes = _json.loads(flows_json)
@@ -2264,6 +2268,36 @@ class AgentTools:
             return {"success": False, "error": f"Invalid JSON in flows_json: {e}"}
         if not isinstance(nodes, list):
             return {"success": False, "error": "flows_json must be a JSON array"}
+
+        # Guard against full LLM rewrites: the payload must reuse at least one
+        # existing node id, otherwise the original flow would be silently
+        # replaced by a hallucinated reconstruction. Skipped when the Node-RED
+        # API is unreachable (file-fallback mode).
+        check = await self._nodered_api_request("GET", f"/flow/{tab_id}")
+        if check.get("status") == 404:
+            return {
+                "success": False,
+                "error": f"Tab '{tab_id}' not found in Node-RED. Call get_nodered_flows for valid tab ids.",
+            }
+        if check.get("status") == 200 and isinstance(check.get("json"), dict):
+            cur = check["json"]
+            existing_ids = {n.get("id") for n in cur.get("nodes", [])}
+            payload_ids = {n.get("id") for n in nodes if n.get("type") != "tab"}
+            if existing_ids and payload_ids and not (existing_ids & payload_ids):
+                return {
+                    "success": False,
+                    "error": (
+                        "REJECTED: none of the node ids in flows_json match the tab's current "
+                        "nodes. Re-use the existing node ids from get_nodered_flows and change "
+                        "only the properties that need changing — replacing every id rewrites "
+                        "the entire tab and destroys the original flow."
+                    ),
+                }
+            # Self-heal a missing/empty tab label so deploy never wipes it
+            tab_node = next((n for n in nodes if n.get("type") == "tab"), None)
+            if tab_node is not None and not tab_node.get("label") and cur.get("label"):
+                tab_node["label"] = cur["label"]
+                flows_json = _json.dumps(nodes)
 
         file_path = f"nodered/flow/{tab_id}.json"
         changeset_id = str(uuid.uuid4())[:8]
@@ -2339,13 +2373,28 @@ class AgentTools:
             effective_tab_id = tab_id or (tab.get("id") if tab else "")
             if not effective_tab_id:
                 return {"success": False, "error": "update_tab mode requires a tab_id or a tab node in the array"}
+            # tab_id goes into the API URL — reject path traversal / injection
+            if not re.fullmatch(r"[A-Za-z0-9_.\-]+", effective_tab_id):
+                return {"success": False, "error": f"Invalid tab_id '{effective_tab_id}'"}
             nodes = [n for n in flows if n.get("type") != "tab"]
+            # PUT /flow/{id} replaces the whole tab object — fetch the current
+            # one so metadata the payload omits (label, disabled, info, env,
+            # configs) is preserved instead of silently wiped.
+            current = await self._nodered_api_request("GET", f"/flow/{effective_tab_id}")
+            cur = current.get("json") if (
+                current.get("status") == 200 and isinstance(current.get("json"), dict)
+            ) else {}
             payload = {
                 "id": effective_tab_id,
-                "label": tab.get("label", "") if tab else "",
+                "label": ((tab.get("label") if tab else "") or cur.get("label", "")),
                 "nodes": nodes,
-                "configs": [],
+                "configs": cur.get("configs", []),
             }
+            for key in ("disabled", "info", "env"):
+                if tab and key in tab:
+                    payload[key] = tab[key]
+                elif key in cur:
+                    payload[key] = cur[key]
             result = await self._nodered_api_request("PUT", f"/flow/{effective_tab_id}", payload)
             if result["status"] in (200, 204):
                 return {"success": True, "message": f"Flow tab '{effective_tab_id}' updated in Node-RED successfully"}
