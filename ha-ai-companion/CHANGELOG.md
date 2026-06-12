@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-06-12
+
+### Changed — token cost reduction
+- **History tool-payload diet** — tool results and `propose_config_changes` arguments from turns older than the last completed one are truncated to ~1KB before being sent to the LLM (they were re-billed in full on every iteration of every later turn). The model re-reads files when it genuinely needs them.
+- **Earlier history summarization** — long conversations are summarized at >14 messages (was >30), keeping the newest 10 verbatim (was 20). Summary window can no longer start mid tool-exchange (orphaned tool messages broke strict providers).
+- **Slimmer tool schemas** — verbose tool descriptions (Node-RED, scheduler, patches, HACS docs) cut to essentials; schemas are resent on every LLM iteration.
+
+> Tip: with Anthropic models, also set `enable_cache_control: true` and `max_iterations: 10` in the add-on options — cached input is billed at 10%, the agent loop is the ideal caching pattern.
+
 ## [1.10.0] - 2026-06-12
 
 ### Added

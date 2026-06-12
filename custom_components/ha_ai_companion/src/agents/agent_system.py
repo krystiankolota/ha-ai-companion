@@ -651,6 +651,10 @@ Managing production HA system. Safety and clarity are paramount."""
             # Track the starting point for new messages (after history)
             history_length = 1  # system message
             if conversation_history:
+                # Token diet: truncate tool payloads from turns older than the
+                # last completed one — they're re-billed every iteration otherwise.
+                from .history_diet import truncate_old_tool_content
+                conversation_history = truncate_old_tool_content(conversation_history)
                 # Add conversation history
                 # Mark the last message in history for caching if there's substantial history
                 for idx, msg in enumerate(conversation_history):
@@ -667,8 +671,9 @@ Managing production HA system. Safety and clarity are paramount."""
                 history_length += len(conversation_history)
 
             # BUG-6: Summarize very long conversations to avoid context overflow.
-            # If history has > 30 messages (15 exchanges), summarise the oldest half.
-            if conversation_history and len(conversation_history) > 30:
+            # Threshold lowered 30 → 14 (token cost): old turns rarely earn
+            # their verbatim cost once tool payloads are also truncated above.
+            if conversation_history and len(conversation_history) > 14:
                 try:
                     messages = await self._summarize_old_history(messages)
                 except Exception as sum_err:
@@ -779,10 +784,8 @@ Managing production HA system. Safety and clarity are paramount."""
                 "function": {
                     "name": "patch_config_key",
                     "description": (
-                        "Surgical patch: change a single YAML key without rewriting the whole file. "
-                        "Use this for changing one known value (e.g. logger.default, a timeout, a URL). "
-                        "All comments, ordering, and surrounding keys are preserved. "
-                        "Do NOT use for adding new top-level sections or restructuring — use propose_config_changes for those."
+                        "Change a single YAML key in place (comments/ordering preserved). "
+                        "For new sections or restructuring use propose_config_changes."
                     ),
                     "parameters": {
                         "type": "object",
@@ -1065,7 +1068,7 @@ Managing production HA system. Safety and clarity are paramount."""
                     "type": "function",
                     "function": {
                         "name": "learn_hacs_component",
-                        "description": "Fetch documentation for a HACS component (custom integration or Lovelace card) from its GitHub repo. Resolves the repo from the HACS default store. Returns README, CHANGELOG, and example YAML files. Call this before writing YAML for any custom card you don't have in memory.",
+                        "description": "Fetch GitHub docs (README/CHANGELOG/examples) for a HACS component. Call before writing YAML for any custom card not in memory.",
                         "parameters": {
                             "type": "object",
                             "properties": {
@@ -1135,11 +1138,8 @@ Managing production HA system. Safety and clarity are paramount."""
                     "function": {
                         "name": "set_ha_text_entity",
                         "description": (
-                            "Write a plain-text value directly to an existing input_text helper in Home Assistant. "
-                            "Use this to deliver AI-generated content (morning briefings, summaries, status reports, advice) "
-                            "so it can be consumed by automations, dashboards, or TTS without going through the chat. "
-                            "The entity must already exist — create it via Settings → Helpers if needed. "
-                            "Max 255 characters (HA hard limit). No approval needed — the write happens immediately."
+                            "Write text to an existing input_text helper (max 255 chars, immediate, no approval). "
+                            "Use for AI-generated content consumed by automations/dashboards/TTS."
                         ),
                         "parameters": {
                             "type": "object",
@@ -1162,11 +1162,8 @@ Managing production HA system. Safety and clarity are paramount."""
                     "function": {
                         "name": "schedule_ai_task",
                         "description": (
-                            "Create a recurring AI task: runs a prompt on a schedule and writes the result to an input_text entity. "
-                            "Use this when the user wants automated periodic content — e.g. 'every morning write a briefing to input_text.briefing'. "
-                            "The task is saved persistently and survives restarts. "
-                            "The entity must already exist as an input_text helper. "
-                            "Call get_entity_states(domain_filter='input_text') first to confirm the entity exists."
+                            "Create a persistent recurring AI task: runs a prompt on a schedule, writes result to an "
+                            "existing input_text entity (confirm it exists via get_entity_states first)."
                         ),
                         "parameters": {
                             "type": "object",
@@ -1202,7 +1199,7 @@ Managing production HA system. Safety and clarity are paramount."""
                         "type": "function",
                         "function": {
                             "name": "get_nodered_flows",
-                            "description": "Fetch Node-RED flows via the Node-RED Admin API (or file fallback). Always call this before add_nodered_flow or edit_nodered_tab — you need the tab IDs and existing node content. Also use to check what flows already exist before suggesting automations.",
+                            "description": "Fetch Node-RED flows (tab IDs + nodes). Required before add_nodered_flow or edit_nodered_tab.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {},
@@ -1215,9 +1212,8 @@ Managing production HA system. Safety and clarity are paramount."""
                         "function": {
                             "name": "add_nodered_flow",
                             "description": (
-                                "Stage a NEW Node-RED flow tab for user approval. Non-destructive — existing flows are never touched. "
-                                "Always call get_nodered_flows first to confirm the flow doesn't already exist. "
-                                "Do NOT use this to modify an existing flow — use edit_nodered_tab for that."
+                                "Stage a NEW Node-RED flow tab for approval (never touches existing flows; "
+                                "call get_nodered_flows first; to modify existing use edit_nodered_tab)."
                             ),
                             "parameters": {
                                 "type": "object",
@@ -1240,11 +1236,8 @@ Managing production HA system. Safety and clarity are paramount."""
                         "function": {
                             "name": "edit_nodered_tab",
                             "description": (
-                                "Stage an update to an EXISTING Node-RED flow tab for user approval. Only the specified tab is changed. "
-                                "Always call get_nodered_flows first to get the tab_id and the current nodes. "
-                                "Include ALL nodes for the tab in flows_json (not just the changed ones). "
-                                "Do NOT use this to create a new flow — use add_nodered_flow for that. "
-                                "NEVER use this to replace all flows — that operation is not available."
+                                "Stage an update to ONE existing Node-RED tab for approval. Requires tab_id from "
+                                "get_nodered_flows; flows_json must include ALL nodes of that tab. New flows: add_nodered_flow."
                             ),
                             "parameters": {
                                 "type": "object",
@@ -2072,10 +2065,17 @@ Managing production HA system. Safety and clarity are paramount."""
         system_msg = messages[0]
         history = messages[1:]
 
-        # Keep the newest 20 messages verbatim; summarize the rest
-        keep_recent = 20
+        # Keep the newest 10 messages verbatim; summarize the rest
+        # (lowered from 20 — token cost; old tool exchanges rarely earn it)
+        keep_recent = 10
         to_summarize = history[:-keep_recent] if len(history) > keep_recent else []
         keep = history[-keep_recent:] if len(history) > keep_recent else history
+
+        # Don't let the keep window start mid tool-exchange: a leading 'tool'
+        # message without its assistant tool_calls parent is invalid for
+        # strict providers. Shift orphaned tool messages into the summary.
+        while keep and keep[0].get("role") == "tool":
+            to_summarize.append(keep.pop(0))
 
         if not to_summarize:
             return messages
