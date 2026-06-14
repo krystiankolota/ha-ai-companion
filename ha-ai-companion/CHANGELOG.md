@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-06-14
+
+### Changed — token hygiene
+- **Generation minimalism (ponytail)** — the agent now writes the least config that works: native HA feature (sun/time/numeric_state/template trigger, existing helper) → one simple automation → Node-RED only when genuinely needed. Prefers one rule/threshold over per-case branches. Fewer output tokens, smaller context on re-read, and fewer over-engineering bugs (e.g. the month-by-month sun-elevation function that should have been a single trigger).
+- **Prompt caching auto-enabled for Anthropic models** — the agent loop re-sends a stable system+schema prefix every iteration, the ideal prompt-caching pattern; cached input is billed at ~10%. Now on by default when the main model is Claude/Anthropic (set `DISABLE_CACHE_AUTO=1` to opt out).
+
 ## [1.12.0] - 2026-06-14
 
 ### Fixed

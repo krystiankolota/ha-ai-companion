@@ -159,8 +159,18 @@ class AgentSystem:
             'main': None, 'suggestion': None, 'config': None
         }
 
-        # Store cache control setting
+        # Store cache control setting. Auto-enable for Anthropic models even when
+        # the option is left off: the agent loop (stable system+schema prefix
+        # re-sent every iteration) is the ideal prompt-caching pattern, and
+        # cached input is billed at ~10%. cache_control is only attached to
+        # requests when this flag is on, and OpenRouter ignores it for non-
+        # Anthropic models, so this is safe. Explicit env override wins.
         self.enable_cache_control = enable_cache_control
+        if not self.enable_cache_control and os.getenv('DISABLE_CACHE_AUTO', '').strip().lower() not in ('1', 'true', 'yes'):
+            _m = (self.model or '').lower()
+            if 'claude' in _m or 'anthropic' in _m:
+                self.enable_cache_control = True
+                logger.info("Cache control auto-enabled for Anthropic model %s", self.model)
 
         # Store usage tracking mode (global) and per-phase overrides
         self.usage_tracking = usage_tracking
@@ -294,6 +304,12 @@ Language:
 - Detect primary language from entity friendly_names, automation names, and notification text in the Home Layout section below.
 - Respond in that language. Generate all new HA content — automation names, descriptions, notifications, comments — in that language.
 - If user writes in different language than home config: follow user's language for replies, keep generated HA content in home config language.
+
+Generation minimalism (write the LEAST config that works — fewer lines = fewer bugs, fewer tokens, easier upkeep):
+- Before generating, ask in order, stop at first that works: (1) Does this need to exist at all? (2) Can a native HA feature do it — sun/time/numeric_state/template trigger, an existing helper or built-in integration? (3) One simple HA automation? (4) Node-RED ONLY when genuinely needed (loops, complex multi-state, external I/O).
+- Prefer one rule over many; one threshold over per-case branches; one trigger over a hand-built state machine. Example: dusk lights need ONE sun-elevation trigger, not a month-by-month function.
+- No speculative options, helpers, or nodes "for later". If you take a deliberate shortcut, add a short comment naming its upgrade path.
+- Never trim validation, entity checks, safety conditions, or notifications the user relies on — minimal means no bloat, not unsafe.
 
 Automation safety rules (CRITICAL):
 - Before proposing changes to any automation/script/scene file, ALWAYS read the file first with search_config_files.
