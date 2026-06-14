@@ -5,6 +5,13 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.2] - 2026-06-14
+
+### Fixed — config approval reliability
+- **"Approved but nothing changed" eliminated** — the approval card showed green "✅ Changes applied successfully" even when the backend returned a logical failure (expired changeset, validation error) as HTTP 200. It now reads `applied`/`failed_files` from the response and renders a real failure state with the message, per-file errors, and a "Try approve again" button. The backend was returning the correct error all along; the UI swallowed it.
+- **Changeset expiry no longer silent** — expired or missing changesets at approval time now log a `WARNING` (previously returned to the client but never logged, making the failure undiagnosable from the add-on log).
+- **Longer changeset TTL** — proposed changes now live 24h by default instead of 1h (`CHANGESET_TTL_HOURS` env override). Reviewing a large multi-file diff for over an hour silently expired the changeset, so approving applied nothing.
+
 ## [1.11.1] - 2026-06-13
 
 ### Fixed — Node-RED tab edit safety

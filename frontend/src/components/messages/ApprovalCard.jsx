@@ -3,7 +3,7 @@ import { useAppContext } from '../../store/AppContext'
 import { Actions } from '../../store/reducer'
 import { submitApproval } from '../../lib/api'
 
-// States: pending | confirming_reject | processing | approved | rejected
+// States: pending | confirming_reject | processing | approved | failed | rejected
 export default function ApprovalCard({ changeset }) {
   const { dispatch } = useAppContext()
   const [status, setStatus] = useState('pending')
@@ -20,7 +20,10 @@ export default function ApprovalCard({ changeset }) {
     try {
       const result = await submitApproval(changeset.changeset_id, true)
       setResultData(result)
-      setStatus('approved')
+      // Backend returns HTTP 200 even on logical failure (expired/not-found/
+      // validation). Trust the body, not the transport — never claim success blindly.
+      const ok = result?.applied && (result?.failed_files?.length ?? 0) === 0
+      setStatus(ok ? 'approved' : 'failed')
     } catch (e) {
       setStatus('pending')
       dispatch({
@@ -153,7 +156,7 @@ export default function ApprovalCard({ changeset }) {
             <span>✅</span>
             <span>Changes applied successfully</span>
           </div>
-          {resultData?.reload_triggered && (
+          {resultData?.config_reloaded && (
             <div className="text-xs text-gray-400">Configuration reloaded.</div>
           )}
           {resultData?.applied_files && resultData.applied_files.length > 0 && (
@@ -163,6 +166,28 @@ export default function ApprovalCard({ changeset }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {status === 'failed' && (
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-red-400 text-sm">
+            <span>⚠️</span>
+            <span>{resultData?.message || 'Changes were not applied'}</span>
+          </div>
+          {resultData?.failed_files && resultData.failed_files.length > 0 && (
+            <div className="text-xs text-gray-400 space-y-0.5">
+              {resultData.failed_files.map((f, i) => (
+                <div key={i} className="font-mono text-red-300">✗ {f.file_path}: {f.error}</div>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={() => setStatus('pending')}
+            className="mt-1 px-3 py-1.5 text-xs bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300 rounded-lg transition-colors"
+          >
+            ↻ Try approve again
+          </button>
         </div>
       )}
 

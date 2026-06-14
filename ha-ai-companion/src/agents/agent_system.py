@@ -2292,11 +2292,12 @@ Managing production HA system. Safety and clarity are paramount."""
         changeset_id = changeset_data.get('changeset_id') or str(uuid.uuid4())[:8]
 
         now = datetime.now(timezone.utc)
+        _ttl_hours = int(os.getenv("CHANGESET_TTL_HOURS", "24"))
         changeset = Changeset(
             changeset_id=changeset_id,
             file_changes=changeset_data['file_changes'],
             created_at=now.isoformat(),
-            expires_at=(now + timedelta(hours=1)).isoformat()
+            expires_at=(now + timedelta(hours=_ttl_hours)).isoformat()
         )
 
         self.pending_changesets[changeset_id] = changeset
@@ -2329,10 +2330,11 @@ Managing production HA system. Safety and clarity are paramount."""
         # Check if changeset exists
         changeset = self.pending_changesets.get(change_id)
         if not changeset:
+            logger.warning(f"Approval failed: changeset {change_id} not found (expired, already applied, or server restarted) — nothing written")
             return {
                 "success": False,
                 "applied": False,
-                "message": f"Changeset {change_id} not found or has expired"
+                "message": f"Changeset {change_id} not found or has expired. Please re-propose the changes."
             }
 
         # If rejected, just remove and return
@@ -2347,6 +2349,7 @@ Managing production HA system. Safety and clarity are paramount."""
         # Check if expired
         expires_at = datetime.fromisoformat(changeset.expires_at)
         if datetime.now(timezone.utc) > expires_at:
+            logger.warning(f"Approval failed: changeset {change_id} expired at {changeset.expires_at} (created {changeset.created_at}) — nothing written")
             del self.pending_changesets[change_id]
             return {
                 "success": False,
