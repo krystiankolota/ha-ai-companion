@@ -14,7 +14,10 @@ import time
 import pytest
 from pathlib import Path
 
-from memory.manager import MemoryManager, _sanitise
+from memory.manager import (
+    MemoryManager, _sanitise, _fix_mojibake, _mojibake_score,
+    extract_entities, _read_marker,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -328,3 +331,109 @@ class TestGetContextCritical:
         assert "respond in Polish" in ctx
         # device_ file with zero overlap is gated out
         assert "pumpa=basement pump" not in ctx
+
+
+# ---------------------------------------------------------------------------
+# Mojibake repair (_fix_mojibake)
+# ---------------------------------------------------------------------------
+
+class TestMojibake:
+    def test_repairs_known_corruption(self):
+        # Genuine mojibake: correct UTF-8 bytes mis-decoded as latin-1
+        original = "Ogród i Oświetlenie"
+        mojibake = original.encode("utf-8").decode("latin-1")
+        assert _mojibake_score(mojibake) > 0
+        assert _fix_mojibake(mojibake) == original
+
+    def test_leaves_clean_text_untouched(self):
+        clean = "Garaż: żarówki LSC, Oświetlenie salon"
+        assert _fix_mojibake(clean) == clean
+
+    def test_leaves_ascii_untouched(self):
+        assert _fix_mojibake("plain ascii content") == "plain ascii content"
+
+    async def test_write_repairs_incoming_mojibake(self, mgr):
+        original = "Salon: Listwa LED, Ogród nawadnianie"
+        mojibake = original.encode("utf-8").decode("latin-1")
+        await mgr.write_file("device_x.md", mojibake)
+        raw = (mgr.memory_dir / "device_x.md").read_text(encoding="utf-8")
+        assert original in raw
+        assert _mojibake_score(raw) == 0
+
+    async def test_repair_existing_fixes_files_on_init(self, tmp_path):
+        d = tmp_path / "memories"
+        d.mkdir(parents=True)
+        original = "Oświetlenie i Ogród"
+        (d / "broken.md").write_text(original.encode("utf-8").decode("latin-1"), encoding="utf-8")
+        # Init triggers _repair_existing
+        MemoryManager(memory_dir=str(d))
+        assert original in (d / "broken.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Entity extraction + markers (schema)
+# ---------------------------------------------------------------------------
+
+class TestEntityExtraction:
+    def test_extracts_entity_ids(self):
+        content = "Garaż kinkiety switch.kinkiety_garaz i light.listwa_led_biuro"
+        ents = extract_entities(content)
+        assert "switch.kinkiety_garaz" in ents
+        assert "light.listwa_led_biuro" in ents
+
+    def test_ignores_file_extensions(self):
+        content = "Edit lovelace/panel.yaml and config.json"
+        assert extract_entities(content) == []
+
+    def test_sorted_unique(self):
+        content = "sensor.time sensor.time binary_sensor.door"
+        assert extract_entities(content) == ["binary_sensor.door", "sensor.time"]
+
+    async def test_write_stores_entities_marker(self, mgr):
+        await mgr.write_file("device_g.md", "Kinkiety: switch.kinkiety_garaz")
+        raw = (mgr.memory_dir / "device_g.md").read_text(encoding="utf-8")
+        assert _read_marker(raw, "entities") == "switch.kinkiety_garaz"
+
+    async def test_write_stores_and_preserves_type(self, mgr):
+        await mgr.write_file("device_g.md", "content", mem_type="device")
+        raw = (mgr.memory_dir / "device_g.md").read_text(encoding="utf-8")
+        assert _read_marker(raw, "type") == "device"
+        # Update without type — preserved
+        await mgr.write_file("device_g.md", "updated content")
+        raw2 = (mgr.memory_dir / "device_g.md").read_text(encoding="utf-8")
+        assert _read_marker(raw2, "type") == "device"
+
+    async def test_markers_stripped_from_context(self, mgr):
+        await mgr.write_file("device_g.md", "Kinkiety switch.kinkiety_garaz", mem_type="device")
+        ctx = await mgr.get_context()
+        assert "<!-- type:" not in ctx
+        assert "<!-- entities:" not in ctx
+        assert "switch.kinkiety_garaz" in ctx
+
+
+# ---------------------------------------------------------------------------
+# find_similar (dedup) + get_memory_entities
+# ---------------------------------------------------------------------------
+
+class TestFindSimilar:
+    async def test_detects_type_match(self, mgr):
+        await mgr.write_file("device_a.md", "fridge kitchen appliance", mem_type="device")
+        similar = await mgr.find_similar("device_b.md", "washer laundry appliance", mem_type="device")
+        names = [s["filename"] for s in similar]
+        assert "device_a.md" in names
+
+    async def test_detects_keyword_overlap(self, mgr):
+        await mgr.write_file("notes_a.md", "garage lighting sunset elevation threshold winter summer")
+        similar = await mgr.find_similar("notes_b.md", "garage lighting sunset elevation threshold spring autumn")
+        assert any(s["filename"] == "notes_a.md" for s in similar)
+
+    async def test_excludes_self(self, mgr):
+        await mgr.write_file("same.md", "garage lighting sunset elevation threshold winter")
+        similar = await mgr.find_similar("same.md", "garage lighting sunset elevation threshold winter")
+        assert all(s["filename"] != "same.md" for s in similar)
+
+    async def test_get_memory_entities(self, mgr):
+        await mgr.write_file("device_g.md", "Kinkiety switch.kinkiety_garaz light.listwa_led_biuro")
+        mapping = await mgr.get_memory_entities()
+        assert "device_g.md" in mapping
+        assert "switch.kinkiety_garaz" in mapping["device_g.md"]

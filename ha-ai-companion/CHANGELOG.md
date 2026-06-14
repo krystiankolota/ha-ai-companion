@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-06-14
+
+### Fixed
+- **Summarization crash on empty model output** — long-conversation summarization called `.strip()` on `None` content (and on empty `choices`), failing every turn so history never compressed. Now skips the API call when there's nothing textual to summarize and guards null content/empty choices.
+
+### Added — memory system hardening
+- **Mojibake auto-repair** — memory content double-encoded by some models (`OÅwietlenie`, `OgrÃ³d`, `âï¸`) is now repaired on write via a conservative latin-1 round-trip, and existing corrupted files are repaired once at startup.
+- **Entity reference validation** — new `audit_memory_entities` tool checks entity_ids cited in memories against the live HA registry, flagging entities that no longer exist and likely domain renames (e.g. `light.kinkiety_garaz` → `switch.kinkiety_garaz`).
+- **Duplicate-memory detection** — `save_memory` now surfaces overlapping existing files (by type tag + keyword overlap) so the agent updates instead of forking near-duplicate memories.
+- **Memory schema tags** — memory files now carry `type:` and auto-extracted `entities:` metadata markers (stripped from context injection) to power validation, dedup, and typed recall.
+
 ## [1.11.2] - 2026-06-14
 
 ### Fixed — config approval reliability

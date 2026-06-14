@@ -23,6 +23,54 @@ logger = logging.getLogger(__name__)
 # Filename sanitisation: allow only safe chars
 _SAFE_FILENAME = re.compile(r'[^a-zA-Z0-9_\-]')
 
+# Sequences that signal UTF-8 bytes mis-decoded as latin-1/cp1252 (mojibake).
+# Legit Polish text uses single codepoints (ś, ż, ó) that do NOT contain these.
+_MOJIBAKE_MARKERS = ('Ã', 'Å', 'Â', 'â€', 'ï¸', 'Ä\x85', 'Ä\x99', 'Ã³', 'Ä…')
+
+# entity_id pattern: domain.object_id (lowercase). Excludes file extensions.
+_ENTITY_RE = re.compile(r'\b([a-z][a-z0-9_]*\.[a-z0-9_]+)\b')
+_NON_ENTITY_SUFFIX = ('.md', '.yaml', '.yml', '.json', '.py', '.js', '.css', '.html', '.txt')
+
+
+def _mojibake_score(text: str) -> int:
+    return sum(text.count(m) for m in _MOJIBAKE_MARKERS)
+
+
+def _fix_mojibake(text: str) -> str:
+    """Repair UTF-8-decoded-as-latin-1 corruption, conservatively.
+
+    Only transforms when the latin-1 round-trip both succeeds and strictly
+    reduces the mojibake-marker count without introducing replacement chars,
+    so clean text is never touched.
+    """
+    if _mojibake_score(text) == 0:
+        return text
+    try:
+        repaired = text.encode('latin-1').decode('utf-8')
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    if '�' in repaired and '�' not in text:
+        return text
+    if _mojibake_score(repaired) < _mojibake_score(text):
+        return repaired
+    return text
+
+
+def extract_entities(content: str) -> List[str]:
+    """Return sorted unique HA entity_ids referenced in memory content."""
+    found = _ENTITY_RE.findall(content or "")
+    out = {
+        e for e in found
+        if not e.endswith(_NON_ENTITY_SUFFIX) and 2 <= len(e.split('.', 1)[0]) <= 30
+    }
+    return sorted(out)
+
+
+def _read_marker(raw: str, key: str) -> Optional[str]:
+    """Extract a single-line ``<!-- key: value -->`` marker value, or None."""
+    m = re.search(rf"<!--\s*{re.escape(key)}:\s*(.*?)\s*-->", raw)
+    return m.group(1).strip() if m else None
+
 
 def _sanitise(filename: str) -> str:
     """Return a safe filename (no path traversal, only .md extension)."""
@@ -61,7 +109,32 @@ class MemoryManager:
     def __init__(self, memory_dir: str):
         self.memory_dir = Path(memory_dir)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("MemoryManager initialised at %s", self.memory_dir)
+        repaired = self._repair_existing()
+        logger.info("MemoryManager initialised at %s (%d file(s) mojibake-repaired)", self.memory_dir, repaired)
+
+    def _repair_existing(self) -> int:
+        """One-shot: rewrite any existing memory file whose content is mojibake.
+
+        Runs synchronously at startup. Conservative — only writes a file back
+        when ``_fix_mojibake`` actually changed it.
+        """
+        count = 0
+        try:
+            for p in self.memory_dir.glob("*.md"):
+                if not p.is_file():
+                    continue
+                try:
+                    raw = p.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                fixed = _fix_mojibake(raw)
+                if fixed != raw:
+                    p.write_text(fixed, encoding="utf-8")
+                    count += 1
+                    logger.warning("MemoryManager repaired mojibake in %s", p.name)
+        except Exception as exc:
+            logger.error("MemoryManager._repair_existing error: %s", exc)
+        return count
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -97,7 +170,7 @@ class MemoryManager:
             logger.error("MemoryManager.read_file(%s) error: %s", filename, exc)
             return None
 
-    async def write_file(self, filename: str, content: str, critical: Optional[bool] = None) -> bool:
+    async def write_file(self, filename: str, content: str, critical: Optional[bool] = None, mem_type: Optional[str] = None) -> bool:
         """
         Write (create or overwrite) a memory file.
 
@@ -114,6 +187,10 @@ class MemoryManager:
         Returns True on success, False on validation failure or I/O error.
         """
         path = self._path(filename)
+
+        # Repair any UTF-8-as-latin-1 mojibake before it reaches disk (some
+        # models double-encode non-ASCII through the JSON tool-call path).
+        content = _fix_mojibake(content)
 
         # Per-file size guard
         if len(content.strip()) > self.MAX_FILE_CHARS:
@@ -135,23 +212,36 @@ class MemoryManager:
                     oldest.unlink()
                     logger.warning("MemoryManager evicted oldest file %s (MAX_FILES=%d reached)", oldest.name, self.MAX_FILES)
 
+            # Read existing markers once (to preserve critical/type when unspecified)
+            try:
+                existing_raw = path.read_text(encoding="utf-8") if path.exists() else ""
+            except Exception:
+                existing_raw = ""
+
             # Determine critical marker
             if critical is None:
-                # Preserve existing marker when caller doesn't specify
-                try:
-                    existing_raw = path.read_text(encoding="utf-8") if path.exists() else ""
-                except Exception:
-                    existing_raw = ""
                 critical_marker = "<!-- critical -->\n" if "<!-- critical -->" in existing_raw else ""
             elif critical:
                 critical_marker = "<!-- critical -->\n"
             else:
                 critical_marker = ""
 
+            # Type marker: caller-supplied, else preserve existing
+            resolved_type = mem_type or _read_marker(existing_raw, "type")
+            type_marker = f"<!-- type: {resolved_type} -->\n" if resolved_type else ""
+
+            # Auto-extract referenced entity_ids for validation/recall
+            entities = extract_entities(content)
+            entities_marker = f"<!-- entities: {', '.join(entities)} -->\n" if entities else ""
+
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-            full_content = f"{critical_marker}<!-- updated: {timestamp} -->\n{content.strip()}\n"
+            full_content = (
+                f"{critical_marker}{type_marker}"
+                f"<!-- updated: {timestamp} -->\n{entities_marker}{content.strip()}\n"
+            )
             path.write_text(full_content, encoding="utf-8")
-            logger.info("MemoryManager wrote %s (%d chars, critical=%s)", path.name, len(full_content), critical)
+            logger.info("MemoryManager wrote %s (%d chars, critical=%s, type=%s, entities=%d)",
+                        path.name, len(full_content), critical, resolved_type, len(entities))
             return True
         except Exception as exc:
             logger.error("MemoryManager.write_file(%s) error: %s", filename, exc)
@@ -292,6 +382,60 @@ class MemoryManager:
             + "\n\n".join(sections)
             + "\n\n---\n"
         )
+
+    async def find_similar(self, filename: str, content: str, mem_type: Optional[str] = None, top: int = 3) -> List[Dict]:
+        """Return existing memory files that overlap the given one (dedup hint).
+
+        Matches on shared ``type`` marker or significant keyword overlap, so the
+        agent can update an existing file instead of forking a near-duplicate.
+        Excludes the target file itself.
+        """
+        target_name = _sanitise(filename)
+        target_tokens = {w for w in re.split(r'\W+', (content or "").lower()) if len(w) >= 4}
+        results: List[Dict] = []
+        try:
+            for p in self.memory_dir.glob("*.md"):
+                if not p.is_file() or p.name == target_name:
+                    continue
+                try:
+                    raw = p.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                ptype = _read_marker(raw, "type")
+                body = re.sub(r"<!--.*?-->\n?", "", raw, flags=re.DOTALL).lower()
+                toks = {w for w in re.split(r'\W+', body) if len(w) >= 4}
+                overlap = len(target_tokens & toks)
+                type_match = bool(mem_type and ptype and ptype == mem_type)
+                if type_match or overlap >= 5:
+                    results.append({"filename": p.name, "type": ptype, "overlap": overlap, "type_match": type_match})
+        except Exception as exc:
+            logger.error("MemoryManager.find_similar error: %s", exc)
+        results.sort(key=lambda r: (not r["type_match"], -r["overlap"]))
+        return results[:top]
+
+    async def get_memory_entities(self) -> Dict[str, List[str]]:
+        """Return {filename: [entity_ids]} referenced across all memory files."""
+        out: Dict[str, List[str]] = {}
+        try:
+            for p in sorted(self.memory_dir.glob("*.md")):
+                if not p.is_file():
+                    continue
+                try:
+                    raw = p.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                # Prefer the stored marker; fall back to live extraction
+                marker = _read_marker(raw, "entities")
+                if marker:
+                    ents = [e.strip() for e in marker.split(',') if e.strip()]
+                else:
+                    body = re.sub(r"<!--.*?-->\n?", "", raw, flags=re.DOTALL)
+                    ents = extract_entities(body)
+                if ents:
+                    out[p.name] = ents
+        except Exception as exc:
+            logger.error("MemoryManager.get_memory_entities error: %s", exc)
+        return out
 
     async def get_stats(self) -> Dict:
         """

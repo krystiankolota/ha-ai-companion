@@ -1527,6 +1527,7 @@ class AgentTools:
         content: str,
         replaces: Optional[List[str]] = None,
         critical: Optional[bool] = None,
+        mem_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Save or update a persistent memory file.
@@ -1575,7 +1576,7 @@ class AgentTools:
                         deleted.append(old_file)
                         logger.info(f"save_memory: deleted superseded file '{old_file}'")
 
-            ok = await self.memory_manager.write_file(filename, content, critical=critical)
+            ok = await self.memory_manager.write_file(filename, content, critical=critical, mem_type=mem_type)
             from pathlib import Path
             import re
             safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', Path(filename).stem).strip('_') or 'memory'
@@ -1588,7 +1589,17 @@ class AgentTools:
                             "error": f"content too long: {actual} chars exceeds limit {limit}. Shorten the content and retry."}
                 return {"success": False, "filename": safe_name, "deleted": deleted,
                         "error": "write failed (I/O error or file count limit reached)"}
-            return {"success": True, "filename": safe_name, "deleted": deleted}
+            result = {"success": True, "filename": safe_name, "deleted": deleted}
+            # Dedup hint: if this isn't replacing anything, flag overlapping files
+            # so the agent updates an existing memory instead of forking duplicates.
+            if not replaces:
+                similar = await self.memory_manager.find_similar(safe_name, content, mem_type=mem_type)
+                similar = [s for s in similar if s["filename"] != safe_name]
+                if similar:
+                    result["similar_existing"] = similar
+                    result["hint"] = ("Memories with overlapping content already exist. If this duplicates one, "
+                                      "re-save with replaces=[...] to merge instead of keeping both.")
+            return result
         except Exception as e:
             logger.error(f"save_memory error: {e}")
             return {"success": False, "error": str(e)}
@@ -1636,6 +1647,60 @@ class AgentTools:
             return {"success": True, **stats}
         except Exception as e:
             logger.error(f"list_memory_stats error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def audit_memory_entities(self) -> Dict[str, Any]:
+        """
+        Validate entity_ids referenced in memory files against the live HA registry.
+
+        Catches stale memories: entity_ids that no longer exist, and likely
+        renames where the object_id still exists under a different domain
+        (e.g. memory says `light.kinkiety_garaz` but the entity is now
+        `switch.kinkiety_garaz`). Use to find memories that need correcting.
+
+        Returns:
+            Dict with per-file issues: unknown entity_ids and suggested renames.
+        """
+        if not self.memory_manager:
+            return {"success": False, "error": "Memory manager not available"}
+
+        try:
+            mem_entities = await self.memory_manager.get_memory_entities()
+            if not mem_entities:
+                return {"success": True, "issues": [], "note": "No entity references found in memories."}
+
+            entities = await self._get_all_entities()
+            valid_ids = {e["entity_id"] for e in entities}
+            # Map object_id -> set of full entity_ids (to detect domain renames)
+            by_object: Dict[str, set] = {}
+            for eid in valid_ids:
+                if "." in eid:
+                    by_object.setdefault(eid.split(".", 1)[1], set()).add(eid)
+
+            issues = []
+            for fname, refs in mem_entities.items():
+                unknown, renames = [], []
+                for ref in refs:
+                    if ref in valid_ids:
+                        continue
+                    obj = ref.split(".", 1)[1] if "." in ref else ref
+                    candidates = sorted(by_object.get(obj, set()))
+                    if candidates:
+                        renames.append({"memory_ref": ref, "likely_now": candidates})
+                    else:
+                        unknown.append(ref)
+                if unknown or renames:
+                    issues.append({"filename": fname, "unknown": unknown, "renames": renames})
+
+            return {
+                "success": True,
+                "issues": issues,
+                "files_checked": len(mem_entities),
+                "note": "Correct flagged memories with save_memory (use replaces=[file] to update in place)." if issues
+                        else "All entity references in memories are valid.",
+            }
+        except Exception as e:
+            logger.error(f"audit_memory_entities error: {e}")
             return {"success": False, "error": str(e)}
 
     async def consolidate_memories(self) -> Dict[str, Any]:

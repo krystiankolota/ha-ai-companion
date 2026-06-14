@@ -225,6 +225,7 @@ Tools:
 - save_memory: Save memory file to persist knowledge across sessions.
 - delete_memory: Delete outdated memory file.
 - list_memory_stats: Audit memory files — sizes, ages, stale flags.
+- audit_memory_entities: Validate entity_ids in memories against the live registry — flags missing entities and domain renames (light.x -> switch.x).
 - consolidate_memories: Review all memory files, propose MERGE/DELETE/KEEP plan (user must confirm before applying).
 - search_past_sessions: Keyword search across past sessions — use when user references prior work or before starting topic with likely history.
 - reload_config: Reload HA config after approved YAML changes (activates new entities without restart).
@@ -564,6 +565,8 @@ Managing production HA system. Safety and clarity are paramount."""
             return await self.tools.delete_memory(**function_args)
         elif function_name == "list_memory_stats":
             return await self.tools.list_memory_stats()
+        elif function_name == "audit_memory_entities":
+            return await self.tools.audit_memory_entities()
         elif function_name == "consolidate_memories":
             return await self.tools.consolidate_memories()
         elif function_name == "search_past_sessions":
@@ -969,6 +972,10 @@ Managing production HA system. Safety and clarity are paramount."""
                                 "critical": {
                                     "type": "boolean",
                                     "description": "Mark this file as critical — injected into every session regardless of query. Use sparingly for facts the AI must always know: home language, primary resident identity, device aliases that have no context without this memory. Omit to preserve the file's existing critical status. Pass false to demote a previously critical file."
+                                },
+                                "mem_type": {
+                                    "type": "string",
+                                    "description": "Optional category tag: device, preference, pattern, identity, dashboard, nodered, baseline. Used for relevance and to detect duplicate memories. Omit to preserve the file's existing type."
                                 }
                             },
                             "required": ["filename", "content"]
@@ -997,6 +1004,18 @@ Managing production HA system. Safety and clarity are paramount."""
                     "function": {
                         "name": "list_memory_stats",
                         "description": "Audit memory health: returns each file's name, size in chars, age in days, and a stale flag (true when age > 90 days). Call this periodically to identify files to prune, merge, or delete.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "audit_memory_entities",
+                        "description": "Validate entity_ids cited in memory files against the live HA registry. Flags entities that no longer exist and likely domain renames (e.g. memory says light.x but it is now switch.x). Call when the user reports stale memory data, or to verify memories after entities were renamed.",
                         "parameters": {
                             "type": "object",
                             "properties": {},
@@ -1270,7 +1289,7 @@ Managing production HA system. Safety and clarity are paramount."""
                 "search_config_files", "get_entity_states",
                 "get_ha_issues", "get_ha_error_log", "get_lovelace_resources",
                 "list_dashboards", "search_past_sessions",
-                "read_memories", "list_memory_stats",
+                "read_memories", "list_memory_stats", "audit_memory_entities",
             }
             # Include get_nodered_flows in read phase only when NR is configured
             if _has_nodered:
@@ -2088,6 +2107,12 @@ Managing production HA system. Safety and clarity are paramount."""
             if m.get('role') in ('user', 'assistant')
         )
 
+        # Nothing textual to compress — skip the API call (it would return empty
+        # content and crash on .strip(), and history would never shrink anyway).
+        if not summary_input.strip():
+            logger.info("Summarization skipped: no textual content in old messages")
+            return messages
+
         summary_prompt = [
             {"role": "system", "content": "Summarise the following conversation in concise bullet points, capturing all important facts, decisions, and context. Be brief — max 400 words."},
             {"role": "user", "content": summary_input}
@@ -2101,7 +2126,13 @@ Managing production HA system. Safety and clarity are paramount."""
                 stream=False,
                 max_tokens=600,
             )
-            summary_text = resp.choices[0].message.content.strip()
+            # content can be None (model returned no text / tool-only) and choices
+            # can be empty on some providers — guard both before .strip().
+            choice = resp.choices[0] if resp.choices else None
+            summary_text = ((choice.message.content if choice else None) or "").strip()
+            if not summary_text:
+                logger.warning("Summarization returned empty content — keeping full history this turn")
+                return messages
         except Exception as e:
             logger.warning(f"Summarization API call failed: {e}")
             return messages
