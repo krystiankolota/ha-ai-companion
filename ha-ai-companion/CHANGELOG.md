@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.1] - 2026-06-15
+
+### Removed
+- **Dead Health-scan tab** — `HealthTab.jsx` was orphaned (not reachable from any nav) and its backend `/api/health/*` endpoints no longer existed, so the tab could only ever error. Removed the component and its five dead API wrappers. The `/health` readiness probe is unaffected.
+
 ## [1.14.0] - 2026-06-15
 
 ### Added — token usage observability
