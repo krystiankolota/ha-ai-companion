@@ -2,11 +2,13 @@ import asyncio
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
 from ..agents.tools import AgentTools
 from ..config import ConfigurationManager
 from ..memory.manager import MemoryManager
+from ..usage.manager import UsageManager
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 
@@ -188,6 +190,20 @@ class AgentSystem:
             logger.info(f"Temperature: {self.temperature}")
         logger.info(f"Cache control: {'enabled' if self.enable_cache_control else 'disabled'}")
         logger.info(f"Usage tracking: {self.usage_tracking} (suggestion: {self.suggestion_usage_tracking}, config: {self.config_usage_tracking})")
+
+        # Per-call usage/cost log (Track 1). Derive the dir from the memory dir
+        # (sibling of .ai_agent_memories) so it lives alongside the other state.
+        try:
+            if os.getenv('USAGE_DIR'):
+                _usage_dir = os.getenv('USAGE_DIR')
+            elif memory_manager is not None:
+                _usage_dir = str(Path(memory_manager.memory_dir).parent / ".ai_agent_usage")
+            else:
+                _usage_dir = ".ai_agent_usage"
+            self.usage_manager: Optional[UsageManager] = UsageManager(_usage_dir)
+        except Exception as exc:
+            logger.error("Failed to init UsageManager: %s", exc)
+            self.usage_manager = None
 
         # In-memory storage for pending changesets
         self.pending_changesets: Dict[str, Changeset] = {}
@@ -610,7 +626,8 @@ Managing production HA system. Safety and clarity are paramount."""
     async def chat_stream(
         self,
         user_message: str,
-        conversation_history: Optional[List[Dict[str, Any]]] = None
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        session_id: Optional[str] = None
     ):
         """
         Process a user message and stream response events in real-time.
@@ -1324,6 +1341,22 @@ Managing production HA system. Safety and clarity are paramount."""
             )
             _has_write_intent = any(kw in user_message.lower() for kw in _WRITE_INTENT_KEYWORDS)
 
+            # Complexity routing (Track 3c): keep simple, read-only Q&A turns on the
+            # cheaper suggestion model for the WHOLE turn instead of switching to the
+            # config model once tools return — the config model (e.g. Sonnet) is the
+            # bulk of spend and isn't needed to answer "what's the state of X".
+            # Only engages when the two models actually differ. Env-gated.
+            _routing_on = os.getenv('COMPLEXITY_ROUTING', 'on').strip().lower() not in ('off', '0', 'false', 'no')
+            route_to_cheap = (
+                _routing_on
+                and not _has_write_intent
+                and len(user_message) < 240
+                and self.suggestion_client is not None
+                and self.suggestion_model != self.config_model
+            )
+            if route_to_cheap:
+                logger.info("[ROUTING] Simple read-only turn -> cheaper model %s for all iterations", self.suggestion_model)
+
             # Track tool calls and results
             new_messages = []
 
@@ -1357,8 +1390,10 @@ Managing production HA system. Safety and clarity are paramount."""
 
                 # Select client+model: config once tool results exist, suggestion before that.
                 has_tool_results = any(m.get("role") == "tool" for m in messages)
-                active_model  = self.config_model  if has_tool_results else self.suggestion_model
-                active_client = self.config_client if has_tool_results else self.suggestion_client
+                # Simple-turn routing keeps the cheap model even after tool results.
+                _use_config = has_tool_results and not route_to_cheap
+                active_model  = self.config_model  if _use_config else self.suggestion_model
+                active_client = self.config_client if _use_config else self.suggestion_client
                 logger.debug(f"[ITERATION {iteration}] Using {'config' if has_tool_results else 'suggestion'} model: {active_model}")
 
                 # Strip excess cache_control blocks before each call (Anthropic limit: 4 total,
@@ -1399,11 +1434,16 @@ Managing production HA system. Safety and clarity are paramount."""
                     api_params["tool_choice"] = "auto"
 
                 # Add usage tracking based on per-phase mode
-                active_usage_tracking = self.config_usage_tracking if has_tool_results else self.suggestion_usage_tracking
+                active_usage_tracking = self.config_usage_tracking if _use_config else self.suggestion_usage_tracking
+                _is_openrouter = 'openrouter' in str(getattr(active_client, 'base_url', '')).lower()
                 if active_usage_tracking == 'stream_options':
                     api_params["stream_options"] = {"include_usage": True}
-                elif active_usage_tracking == 'usage':
-                    api_params["usage"] = {"include": True}
+                # OpenRouter returns real USD cost + native token counts ONLY when usage
+                # accounting is requested via extra_body (a top-level `usage` param is
+                # rejected by the OpenAI client). Harmless for other providers — ignored,
+                # and stripped on rejection below. This is what fixes the usage=0 logs.
+                if active_usage_tracking != 'disabled' and (_is_openrouter or active_usage_tracking == 'usage'):
+                    api_params["extra_body"] = {"usage": {"include": True}}
                 # If disabled, don't add any usage tracking parameters
 
                 # Add temperature if specified
@@ -1416,11 +1456,11 @@ Managing production HA system. Safety and clarity are paramount."""
                     api_params["max_tokens"] = phase_max_tokens
 
                 # Determine which client slot we're using for BUG-8 per-client caching
-                client_slot = 'config' if has_tool_results else 'suggestion'
+                client_slot = 'config' if _use_config else 'suggestion'
 
                 # Strip usage-tracking params if we already know this client rejects them
                 if self._client_usage_ok.get(client_slot) is False:
-                    api_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage')}
+                    api_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage', 'extra_body')}
 
                 try:
                     stream = await active_client.chat.completions.create(**api_params)
@@ -1433,12 +1473,12 @@ Managing production HA system. Safety and clarity are paramount."""
                     err_str = str(api_err).lower()
                     if 'stream_options' in err_str or 'usage' in err_str or 'extra' in err_str or 'unknown' in err_str:
                         logger.warning(f"API rejected usage-tracking params, retrying without them: {api_err}")
-                        # Propagate to all slots — if one slot rejects, the same endpoint will reject all.
-                        for slot in self._client_usage_ok:
-                            if self._client_usage_ok[slot] is None:
-                                self._client_usage_ok[slot] = False
+                        # Mark ONLY this slot — slots can use different models/endpoints
+                        # (suggestion vs config), so one provider's rejection must not
+                        # disable usage capture for the other (this was zeroing Sonnet's
+                        # usage whenever the cheap suggestion model rejected the param).
                         self._client_usage_ok[client_slot] = False
-                        retry_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage')}
+                        retry_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage', 'extra_body')}
                         stream = await active_client.chat.completions.create(**retry_params)
                     else:
                         raise
@@ -1453,6 +1493,7 @@ Managing production HA system. Safety and clarity are paramount."""
                 input_tokens = 0
                 output_tokens = 0
                 cached_tokens = 0
+                call_cost = 0.0  # OpenRouter returns actual USD cost in usage.cost
 
                 async for chunk in stream:
                     # Guard: some providers (e.g. Anthropic/Haiku) send a final
@@ -1465,6 +1506,7 @@ Managing production HA system. Safety and clarity are paramount."""
                                 cached_tokens = chunk.usage.cached_tokens or 0
                             elif hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details:
                                 cached_tokens = getattr(chunk.usage.prompt_tokens_details, 'cached_tokens', 0)
+                            call_cost = getattr(chunk.usage, 'cost', 0) or call_cost
                             total_input_tokens += input_tokens
                             total_output_tokens += output_tokens
                             total_cached_tokens += cached_tokens
@@ -1486,7 +1528,8 @@ Managing production HA system. Safety and clarity are paramount."""
                         elif hasattr(chunk.usage, 'cached_content_token_count'):
                             cached_tokens = chunk.usage.cached_content_token_count or 0
 
-                        logger.debug(f"[USAGE] Parsed - Input: {input_tokens}, Output: {output_tokens}, Cached: {cached_tokens}")
+                        call_cost = getattr(chunk.usage, 'cost', 0) or call_cost
+                        logger.debug(f"[USAGE] Parsed - Input: {input_tokens}, Output: {output_tokens}, Cached: {cached_tokens}, Cost: {call_cost}")
 
                         # Accumulate totals
                         total_input_tokens += input_tokens
@@ -1534,6 +1577,22 @@ Managing production HA system. Safety and clarity are paramount."""
                     # Check for finish reason
                     if chunk.choices[0].finish_reason:
                         break
+
+                # Record per-call usage/cost for this iteration (Track 1).
+                if self.usage_manager is not None:
+                    try:
+                        self.usage_manager.record(
+                            session_id=session_id,
+                            phase=client_slot,  # 'config' (main agent) or 'suggestion'
+                            model=active_model,
+                            iteration=iteration,
+                            input_tokens=input_tokens,
+                            cached_tokens=cached_tokens,
+                            output_tokens=output_tokens,
+                            cost_usd=call_cost,
+                        )
+                    except Exception as _uerr:
+                        logger.debug("usage record failed: %s", _uerr)
 
                 # Check if we have tool calls
                 if not accumulated_tool_calls:

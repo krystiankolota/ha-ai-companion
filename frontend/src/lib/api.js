@@ -45,6 +45,11 @@ export function clearAllSessions() {
   return apiFetch('api/sessions/clear-all', { method: 'POST' })
 }
 
+// Usage
+export function getUsage(days = 30) {
+  return apiFetch(`api/usage?days=${days}`)
+}
+
 // Approval
 export function submitApproval(changeId, approved) {
   return apiFetch('api/approve', {

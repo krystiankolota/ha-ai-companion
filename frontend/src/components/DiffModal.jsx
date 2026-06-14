@@ -58,8 +58,8 @@ export default function DiffModal() {
   if (!activeDiffChangeset) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-surface-900 border border-surface-700 rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
+      <div className="bg-surface-900 border border-surface-700 rounded-2xl w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] flex flex-col shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700 flex-shrink-0">
           <div>
@@ -70,7 +70,8 @@ export default function DiffModal() {
           </div>
           <button
             onClick={close}
-            className="text-gray-400 hover:text-gray-200 transition-colors text-xl leading-none"
+            aria-label="Close"
+            className="text-gray-400 hover:text-gray-200 transition-colors text-xl leading-none p-2 -m-2"
           >
             ✕
           </button>

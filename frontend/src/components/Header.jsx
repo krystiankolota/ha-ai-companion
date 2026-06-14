@@ -36,8 +36,8 @@ export default function Header() {
         )}
       </div>
 
-      {/* Tab nav */}
-      <div className="flex gap-1 flex-shrink-0 bg-surface-800 rounded-lg p-0.5">
+      {/* Tab nav — desktop only; mobile uses the bottom nav bar */}
+      <div className="hidden sm:flex gap-1 flex-shrink-0 bg-surface-800 rounded-lg p-0.5">
         <button
           className={[
             'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
@@ -70,6 +70,17 @@ export default function Header() {
           onClick={() => dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'memory' })}
         >
           Memory
+        </button>
+        <button
+          className={[
+            'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+            activeTab === 'usage'
+              ? 'bg-indigo-600 text-white'
+              : 'text-gray-400 hover:text-gray-200',
+          ].join(' ')}
+          onClick={() => dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'usage' })}
+        >
+          Usage
         </button>
       </div>
     </header>

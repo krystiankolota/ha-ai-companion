@@ -5,6 +5,19 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-06-15
+
+### Added — token usage observability
+- **Per-call usage/cost logging** — every LLM call now records `{phase, model, iteration, input/cached/output tokens, cost}` to an append-only `.ai_agent_usage/usage.jsonl` (rotated at 5 MB). New `GET /api/usage?days=` aggregation endpoint (totals + by model / phase / day / session).
+- **Usage tab** — new in-app tab: cost + token summary cards, cache-hit rate, stacked breakdown by model and by phase (main agent vs. suggestion/summary), and a daily bar chart. Pure-CSS charts, no new dependency.
+
+### Fixed — usage capture was always zero
+- **OpenRouter cost/usage now captured** — usage was requested via `stream_options.include_usage`, which OpenRouter's upstream providers reject; capture was then disabled for **all** model slots (one provider's rejection zeroed the main model too). Now requests usage+cost via `extra_body` for OpenRouter, captures `usage.cost`, and only disables the specific slot that rejected — so the main model keeps reporting.
+
+### Changed — mobile & cost
+- **Mobile navigation** — header tab strip is desktop-only; phones get a thumb-reachable bottom nav bar (icons + labels, ≥52px targets). DiffModal uses near-full-screen height and larger close target on mobile.
+- **Complexity routing** — simple read-only turns (no write intent, short prompt) stay on the cheaper suggestion model for the whole turn instead of switching to the config model, targeting the bulk of main-model spend. Engages only when the two models differ; `COMPLEXITY_ROUTING=off` to disable.
+
 ## [1.13.0] - 2026-06-14
 
 ### Changed — token hygiene

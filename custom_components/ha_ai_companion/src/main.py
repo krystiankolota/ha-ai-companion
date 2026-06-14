@@ -19,7 +19,7 @@ from .conversations import ConversationManager
 from .tasks import TaskManager
 from .runs import RunRegistry
 
-version = "1.13.0"
+version = "1.14.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -335,7 +335,7 @@ async def chat_websocket(websocket: WebSocket):
 
                 ok, err = await run_registry.start(
                     session_id,
-                    stream_factory=lambda um=user_message, ch=conversation_history: _agent_event_stream(um, ch),
+                    stream_factory=lambda um=user_message, ch=conversation_history, sid=session_id: _agent_event_stream(um, ch, sid),
                     on_finish=_make_run_persister(data.get("session_id"), user_message),
                 )
                 if not ok:
@@ -369,11 +369,12 @@ async def chat_websocket(websocket: WebSocket):
         await detach()
 
 
-async def _agent_event_stream(user_message: str, conversation_history):
+async def _agent_event_stream(user_message: str, conversation_history, session_id=None):
     """Adapt agent_system.chat_stream into normalized {event, data} messages."""
     async for event in agent_system.chat_stream(
         user_message=user_message,
         conversation_history=conversation_history,
+        session_id=session_id,
     ):
         event_data = event.get("data", "{}")
         if isinstance(event_data, str):
@@ -885,6 +886,20 @@ async def generate_suggestions(request: Request):
 
 
 # --- Memory endpoints ---
+
+@app.get("/api/usage")
+async def get_usage(days: int = 30):
+    """Return aggregated per-call token/cost usage over the last `days`."""
+    um = getattr(agent_system, "usage_manager", None) if agent_system else None
+    if not um:
+        return {"days": days, "totals": {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "calls": 0},
+                "by_model": {}, "by_phase": {}, "by_day": {}, "by_session": {}}
+    try:
+        days = max(1, min(int(days), 365))
+        return um.aggregate(days=days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/memory")
 async def list_memory_files():

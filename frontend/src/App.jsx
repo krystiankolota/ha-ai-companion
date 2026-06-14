@@ -10,6 +10,8 @@ import Header from './components/Header'
 import ChatTab from './components/ChatTab'
 import SuggestionsTab from './components/SuggestionsTab'
 import MemoryTab from './components/MemoryTab'
+import UsageTab from './components/UsageTab'
+import BottomNav from './components/BottomNav'
 import Footer from './components/Footer'
 import DiffModal from './components/DiffModal'
 import ClearAllModal from './components/ClearAllModal'
@@ -157,8 +159,10 @@ function AppInner() {
           {state.activeTab === 'chat' && <ChatTab onSend={sendMessage} />}
           {state.activeTab === 'suggestions' && <SuggestionsTab onImplement={sendMessage} />}
           {state.activeTab === 'memory' && <MemoryTab />}
+          {state.activeTab === 'usage' && <UsageTab />}
         </main>
         <Footer />
+        <BottomNav />
       </div>
 
       <DiffModal />
