@@ -14,7 +14,11 @@ import {
 } from '../lib/api'
 import { formatGeneratedAt } from '../lib/utils'
 
-const ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'nodered', 'memory']
+// Full set of toggleable resources (all rendered as checkboxes, all optional).
+const ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'dashboards', 'nodered', 'memory']
+// Initial/fallback selection. Dashboards excluded — full Lovelace YAML is huge and
+// burns tokens for marginal value, so it stays opt-in (user ticks it deliberately).
+const DEFAULT_RESOURCE_TYPES = ALL_RESOURCE_TYPES.filter((t) => t !== 'dashboards')
 
 const CATEGORY_ICONS = {
   lighting: '💡',
@@ -32,9 +36,15 @@ function getIcon(category) {
 function loadStoredResourceTypes() {
   try {
     const saved = localStorage.getItem('suggestionResourceTypes')
-    if (saved) return JSON.parse(saved)
+    if (saved) {
+      // Drop any retired types (e.g. 'dashboards') left in localStorage by older
+      // builds — they have no checkbox so the user can't uncheck them, yet they'd
+      // still be sent in the payload and pull huge Lovelace YAML into context.
+      const parsed = JSON.parse(saved)
+      if (Array.isArray(parsed)) return parsed.filter((t) => ALL_RESOURCE_TYPES.includes(t))
+    }
   } catch (_) {}
-  return ALL_RESOURCE_TYPES
+  return DEFAULT_RESOURCE_TYPES
 }
 
 function saveStoredResourceTypes(types) {
@@ -453,7 +463,7 @@ export default function SuggestionsTab({ onImplement }) {
     setContextSummary(null)
     setPromptDetails(null)
     try {
-      const types = resourceTypes.length ? resourceTypes : ALL_RESOURCE_TYPES
+      const types = resourceTypes.length ? resourceTypes : DEFAULT_RESOURCE_TYPES
       const data = await apiGenerateSuggestions(
         types,
         focusPrompt || undefined,

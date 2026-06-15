@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-06-15
+
+### Fixed — suggestions cost was untracked
+- **Suggestions-tab usage now logged** — `generate_suggestions()` runs on its own non-streaming code path that never requested usage accounting nor called `UsageManager.record()`, so every suggestion run showed as zero cost in the Usage tab. It now requests cost via `extra_body` (OpenRouter), reads `response.usage`, and records a `phase="suggestions"` entry. Per-slot rejection retry mirrors the main loop.
+
+### Changed — dashboards opt-in
+- **Dashboards excluded from suggestion analysis by default** — full Lovelace YAML is large and burns a lot of tokens for marginal value, so it is no longer pulled into context unless deliberately selected. Backend fallback and frontend default both drop `dashboards`; it remains a visible, toggleable checkbox (all seven resource types now render and are optional).
+- **Stale localStorage filtered** — older builds persisted `dashboards` in `suggestionResourceTypes` with no checkbox to clear it, so it was silently sent on every run. Stored types are now filtered against the current resource list on load.
+
 ## [1.14.1] - 2026-06-15
 
 ### Removed

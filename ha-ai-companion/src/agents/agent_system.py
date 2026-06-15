@@ -2612,7 +2612,11 @@ Managing production HA system. Safety and clarity are paramount."""
         try:
             logger.info("Generating automation suggestions")
             ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'dashboards', 'nodered', 'memory']
-            active_types = set(resource_types) if resource_types else set(ALL_RESOURCE_TYPES)
+            # Dashboards are huge (full Lovelace YAML) and burn a lot of tokens for
+            # marginal value, so they are opt-in: excluded from the default fallback,
+            # included only when the UI explicitly selects them.
+            DEFAULT_RESOURCE_TYPES = [t for t in ALL_RESOURCE_TYPES if t != 'dashboards']
+            active_types = set(resource_types) if resource_types else set(DEFAULT_RESOURCE_TYPES)
             context_summary = []
 
             # 1. Gather context based on selected resource types
@@ -2865,6 +2869,17 @@ Managing production HA system. Safety and clarity are paramount."""
             if self.suggestion_max_tokens:
                 api_params["max_tokens"] = self.suggestion_max_tokens
 
+            # Request usage accounting so this call lands in the Usage tab. OpenRouter
+            # only returns real USD cost + native token counts when asked via extra_body
+            # (a top-level `usage` param is rejected by the OpenAI client). Reuse the
+            # 'suggestion' slot's rejection memory — same client as the in-chat phase.
+            _sugg_tracking = self.suggestion_usage_tracking
+            _is_openrouter = 'openrouter' in str(getattr(self.suggestion_client, 'base_url', '')).lower()
+            if _sugg_tracking != 'disabled' and (_is_openrouter or _sugg_tracking == 'usage'):
+                api_params["extra_body"] = {"usage": {"include": True}}
+            if self._client_usage_ok.get('suggestion') is False:
+                api_params.pop("extra_body", None)
+
             total_chars = sum(c.get("chars", 0) for c in context_summary)
 
             # Emit context details for UI transparency before the AI call
@@ -2890,7 +2905,46 @@ Managing production HA system. Safety and clarity are paramount."""
             })
 
             await _emit(f"Calling AI model ({len(context_sections)} context sections, ~{total_chars // 1000}K chars)…")
-            response = await self.suggestion_client.chat.completions.create(**api_params)
+            try:
+                response = await self.suggestion_client.chat.completions.create(**api_params)
+                if self._client_usage_ok.get('suggestion') is None and "extra_body" in api_params:
+                    self._client_usage_ok['suggestion'] = True
+            except Exception as api_err:
+                # Provider rejected the usage param — mark slot + retry without it.
+                err_str = str(api_err).lower()
+                if "extra_body" in api_params and ('usage' in err_str or 'extra' in err_str or 'unknown' in err_str):
+                    logger.warning(f"Suggestion API rejected usage param, retrying without: {api_err}")
+                    self._client_usage_ok['suggestion'] = False
+                    api_params.pop("extra_body", None)
+                    response = await self.suggestion_client.chat.completions.create(**api_params)
+                else:
+                    raise
+
+            # Record per-call usage/cost so the Suggestions tab shows up in Usage.
+            if self.usage_manager is not None:
+                try:
+                    u = getattr(response, "usage", None)
+                    if u:
+                        in_tok = getattr(u, 'prompt_tokens', 0) or getattr(u, 'input_tokens', 0) or 0
+                        out_tok = getattr(u, 'completion_tokens', 0) or getattr(u, 'output_tokens', 0) or 0
+                        cached = 0
+                        if hasattr(u, 'cached_tokens'):
+                            cached = u.cached_tokens or 0
+                        elif getattr(u, 'prompt_tokens_details', None):
+                            cached = getattr(u.prompt_tokens_details, 'cached_tokens', 0) or 0
+                        self.usage_manager.record(
+                            session_id=None,
+                            phase="suggestions",
+                            model=self.suggestion_model,
+                            iteration=0,
+                            input_tokens=in_tok,
+                            cached_tokens=cached,
+                            output_tokens=out_tok,
+                            cost_usd=getattr(u, 'cost', 0) or 0.0,
+                        )
+                except Exception as _uerr:
+                    logger.debug("suggestions usage record failed: %s", _uerr)
+
             raw = response.choices[0].message.content.strip()
 
             # Strip markdown code fences if present
