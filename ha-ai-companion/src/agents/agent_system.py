@@ -2612,10 +2612,11 @@ Managing production HA system. Safety and clarity are paramount."""
         try:
             logger.info("Generating automation suggestions")
             ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'dashboards', 'nodered', 'memory']
-            # Dashboards are huge (full Lovelace YAML) and burn a lot of tokens for
-            # marginal value, so they are opt-in: excluded from the default fallback,
+            # Dashboards (full Lovelace YAML) and Node-RED (full flow JSON, often the
+            # single biggest section) are large and burn a lot of tokens for marginal
+            # suggestion value, so they are opt-in: excluded from the default fallback,
             # included only when the UI explicitly selects them.
-            DEFAULT_RESOURCE_TYPES = [t for t in ALL_RESOURCE_TYPES if t != 'dashboards']
+            DEFAULT_RESOURCE_TYPES = [t for t in ALL_RESOURCE_TYPES if t not in ('dashboards', 'nodered')]
             active_types = set(resource_types) if resource_types else set(DEFAULT_RESOURCE_TYPES)
             context_summary = []
 
@@ -2782,6 +2783,31 @@ Managing production HA system. Safety and clarity are paramount."""
             active_extra = (extra_prompt or "").strip() or suggestion_prompt_env
             if active_extra:
                 context_sections.append(f"## Additional focus from user\n{active_extra}")
+
+            # Hard total-context budget: very large homes (hundreds of entities + full
+            # automation YAML) can produce a prompt so big the model returns empty
+            # content. Cap the combined section size and trim the largest sections first
+            # (tail-truncate, keeping each section's header) until under budget.
+            try:
+                ctx_cap = int(os.getenv('SUGGESTION_CTX_CAP', '') or 80000)
+            except ValueError:
+                ctx_cap = 80000
+            total_section_chars = sum(len(s) for s in context_sections)
+            if total_section_chars > ctx_cap:
+                over = total_section_chars - ctx_cap
+                # Largest sections first so we shave the worst offenders, not the small ones.
+                for i in sorted(range(len(context_sections)), key=lambda j: len(context_sections[j]), reverse=True):
+                    if over <= 0:
+                        break
+                    s = context_sections[i]
+                    cut = min(over, max(0, len(s) - 200))  # never shrink a section below ~200 chars
+                    if cut > 0:
+                        context_sections[i] = s[: len(s) - cut] + f"\n…[truncated {cut} chars to fit suggestion context budget]"
+                        over -= cut
+                logger.warning(
+                    "Suggestion context %d chars exceeded %d cap — truncated largest sections (nodered/dashboards are opt-in to avoid this)",
+                    total_section_chars, ctx_cap,
+                )
 
             context = "\n\n".join(context_sections)
 

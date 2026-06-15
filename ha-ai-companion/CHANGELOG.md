@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-06-15
+
+### Changed — suggestion context diet (fixes empty-response failures on large homes)
+- **Node-RED flows now opt-in** — full flow JSON (often the single biggest context section) is excluded from suggestion analysis by default, joining dashboards. Still a visible, toggleable checkbox. Cuts the largest token sink for users who don't want Node-RED suggestions.
+- **Hard context budget** — combined suggestion context is capped (default ~80K chars, `SUGGESTION_CTX_CAP` env to override). When exceeded, the largest sections are tail-truncated first (headers preserved) until under budget. Prevents the over-large prompts that made the suggestion model return empty content (the 1.15.1 `NoneType` crash) and now degrade gracefully instead of failing.
+
 ## [1.15.1] - 2026-06-15
 
 ### Fixed — suggestions crash on empty model response

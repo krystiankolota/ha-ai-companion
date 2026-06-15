@@ -16,9 +16,10 @@ import { formatGeneratedAt } from '../lib/utils'
 
 // Full set of toggleable resources (all rendered as checkboxes, all optional).
 const ALL_RESOURCE_TYPES = ['entity_states', 'automations', 'scenes', 'scripts', 'dashboards', 'nodered', 'memory']
-// Initial/fallback selection. Dashboards excluded — full Lovelace YAML is huge and
-// burns tokens for marginal value, so it stays opt-in (user ticks it deliberately).
-const DEFAULT_RESOURCE_TYPES = ALL_RESOURCE_TYPES.filter((t) => t !== 'dashboards')
+// Initial/fallback selection. Dashboards (full Lovelace YAML) and nodered (full flow
+// JSON) are huge and burn tokens for marginal value, so they stay opt-in — the user
+// ticks them deliberately when they want suggestions for those.
+const DEFAULT_RESOURCE_TYPES = ALL_RESOURCE_TYPES.filter((t) => !['dashboards', 'nodered'].includes(t))
 
 const CATEGORY_ICONS = {
   lighting: '💡',
