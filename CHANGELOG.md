@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.1] - 2026-06-15
+
+### Fixed — Implement button always starts a new session
+- **Suggestions-tab "Implement" no longer injects the request into whatever chat session happens to be active.** It now resets the WebSocket, mints a fresh session (new id + cleared history), switches to the chat tab, and sends the implement message into that clean session. The send is deferred to a state-settled effect so it can't race the old `stateRef` and land in the previous conversation.
+
+### Fixed — standalone LLM calls now tracked in Usage
+- **Summarization, memory consolidation, scheduled tasks and clear-all extraction now record token/cost.** These non-streaming side-calls bypass the agent loop's `record()`, so their usage was invisible in the Usage tab — a config/chat session undercounted because the agent's own history-compression and consolidation token burn (firing nearly every long turn) never reached `usage.jsonl`. New `_completion_with_usage` helper requests OpenRouter cost via `extra_body`, handles per-slot rejection, and records each call under its own phase (`summarization`, `consolidation`, `task`, `memory_extraction`) — these surface automatically in `/api/usage` by-phase.
+
 ## [1.16.0] - 2026-06-15
 
 ### Changed — suggestion context diet (fixes empty-response failures on large homes)

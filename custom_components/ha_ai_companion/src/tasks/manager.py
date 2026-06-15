@@ -140,14 +140,14 @@ class TaskManager:
             "Respond in plain text only (no markdown). "
             "Keep your answer under 255 characters — it will be stored in a Home Assistant text entity."
         )
-        params = {
-            "model": agent_system.config_model,
-            "messages": [
+        response = await agent_system._completion_with_usage(
+            agent_system.config_client, 'config', phase="task",
+            model=agent_system.config_model,
+            messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": task["prompt"]},
             ],
-            "stream": False,
-            "max_tokens": 300,
-        }
-        response = await agent_system.config_client.chat.completions.create(**params)
+            stream=False,
+            max_tokens=300,
+        )
         return (response.choices[0].message.content or "").strip()[:255]

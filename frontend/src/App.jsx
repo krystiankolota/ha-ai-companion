@@ -118,6 +118,26 @@ function AppInner() {
     switchSession(sessionId, resetWS)
   }, [switchSession, resetWS])
 
+  // Implement-from-suggestions: always start a fresh session, never inject into
+  // the active one. NEW_CHAT mints a new sessionId + clears history; the send is
+  // deferred to an effect so sendMessage reads the settled (fresh) state, not the
+  // stale stateRef from this tick.
+  const pendingImplementRef = useRef(null)
+  const implementSuggestion = useCallback((message) => {
+    resetWS()
+    pendingImplementRef.current = message
+    dispatch({ type: Actions.NEW_CHAT })
+    dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'chat' })
+  }, [dispatch, resetWS])
+
+  useEffect(() => {
+    const msg = pendingImplementRef.current
+    if (msg && state.conversationHistory.length === 0) {
+      pendingImplementRef.current = null
+      sendMessage(msg)
+    }
+  }, [state.currentSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleDeleteSession = useCallback((sessionId) => {
     deleteSession(sessionId)
   }, [deleteSession])
@@ -157,7 +177,7 @@ function AppInner() {
         <Header />
         <main className="flex-1 overflow-hidden">
           {state.activeTab === 'chat' && <ChatTab onSend={sendMessage} />}
-          {state.activeTab === 'suggestions' && <SuggestionsTab onImplement={sendMessage} />}
+          {state.activeTab === 'suggestions' && <SuggestionsTab onImplement={implementSuggestion} />}
           {state.activeTab === 'memory' && <MemoryTab />}
           {state.activeTab === 'usage' && <UsageTab />}
         </main>

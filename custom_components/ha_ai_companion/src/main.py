@@ -19,7 +19,7 @@ from .conversations import ConversationManager
 from .tasks import TaskManager
 from .runs import RunRegistry
 
-version = "1.16.0"
+version = "1.16.1"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -621,7 +621,8 @@ async def clear_all_sessions():
 
             data = {"memories": []}
             try:
-                resp = await agent_system.suggestion_client.chat.completions.create(
+                resp = await agent_system._completion_with_usage(
+                    agent_system.suggestion_client, 'suggestion', phase="memory_extraction",
                     model=agent_system.suggestion_model,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
@@ -632,7 +633,8 @@ async def clear_all_sessions():
             except Exception:
                 try:
                     import re as _re
-                    resp = await agent_system.suggestion_client.chat.completions.create(
+                    resp = await agent_system._completion_with_usage(
+                        agent_system.suggestion_client, 'suggestion', phase="memory_extraction",
                         model=agent_system.suggestion_model,
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=1500,

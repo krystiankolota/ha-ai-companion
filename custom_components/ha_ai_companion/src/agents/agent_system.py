@@ -2147,6 +2147,76 @@ Managing production HA system. Safety and clarity are paramount."""
             logger.warning(f"Failed to build home topology (non-fatal): {e}")
             return ""
 
+    def _record_response_usage(self, response, *, phase: str, model: str,
+                               session_id: Optional[str] = None, iteration: int = 0) -> None:
+        """Record token/cost from a NON-streaming completion response. Never raises.
+
+        Standalone (non-agent-loop) LLM calls — summarization, consolidation, task
+        runs, clear-all extraction — otherwise show $0 in the Usage tab because they
+        bypass the streaming loop's record(). See generate_suggestions for the origin
+        of this pattern.
+        """
+        if self.usage_manager is None:
+            return
+        try:
+            u = getattr(response, "usage", None)
+            if not u:
+                return
+            in_tok = getattr(u, 'prompt_tokens', 0) or getattr(u, 'input_tokens', 0) or 0
+            out_tok = getattr(u, 'completion_tokens', 0) or getattr(u, 'output_tokens', 0) or 0
+            cached = 0
+            if hasattr(u, 'cached_tokens'):
+                cached = u.cached_tokens or 0
+            elif getattr(u, 'prompt_tokens_details', None):
+                cached = getattr(u.prompt_tokens_details, 'cached_tokens', 0) or 0
+            self.usage_manager.record(
+                session_id=session_id,
+                phase=phase,
+                model=model,
+                iteration=iteration,
+                input_tokens=in_tok,
+                cached_tokens=cached,
+                output_tokens=out_tok,
+                cost_usd=getattr(u, 'cost', 0) or 0.0,
+            )
+        except Exception as _uerr:
+            logger.debug("usage record failed (%s): %s", phase, _uerr)
+
+    async def _completion_with_usage(self, client, slot: str, *, phase: str,
+                                     session_id: Optional[str] = None, **params):
+        """Non-streaming chat completion that records token/cost usage.
+
+        Requests OpenRouter real cost via extra_body, handles provider rejection of
+        the usage param (marks the slot, retries clean), then records. Use for every
+        standalone LLM call so it shows up in /api/usage by_phase.
+        """
+        tracking = self.config_usage_tracking if slot == 'config' else self.suggestion_usage_tracking
+        is_or = 'openrouter' in str(getattr(client, 'base_url', '')).lower()
+        want_usage = (
+            tracking != 'disabled'
+            and (is_or or tracking == 'usage')
+            and self._client_usage_ok.get(slot) is not False
+        )
+        if want_usage:
+            params["extra_body"] = {"usage": {"include": True}}
+        try:
+            response = await client.chat.completions.create(**params)
+            if want_usage and self._client_usage_ok.get(slot) is None:
+                self._client_usage_ok[slot] = True
+        except Exception as api_err:
+            err_str = str(api_err).lower()
+            if want_usage and ('usage' in err_str or 'extra' in err_str or 'unknown' in err_str):
+                logger.warning("%s API rejected usage param, retrying without: %s", phase, api_err)
+                self._client_usage_ok[slot] = False
+                params.pop("extra_body", None)
+                response = await client.chat.completions.create(**params)
+            else:
+                raise
+        self._record_response_usage(
+            response, phase=phase, model=params.get("model", ""), session_id=session_id,
+        )
+        return response
+
     async def _summarize_old_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         BUG-6: When conversation history is very long (>30 messages / 15 exchanges),
@@ -2195,7 +2265,8 @@ Managing production HA system. Safety and clarity are paramount."""
 
         try:
             # Use cheaper suggestion model — summarization is compression, not reasoning.
-            resp = await self.suggestion_client.chat.completions.create(
+            resp = await self._completion_with_usage(
+                self.suggestion_client, 'suggestion', phase="summarization",
                 model=self.suggestion_model,
                 messages=summary_prompt,
                 stream=False,
@@ -2362,7 +2433,8 @@ Managing production HA system. Safety and clarity are paramount."""
             # Use suggestion model (cheaper) for background consolidation work.
             consolidation_client = self.suggestion_client
             consolidation_model = self.suggestion_model
-            response = await consolidation_client.chat.completions.create(
+            response = await self._completion_with_usage(
+                consolidation_client, 'suggestion', phase="consolidation",
                 model=consolidation_model,
                 messages=messages,
                 tools=memory_tools,
