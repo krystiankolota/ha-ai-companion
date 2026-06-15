@@ -2945,7 +2945,22 @@ Managing production HA system. Safety and clarity are paramount."""
                 except Exception as _uerr:
                     logger.debug("suggestions usage record failed: %s", _uerr)
 
-            raw = response.choices[0].message.content.strip()
+            # content can be None (model hit max_tokens with reasoning-only output,
+            # refused, or truncated on a very large prompt) and choices can be empty
+            # on some providers — guard both before .strip() so a null response gives
+            # a clear error instead of crashing the whole suggestion run.
+            choice = response.choices[0] if response.choices else None
+            raw = ((choice.message.content if choice else None) or "").strip()
+            if not raw:
+                logger.warning(
+                    "Suggestions model returned empty content (model=%s, ~%dK chars in) — likely over the output token limit or truncated",
+                    self.suggestion_model, total_chars // 1000,
+                )
+                return {
+                    "success": False,
+                    "error": "The suggestion model returned no content — the context may be too large. Try unchecking some resource types (e.g. nodered, dashboards) and generate again.",
+                    "context_summary": context_summary,
+                }
 
             # Strip markdown code fences if present
             if raw.startswith("```"):

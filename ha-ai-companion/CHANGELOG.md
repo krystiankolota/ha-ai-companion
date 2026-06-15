@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.1] - 2026-06-15
+
+### Fixed — suggestions crash on empty model response
+- **Null content no longer crashes suggestion generation** — `generate_suggestions()` called `.strip()` directly on `response.choices[0].message.content`, which is `None` when the suggestion model returns reasoning-only output, refuses, or truncates on a very large prompt. The whole run threw `AttributeError: 'NoneType' object has no attribute 'strip'` and the UI showed `J is null`. Now guards both empty `choices` and null `content`, and returns a clear error suggesting the user uncheck resource types to shrink the context.
+
 ## [1.15.0] - 2026-06-15
 
 ### Fixed — suggestions cost was untracked
