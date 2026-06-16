@@ -1495,7 +1495,31 @@ Managing production HA system. Safety and clarity are paramount."""
                 cached_tokens = 0
                 call_cost = 0.0  # OpenRouter returns actual USD cost in usage.cost
 
-                async for chunk in stream:
+                # Idle-timeout guard: a stalled provider (slow/hung stream) used to
+                # freeze the run indefinitely (UI stuck on "thinking"). Abort the run
+                # if no chunk arrives within STREAM_IDLE_TIMEOUT_S seconds.
+                _idle_timeout = float(os.getenv("STREAM_IDLE_TIMEOUT_S", "120"))
+                _stream_iter = stream.__aiter__()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            _stream_iter.__anext__(), timeout=_idle_timeout
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"[STREAM] Idle timeout ({_idle_timeout}s) — provider stalled "
+                            f"mid-stream (iteration {iteration}), aborting run"
+                        )
+                        yield {
+                            "event": "error",
+                            "data": json.dumps({
+                                "error": f"The model stopped responding (no data for "
+                                         f"{int(_idle_timeout)}s). Please try again."
+                            })
+                        }
+                        return
                     # Guard: some providers (e.g. Anthropic/Haiku) send a final
                     # usage-only chunk with an empty choices array.
                     if not chunk.choices:
@@ -1574,9 +1598,13 @@ Managing production HA system. Safety and clarity are paramount."""
                                 if tool_call_delta.function.arguments:
                                     current_tool_call["function"]["arguments"] += tool_call_delta.function.arguments
 
-                    # Check for finish reason
+                    # Finish reason marks end of generation, but OpenRouter/OpenAI
+                    # append a trailing usage-only chunk (empty choices) AFTER this
+                    # one. Breaking here skipped it, so token/cost totals logged as 0.
+                    # Keep draining — the iterator ends (StopAsyncIteration) once the
+                    # stream closes, which captures the trailing usage chunk above.
                     if chunk.choices[0].finish_reason:
-                        break
+                        continue
 
                 # Record per-call usage/cost for this iteration (Track 1).
                 if self.usage_manager is not None:

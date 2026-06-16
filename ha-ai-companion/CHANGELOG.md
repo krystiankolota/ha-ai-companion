@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-06-16
+
+### Fixed — streaming usage was logged as $0 (token/cost capture restored)
+- **The main agent streaming loop recorded zero tokens for every turn.** OpenRouter/OpenAI send usage totals in a trailing chunk (empty `choices`) *after* the `finish_reason` chunk, but the loop `break`-ed on `finish_reason` and never drained it — so `input/output/cost` stayed 0 and `UsageManager.record()` logged a zero row every iteration. This is why config/chat sessions undercounted in the Usage tab while suggestions (separate non-stream path) showed cost. Now keeps draining until the stream closes; the trailing usage chunk is captured.
+
+### Fixed — stalled provider froze the run ("AI is thinking" forever)
+- **Added a stream idle-timeout watchdog.** A slow/hung provider response had no timeout, so the run (decoupled into `RunRegistry`) hung indefinitely and the UI stayed stuck on "thinking" across reconnects. Chunk reads are now wrapped in `asyncio.wait_for`; if no data arrives within `STREAM_IDLE_TIMEOUT_S` (default 120s) the run aborts with an error event instead of hanging.
+
+### Fixed — deleted sessions reappeared
+- **A session deleted while its background run was still executing got resurrected.** The run's `persist` callback reloads-and-saves on completion, recreating the file the user had just deleted (made worse by the freeze above keeping runs alive for minutes). `ConversationManager` now keeps a bounded tombstone of deleted ids; `save_session` refuses any tombstoned id. IDs are never reused, so this is safe.
+
 ## [1.16.1] - 2026-06-15
 
 ### Fixed — Implement button always starts a new session

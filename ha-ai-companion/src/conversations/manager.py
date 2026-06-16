@@ -7,6 +7,7 @@ Sessions are automatically pruned to MAX_SESSIONS most-recent entries.
 import json
 import logging
 import re
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -25,6 +26,12 @@ class ConversationManager:
         self.sessions_dir = Path(sessions_dir)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.MAX_SESSIONS = max(1, max_sessions)
+        # Tombstones for recently-deleted ids. A background run's persist callback
+        # (main.py) reloads-and-saves on completion; if the user deleted the session
+        # while its run was still executing, that save would resurrect the deleted
+        # file. save_session refuses any id present here. IDs are never reused, so
+        # this is safe; bounded so it cannot grow without limit.
+        self._tombstones: deque = deque(maxlen=500)
         logger.info("ConversationManager initialised at %s (max_sessions=%d)", self.sessions_dir, self.MAX_SESSIONS)
         # Enforce limit immediately so a config change takes effect on restart
         self._prune_sync()
@@ -70,6 +77,9 @@ class ConversationManager:
 
     async def save_session(self, session_id: str, title: str, messages: List[Dict]) -> bool:
         """Create or overwrite a session file."""
+        if session_id in self._tombstones:
+            logger.info("Refusing to resurrect deleted session %s", session_id)
+            return False
         path = self._path(session_id)
         try:
             now = datetime.now().isoformat()
@@ -110,6 +120,7 @@ class ConversationManager:
         try:
             if path.exists():
                 path.unlink()
+                self._tombstones.append(session_id)
                 logger.info("Deleted session %s", session_id)
                 return True
         except Exception as e:

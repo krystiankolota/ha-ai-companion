@@ -141,6 +141,15 @@ class TestDeleteSession:
         ok = await mgr.delete_session("ghost")
         assert ok is False
 
+    async def test_deleted_session_not_resurrected(self, mgr):
+        # A background run's persist callback re-saves on completion; if the user
+        # deleted the session mid-run it must NOT be recreated (tombstone guard).
+        await mgr.save_session("s1", "Chat", _msgs(("user", "hi")))
+        await mgr.delete_session("s1")
+        ok = await mgr.save_session("s1", "Chat", _msgs(("user", "hi"), ("assistant", "yo")))
+        assert ok is False
+        assert not (mgr.sessions_dir / "s1.json").exists()
+
 
 # ---------------------------------------------------------------------------
 # list_sessions
