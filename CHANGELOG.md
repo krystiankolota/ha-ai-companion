@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.1] - 2026-06-26
+
+### Fixed — Node-RED tools were never exposed to the agent
+- **The agent could not see `get_nodered_flows`/`add_nodered_flow`/`edit_nodered_tab`.** The tool-schema gate checked env var `NODERED_API_URL`, but `__init__.py` sets `NODERED_URL` (the name the tool implementations in `tools.py` also read). The mismatched name was set nowhere, so `_has_nodered` was always `False` and the Node-RED tools were stripped from every request — the agent fell back to semantic-searching entities and reported it had no tool to read flows. Gate now reads `NODERED_URL`, matching `__init__.py` and `tools.py`.
+
+### Fixed — main-agent turns mislabeled "suggestion" in the Usage tab
+- **Normal chat/config turns were recorded under phase `suggestion`.** The streaming loop recorded `phase=client_slot`; read-only turns routed to the cheap model run on the `suggestion` slot, so every such turn logged as `suggestion` instead of main-agent work. Tokens were counted, just attributed to the wrong phase (the model is already captured separately). Now records `phase="main_agent"`.
+
 ## [1.17.0] - 2026-06-16
 
 ### Fixed — streaming usage was logged as $0 (token/cost capture restored)

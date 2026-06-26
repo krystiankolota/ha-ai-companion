@@ -895,9 +895,12 @@ Managing production HA system. Safety and clarity are paramount."""
                 }
             }
 
-            # Node-RED tools only available when NODERED_API_URL is configured.
+            # Node-RED tools only available when NODERED_URL is configured.
+            # (__init__.py sets NODERED_URL from the nodered_url option; the tool
+            # impls in tools.py read NODERED_URL too — must match or the schema is
+            # never exposed and the agent can't see get_nodered_flows.)
             # Avoids sending ~3000 chars of NR tool schemas to users who don't use it.
-            _has_nodered = bool(os.getenv("NODERED_API_URL"))
+            _has_nodered = bool(os.getenv("NODERED_URL"))
 
             tools = [
                 {
@@ -1244,7 +1247,7 @@ Managing production HA system. Safety and clarity are paramount."""
                 },
             ]
 
-            # Conditionally add Node-RED tools when NODERED_API_URL is configured.
+            # Conditionally add Node-RED tools when NODERED_URL is configured.
             # Saves ~3000 chars of tool schema tokens per iteration for users without NR.
             if _has_nodered:
                 tools.extend([
@@ -1611,7 +1614,12 @@ Managing production HA system. Safety and clarity are paramount."""
                     try:
                         self.usage_manager.record(
                             session_id=session_id,
-                            phase=client_slot,  # 'config' (main agent) or 'suggestion'
+                            # This IS the main agent loop. client_slot only picks
+                            # the model (suggestion slot when a read-only turn is
+                            # routed to the cheap model) — recording it as the phase
+                            # mislabeled normal turns as 'suggestion' in the Usage
+                            # tab. The model is already captured in `model` below.
+                            phase="main_agent",
                             model=active_model,
                             iteration=iteration,
                             input_tokens=input_tokens,
