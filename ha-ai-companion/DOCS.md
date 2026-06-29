@@ -137,9 +137,10 @@ log_level: "info"
 system_prompt_file: ""
 temperature: ""
 enable_cache_control: false
+max_iterations: 0
 usage_tracking: "stream_options"
-suggestion_model: ""
-config_model: ""
+research_model: ""               # Optional cheaper layer (reading, suggestions)
+reasoning_model: ""              # Optional stronger layer (planning, writing)
 suggestion_prompt: ""
 nodered_url: ""
 nodered_token: ""
@@ -159,16 +160,32 @@ output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 | `openai_model` | String | `gemini-2.5-flash` | Main model for config edits and general chat |
 | `log_level` | List | `info` | Log verbosity: `debug`, `info`, `warning`, `error` |
 
-**Dual-Model (optional)**
+**Model Layers (optional)**
+
+The agent runs two layers; each falls back to the Main Model when left blank. All three fields of a layer (model + API URL + API key) must be set together to activate that layer's own provider.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `suggestion_model` | String | `""` | Model for the suggestion phase (before tool calls). Leave empty to use `openai_model`. Tip: use a cheaper/faster model here. |
-| `suggestion_api_url` | String | `""` | API URL override for the suggestion model. Leave empty to use `openai_api_url`. |
-| `suggestion_api_key` | String | `""` | API key override for the suggestion model. Leave empty to use `openai_api_key`. |
-| `config_model` | String | `""` | Model for the config-editing phase (after tool results). Leave empty to use `openai_model`. Tip: use a stronger model here. |
-| `config_api_url` | String | `""` | API URL override for the config model. Leave empty to use `openai_api_url`. |
-| `config_api_key` | String | `""` | API key override for the config model. Leave empty to use `openai_api_key`. |
+| `research_model` | String | `""` | **Research layer (cheaper)** — reading/exploring config, simple read-only questions, the Suggestions tab. Used before the agent writes changes. Tip: use a cheaper/faster model here. |
+| `research_api_url` | String | `""` | API URL override for the research layer. Leave empty to reuse `openai_api_url`. |
+| `research_api_key` | String | `""` | API key override for the research layer. Leave empty to reuse `openai_api_key`. |
+| `reasoning_model` | String | `""` | **Reasoning layer (stronger)** — planning and writing changes (config edits, devices, Lovelace, Node-RED) once context is gathered. Tip: use a stronger model here. |
+| `reasoning_api_url` | String | `""` | API URL override for the reasoning layer. Leave empty to reuse `openai_api_url`. |
+| `reasoning_api_key` | String | `""` | API key override for the reasoning layer. Leave empty to reuse `openai_api_key`. |
+| `research_usage_tracking` | List | `default` | Per-layer usage-tracking override (`default`/`stream_options`/`usage`/`disabled`). |
+| `reasoning_usage_tracking` | List | `default` | Per-layer usage-tracking override. |
+
+> **Renamed in v1.18.0:** `suggestion_*` → `research_*`, `config_*` → `reasoning_*`. Re-enter these after updating; old env-var names are still read as a fallback.
+
+**Which model for which layer?** Combine a quality leaderboard ([livebench.ai](https://livebench.ai/) — weigh *Instruction Following*/*Language* for research, *Coding*/*Reasoning* for reasoning; or [llm-stats.com](https://llm-stats.com/) for quality+price+context together) with live prices on [openrouter.ai/models](https://openrouter.ai/models). OpenRouter slugs + approx $/1M (in / out), verify current prices:
+
+| Tier | Research layer (high-volume, quality-per-$) | Reasoning layer (correctness-critical) |
+|------|---------------------------------------------|----------------------------------------|
+| 💰 Cheapest | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-r1-0528` ($0.50 / $2.15) |
+| ⚖️ Balanced *(recommended)* | `google/gemini-3.5-flash` ($1.50 / $9.00) · `openai/gpt-5-mini` ($0.25 / $2.00) | `google/gemini-2.5-pro` ($1.25 / $10) · `openai/gpt-5.1` ($1.25 / $10) |
+| 🏆 Highest | `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-4.8` ($5 / $25) · `anthropic/claude-sonnet-4.6` ($3 / $15) |
+
+The research layer carries most of the token *volume* and produces the suggestions you read — pick a strong mid-tier model there, not the absolute cheapest. The reasoning layer carries most of the *cost per token* — spend your top budget on it.
 
 **Prompt Customisation (optional)**
 
@@ -184,6 +201,7 @@ output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 |--------|------|---------|-------------|
 | `enable_cache_control` | Boolean | `false` | Enable Anthropic prompt caching — only for Anthropic Claude models |
 | `usage_tracking` | List | `stream_options` | Token tracking: `stream_options` (OpenAI/Gemini), `usage` (Anthropic/OpenRouter), `disabled` (Ollama) |
+| `max_iterations` | Integer | `0` (=25) | Max tool-call rounds per turn before the agent stops. Lower it to cap cost on runaway turns. |
 
 **Node-RED Integration (optional)**
 
@@ -201,20 +219,6 @@ output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 | `output_price_per_1m` | Float | `0.0` | USD cost per 1 million output (completion) tokens. |
 
 When both values are set to non-zero, a `💰 $0.0000` cumulative session cost appears next to the token counter in the footer.
-
-**Token limits (optional)**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `max_tokens` | Integer | — | Global output token limit applied to all agent phases. |
-| `suggestion_max_tokens` | Integer | — | Override output token limit for the suggestion phase only. |
-| `config_max_tokens` | Integer | — | Override output token limit for the config-editing phase only. |
-
-**Session management (optional)**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `max_sessions` | Integer | `50` | Maximum number of conversation sessions to keep. Oldest sessions are deleted when the limit is exceeded. |
 
 **Common pricing reference (as of 2026-03):**
 
@@ -739,7 +743,7 @@ Manage devices and entities through the registry:
 All conversations are saved automatically to the server. Use the sidebar to switch between sessions or start a new one.
 
 - **Clear all conversations** — button in the sidebar footer: analyzes all sessions for memorable facts (saves them to memory), then deletes all sessions
-- **Max sessions** — configure `max_sessions` (default 50); oldest sessions are pruned automatically when the limit is exceeded
+- **Max sessions** — the newest 50 sessions are kept; oldest are pruned automatically when the limit is exceeded
 - **Past session search** — the agent automatically searches previous sessions when you reference prior work ("that automation we made last week"); no action required from you
 - **Runs survive tab switches** — if you switch HA panels or close the tab while the AI is working, the run continues server-side. Returning to the Companion resumes the live stream; if the run finished while you were away, the result is saved into the session automatically.
 
@@ -950,7 +954,7 @@ curl http://localhost:8099/api/config/backups?file_path=configuration.yaml
 
 - **API keys:** Stored as password fields in HA
 - **Logs:** Sensitive data not logged
-- **Conversation history:** Stored server-side in `/config/.ai_agent_sessions/` (JSON, max `max_sessions` kept)
+- **Conversation history:** Stored server-side in `/config/.ai_agent_sessions/` (JSON, newest 50 kept)
 
 #### Best Practices
 

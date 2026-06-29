@@ -16,30 +16,43 @@ configuration:
     description: >-
       Model used for configuration changes and general chat.
       Examples: claude-haiku-4-5-20251001, gemini-2.5-flash, gpt-4o, llama3.2.
-  suggestion_model:
-    name: Suggestion Model (optional)
+  research_model:
+    name: Research Layer Model (optional)
     description: >-
-      Model used for the suggestion phase (before any tools are called).
-      All three suggestion fields (model + API URL + API key) must be set together to activate.
-      Leave all three empty to use the Main Model for this phase.
-  suggestion_api_url:
-    name: Suggestion API URL (optional)
-    description: API endpoint for the suggestion model. Required when setting a suggestion model.
-  suggestion_api_key:
-    name: Suggestion API Key (optional)
-    description: API key for the suggestion model provider. Required when setting a suggestion model.
-  config_model:
-    name: Config Model (optional)
+      Cheaper model for the research layer — reading/exploring config, simple
+      read-only questions, and the Suggestions tab. Used before the agent starts
+      writing changes. All three research fields (model + API URL + API key) must be
+      set together to activate. Leave all three empty to use the Main Model.
+  research_api_url:
+    name: Research Layer API URL (optional)
+    description: API endpoint for the research-layer model. Required when setting a research model.
+  research_api_key:
+    name: Research Layer API Key (optional)
+    description: API key for the research-layer provider. Required when setting a research model.
+  reasoning_model:
+    name: Reasoning Layer Model (optional)
     description: >-
-      Model used once tool results arrive (config edits, device/entity changes, Lovelace).
-      All three config fields (model + API URL + API key) must be set together to activate.
-      Leave all three empty to use the Main Model for this phase.
-  config_api_url:
-    name: Config API URL (optional)
-    description: API endpoint for the config model. Required when setting a config model.
-  config_api_key:
-    name: Config API Key (optional)
-    description: API key for the config model provider. Required when setting a config model.
+      Stronger model for the reasoning layer — planning and writing changes
+      (config edits, device/entity changes, Lovelace, Node-RED) once the agent has
+      gathered context. All three reasoning fields (model + API URL + API key) must be
+      set together to activate. Leave all three empty to use the Main Model.
+  reasoning_api_url:
+    name: Reasoning Layer API URL (optional)
+    description: API endpoint for the reasoning-layer model. Required when setting a reasoning model.
+  reasoning_api_key:
+    name: Reasoning Layer API Key (optional)
+    description: API key for the reasoning-layer provider. Required when setting a reasoning model.
+  max_iterations:
+    name: Max Agent Iterations (optional)
+    description: >-
+      Maximum tool-call rounds per turn before the agent stops. 0 = default (25).
+      Lower it to cap cost on runaway turns.
+  input_price_per_1m:
+    name: Input Price per 1M tokens (optional)
+    description: USD price per 1M input tokens, used only to show cost in the UI. 0 = hide cost.
+  output_price_per_1m:
+    name: Output Price per 1M tokens (optional)
+    description: USD price per 1M output tokens, used only to show cost in the UI.
   log_level:
     name: Log Level
     description: Verbosity of add-on logs. Use "debug" when troubleshooting.

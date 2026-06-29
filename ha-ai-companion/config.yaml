@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "1.17.1"
+version: "1.18.0"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -43,61 +43,59 @@ privileged: []
 
 # User-configurable options
 options:
+  # ── Main model (used for everything unless a layer overrides it) ──
   openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
   openai_api_key: ""
   openai_model: "gemini-2.5-flash"
+  # ── Research layer (cheaper: reading/exploring, suggestions). Blank = use main. ──
+  research_model: ""
+  research_api_url: ""
+  research_api_key: ""
+  # ── Reasoning layer (stronger: planning, writing changes). Blank = use main. ──
+  reasoning_model: ""
+  reasoning_api_url: ""
+  reasoning_api_key: ""
+  # ── Behaviour ──
   log_level: "info"
-  system_prompt_file: ""
   temperature: ""
   enable_cache_control: false
+  max_iterations: 0
+  # ── Usage / cost ──
   usage_tracking: "stream_options"
-  suggestion_usage_tracking: "default"
-  config_usage_tracking: "default"
-  suggestion_model: ""
-  suggestion_api_url: ""
-  suggestion_api_key: ""
-  config_model: ""
-  config_api_url: ""
-  config_api_key: ""
+  research_usage_tracking: "default"
+  reasoning_usage_tracking: "default"
+  input_price_per_1m: 0.0
+  output_price_per_1m: 0.0
+  # ── Suggestions feature ──
   suggestion_prompt: ""
+  # ── Node-RED ──
   nodered_url: ""
   nodered_token: ""
   nodered_flows_file: ""
-  input_price_per_1m: 0.0
-  output_price_per_1m: 0.0
-  max_tokens: 0
-  suggestion_max_tokens: 0
-  config_max_tokens: 0
-  max_sessions: 50
-  suggestion_temperature: ""
-  max_iterations: 0
+  # ── Advanced ──
+  system_prompt_file: ""
 
 schema:
   openai_api_url: url
   openai_api_key: password?
   openai_model: str
+  research_model: str?
+  research_api_url: str?
+  research_api_key: str?
+  reasoning_model: str?
+  reasoning_api_url: str?
+  reasoning_api_key: str?
   log_level: list(debug|info|warning|error)
-  system_prompt_file: str?
   temperature: str?
   enable_cache_control: bool
+  max_iterations: int?
   usage_tracking: list(stream_options|usage|disabled)
-  suggestion_usage_tracking: list(default|stream_options|usage|disabled)?
-  config_usage_tracking: list(default|stream_options|usage|disabled)?
-  suggestion_model: str?
-  suggestion_api_url: str?
-  suggestion_api_key: str?
-  config_model: str?
-  config_api_url: str?
-  config_api_key: str?
+  research_usage_tracking: list(default|stream_options|usage|disabled)?
+  reasoning_usage_tracking: list(default|stream_options|usage|disabled)?
+  input_price_per_1m: float?
+  output_price_per_1m: float?
   suggestion_prompt: str?
   nodered_url: str?
   nodered_token: str?
   nodered_flows_file: str?
-  input_price_per_1m: float?
-  output_price_per_1m: float?
-  max_tokens: int?
-  suggestion_max_tokens: int?
-  config_max_tokens: int?
-  max_sessions: int?
-  suggestion_temperature: str?
-  max_iterations: int?
+  system_prompt_file: str?

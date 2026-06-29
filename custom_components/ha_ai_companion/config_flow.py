@@ -25,22 +25,17 @@ from .const import (
     CONF_NODERED_URL,
     CONF_NODERED_TOKEN,
     CONF_SUGGESTION_PROMPT,
-    CONF_SUGGESTION_MODEL,
-    CONF_SUGGESTION_API_URL,
-    CONF_SUGGESTION_API_KEY,
-    CONF_CONFIG_MODEL,
-    CONF_CONFIG_API_URL,
-    CONF_CONFIG_API_KEY,
-    CONF_SUGGESTION_USAGE_TRACKING,
-    CONF_CONFIG_USAGE_TRACKING,
+    CONF_RESEARCH_MODEL,
+    CONF_RESEARCH_API_URL,
+    CONF_RESEARCH_API_KEY,
+    CONF_REASONING_MODEL,
+    CONF_REASONING_API_URL,
+    CONF_REASONING_API_KEY,
+    CONF_RESEARCH_USAGE_TRACKING,
+    CONF_REASONING_USAGE_TRACKING,
     CONF_INPUT_PRICE_PER_1M,
     CONF_OUTPUT_PRICE_PER_1M,
-    CONF_MAX_TOKENS,
-    CONF_SUGGESTION_MAX_TOKENS,
-    CONF_CONFIG_MAX_TOKENS,
-    CONF_MAX_SESSIONS,
     CONF_MAX_SUGGESTIONS,
-    CONF_SUGGESTION_TEMPERATURE,
     CONF_MAX_ITERATIONS,
     DEFAULT_API_URL,
     DEFAULT_MODEL,
@@ -65,22 +60,17 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
     vol.Optional(CONF_NODERED_TOKEN): cv.string,
     vol.Optional(CONF_NODERED_FLOWS_FILE): cv.string,
     vol.Optional(CONF_SUGGESTION_PROMPT): cv.string,
-    vol.Optional(CONF_SUGGESTION_MODEL): cv.string,
-    vol.Optional(CONF_SUGGESTION_API_URL): cv.string,
-    vol.Optional(CONF_SUGGESTION_API_KEY): cv.string,
-    vol.Optional(CONF_CONFIG_MODEL): cv.string,
-    vol.Optional(CONF_CONFIG_API_URL): cv.string,
-    vol.Optional(CONF_CONFIG_API_KEY): cv.string,
-    vol.Optional(CONF_SUGGESTION_USAGE_TRACKING, default="default"): vol.In(["default", "stream_options", "usage", "disabled"]),
-    vol.Optional(CONF_CONFIG_USAGE_TRACKING, default="default"): vol.In(["default", "stream_options", "usage", "disabled"]),
+    vol.Optional(CONF_RESEARCH_MODEL): cv.string,
+    vol.Optional(CONF_RESEARCH_API_URL): cv.string,
+    vol.Optional(CONF_RESEARCH_API_KEY): cv.string,
+    vol.Optional(CONF_REASONING_MODEL): cv.string,
+    vol.Optional(CONF_REASONING_API_URL): cv.string,
+    vol.Optional(CONF_REASONING_API_KEY): cv.string,
+    vol.Optional(CONF_RESEARCH_USAGE_TRACKING, default="default"): vol.In(["default", "stream_options", "usage", "disabled"]),
+    vol.Optional(CONF_REASONING_USAGE_TRACKING, default="default"): vol.In(["default", "stream_options", "usage", "disabled"]),
     vol.Optional(CONF_INPUT_PRICE_PER_1M): vol.Coerce(float),
     vol.Optional(CONF_OUTPUT_PRICE_PER_1M): vol.Coerce(float),
-    vol.Optional(CONF_MAX_TOKENS): cv.positive_int,
-    vol.Optional(CONF_SUGGESTION_MAX_TOKENS): cv.positive_int,
-    vol.Optional(CONF_CONFIG_MAX_TOKENS): cv.positive_int,
-    vol.Optional(CONF_MAX_SESSIONS): cv.positive_int,
     vol.Optional(CONF_MAX_SUGGESTIONS): cv.positive_int,
-    vol.Optional(CONF_SUGGESTION_TEMPERATURE): cv.string,
     vol.Optional(CONF_MAX_ITERATIONS): cv.positive_int,
 })
 
@@ -194,24 +184,23 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema({
                 vol.Optional(CONF_API_URL, default=self._get(CONF_API_URL, DEFAULT_API_URL)): cv.string,
                 vol.Optional(CONF_MODEL, default=self._get(CONF_MODEL, DEFAULT_MODEL)): cv.string,
-                vol.Optional(CONF_MAX_TOKENS, default=self._get(CONF_MAX_TOKENS, 0)): cv.positive_int,
                 vol.Optional(CONF_TEMPERATURE, default=self._get(CONF_TEMPERATURE)): vol.Coerce(float),
                 vol.Optional(CONF_LOG_LEVEL, default=self._get(CONF_LOG_LEVEL, DEFAULT_LOG_LEVEL)): vol.In(["debug", "info", "warning", "error"]),
                 vol.Optional(CONF_USAGE_TRACKING, default=self._get(CONF_USAGE_TRACKING, DEFAULT_USAGE_TRACKING)): vol.In(["stream_options", "usage", "disabled"]),
                 vol.Optional(CONF_ENABLE_CACHE_CONTROL, default=self._get(CONF_ENABLE_CACHE_CONTROL, False)): cv.boolean,
-                vol.Optional(CONF_MAX_SESSIONS, default=self._get(CONF_MAX_SESSIONS, DEFAULT_MAX_SESSIONS)): cv.positive_int,
                 vol.Optional(CONF_MAX_ITERATIONS, default=self._get(CONF_MAX_ITERATIONS, 25)): cv.positive_int,
                 vol.Optional(CONF_INPUT_PRICE_PER_1M, default=self._get(CONF_INPUT_PRICE_PER_1M, 0.0)): vol.Coerce(float),
                 vol.Optional(CONF_OUTPUT_PRICE_PER_1M, default=self._get(CONF_OUTPUT_PRICE_PER_1M, 0.0)): vol.Coerce(float),
             }),
         )
 
-    # ── Step 2: Suggestion & Config phase overrides ───────────────────────────
+    # ── Step 2: Model layers (research / reasoning) ───────────────────────────
+    # step_id stays "suggestion_phase" to keep existing translation keys valid.
 
     async def async_step_suggestion_phase(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 2 — Suggestion and config phase model overrides."""
+        """Step 2 — Research (cheaper) and reasoning (stronger) layer overrides."""
         if user_input is not None:
             self._options.update(user_input)
             return await self.async_step_advanced()
@@ -219,19 +208,16 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="suggestion_phase",
             data_schema=vol.Schema({
-                vol.Optional(CONF_SUGGESTION_MODEL, default=self._get(CONF_SUGGESTION_MODEL, "")): cv.string,
-                vol.Optional(CONF_SUGGESTION_API_URL, default=self._get(CONF_SUGGESTION_API_URL, "")): cv.string,
-                vol.Optional(CONF_SUGGESTION_API_KEY, default=self._get(CONF_SUGGESTION_API_KEY, "")): cv.string,
-                vol.Optional(CONF_SUGGESTION_MAX_TOKENS, default=self._get(CONF_SUGGESTION_MAX_TOKENS, 0)): cv.positive_int,
-                vol.Optional(CONF_SUGGESTION_TEMPERATURE, default=self._get(CONF_SUGGESTION_TEMPERATURE, "")): cv.string,
+                vol.Optional(CONF_RESEARCH_MODEL, default=self._get(CONF_RESEARCH_MODEL, "")): cv.string,
+                vol.Optional(CONF_RESEARCH_API_URL, default=self._get(CONF_RESEARCH_API_URL, "")): cv.string,
+                vol.Optional(CONF_RESEARCH_API_KEY, default=self._get(CONF_RESEARCH_API_KEY, "")): cv.string,
+                vol.Optional(CONF_RESEARCH_USAGE_TRACKING, default=self._get(CONF_RESEARCH_USAGE_TRACKING, "default")): vol.In(["default", "stream_options", "usage", "disabled"]),
+                vol.Optional(CONF_REASONING_MODEL, default=self._get(CONF_REASONING_MODEL, "")): cv.string,
+                vol.Optional(CONF_REASONING_API_URL, default=self._get(CONF_REASONING_API_URL, "")): cv.string,
+                vol.Optional(CONF_REASONING_API_KEY, default=self._get(CONF_REASONING_API_KEY, "")): cv.string,
+                vol.Optional(CONF_REASONING_USAGE_TRACKING, default=self._get(CONF_REASONING_USAGE_TRACKING, "default")): vol.In(["default", "stream_options", "usage", "disabled"]),
                 vol.Optional(CONF_SUGGESTION_PROMPT, default=self._get(CONF_SUGGESTION_PROMPT, "")): cv.string,
                 vol.Optional(CONF_MAX_SUGGESTIONS, default=self._get(CONF_MAX_SUGGESTIONS, DEFAULT_MAX_SUGGESTIONS)): cv.positive_int,
-                vol.Optional(CONF_CONFIG_MODEL, default=self._get(CONF_CONFIG_MODEL, "")): cv.string,
-                vol.Optional(CONF_CONFIG_API_URL, default=self._get(CONF_CONFIG_API_URL, "")): cv.string,
-                vol.Optional(CONF_CONFIG_API_KEY, default=self._get(CONF_CONFIG_API_KEY, "")): cv.string,
-                vol.Optional(CONF_CONFIG_MAX_TOKENS, default=self._get(CONF_CONFIG_MAX_TOKENS, 0)): cv.positive_int,
-                vol.Optional(CONF_SUGGESTION_USAGE_TRACKING, default=self._get(CONF_SUGGESTION_USAGE_TRACKING, "default")): vol.In(["default", "stream_options", "usage", "disabled"]),
-                vol.Optional(CONF_CONFIG_USAGE_TRACKING, default=self._get(CONF_CONFIG_USAGE_TRACKING, "default")): vol.In(["default", "stream_options", "usage", "disabled"]),
             }),
         )
 

@@ -110,11 +110,15 @@ class AgentSystem:
 
         self.model = os.getenv('OPENAI_MODEL', 'gpt-4o')
 
-        # Suggestion model — independent provider, all 3 vars must be set to activate.
-        # No fallback mixing: if any of the 3 are missing, main client+model is used.
-        _s_model = os.getenv('SUGGESTION_MODEL')
-        _s_url   = os.getenv('SUGGESTION_API_URL')
-        _s_key   = os.getenv('SUGGESTION_API_KEY')
+        # Research layer (cheaper) — used for the read/explore phase, suggestions,
+        # summarization, consolidation. Independent provider; all 3 vars must be
+        # set to activate. No fallback mixing: if any are missing, main client is used.
+        # New env names RESEARCH_* with back-compat fallback to the old SUGGESTION_*.
+        # Internal attribute names stay `suggestion_*` (slot key "suggestion" is reused
+        # for usage-tracking rejection memory and usage.jsonl phase aggregation).
+        _s_model = os.getenv('RESEARCH_MODEL')   or os.getenv('SUGGESTION_MODEL')
+        _s_url   = os.getenv('RESEARCH_API_URL') or os.getenv('SUGGESTION_API_URL')
+        _s_key   = os.getenv('RESEARCH_API_KEY') or os.getenv('SUGGESTION_API_KEY')
         if _s_model and _s_url and _s_key:
             self.suggestion_model = _s_model
             self.suggestion_client = AsyncOpenAI(api_key=_s_key, base_url=_s_url)
@@ -122,10 +126,12 @@ class AgentSystem:
             self.suggestion_model = self.model
             self.suggestion_client = self.client
 
-        # Config model — independent provider, all 3 vars must be set to activate.
-        _c_model = os.getenv('CONFIG_MODEL')
-        _c_url   = os.getenv('CONFIG_API_URL')
-        _c_key   = os.getenv('CONFIG_API_KEY')
+        # Reasoning layer (stronger) — used once tool results exist (planning, writing
+        # config/Lovelace/Node-RED changes). New env names REASONING_* with back-compat
+        # fallback to the old CONFIG_*. Internal attribute names stay `config_*`.
+        _c_model = os.getenv('REASONING_MODEL')   or os.getenv('CONFIG_MODEL')
+        _c_url   = os.getenv('REASONING_API_URL') or os.getenv('CONFIG_API_URL')
+        _c_key   = os.getenv('REASONING_API_KEY') or os.getenv('CONFIG_API_KEY')
         if _c_model and _c_url and _c_key:
             self.config_model = _c_model
             self.config_client = AsyncOpenAI(api_key=_c_key, base_url=_c_url)
@@ -139,7 +145,7 @@ class AgentSystem:
 
         # Suggestion calls use a lower temperature by default (0.2) to reduce hallucination.
         # Can be overridden via SUGGESTION_TEMPERATURE env var.
-        suggestion_temp_str = os.getenv('SUGGESTION_TEMPERATURE', '0.2')
+        suggestion_temp_str = os.getenv('RESEARCH_TEMPERATURE') or os.getenv('SUGGESTION_TEMPERATURE', '0.2')
         self.suggestion_temperature = float(suggestion_temp_str)
 
         # Pricing (cost display in UI) — default 0 means cost won't be shown
@@ -152,8 +158,8 @@ class AgentSystem:
             return int(val) if val and val.isdigit() and int(val) > 0 else None
 
         self.max_tokens = _int_env('MAX_TOKENS')
-        self.suggestion_max_tokens = _int_env('SUGGESTION_MAX_TOKENS') or self.max_tokens
-        self.config_max_tokens = _int_env('CONFIG_MAX_TOKENS') or self.max_tokens
+        self.suggestion_max_tokens = _int_env('RESEARCH_MAX_TOKENS') or _int_env('SUGGESTION_MAX_TOKENS') or self.max_tokens
+        self.config_max_tokens = _int_env('REASONING_MAX_TOKENS') or _int_env('CONFIG_MAX_TOKENS') or self.max_tokens
 
         # Per-client cache: tracks whether usage-tracking params were rejected (BUG-8)
         # Keys: 'main', 'suggestion', 'config' — value: True = params accepted, False = rejected
@@ -176,9 +182,9 @@ class AgentSystem:
 
         # Store usage tracking mode (global) and per-phase overrides
         self.usage_tracking = usage_tracking
-        _su = os.getenv('SUGGESTION_USAGE_TRACKING', 'default').strip().lower()
+        _su = (os.getenv('RESEARCH_USAGE_TRACKING') or os.getenv('SUGGESTION_USAGE_TRACKING', 'default')).strip().lower()
         self.suggestion_usage_tracking = usage_tracking if _su == 'default' else _su
-        _cu = os.getenv('CONFIG_USAGE_TRACKING', 'default').strip().lower()
+        _cu = (os.getenv('REASONING_USAGE_TRACKING') or os.getenv('CONFIG_USAGE_TRACKING', 'default')).strip().lower()
         self.config_usage_tracking = usage_tracking if _cu == 'default' else _cu
 
         logger.info(f"AgentSystem initialized with model: {self.model}")
@@ -333,7 +339,10 @@ Automation safety rules (CRITICAL):
 - Your proposed content for each file MUST include ALL existing automations/scripts/scenes in that file PLUS any new ones.
 - NEVER submit a partial list — removing existing automations is permanent data loss.
 - If you only want to add one automation, copy ALL existing ones from that file first, then append the new one at the end.
-- When the user has a split-file setup (multiple files per category), edit ONLY the relevant file — do NOT merge all files into one.
+- File layout: MATCH the user's existing convention — detect it first, do not impose one. Use search_config_files to see where their automations/scripts/scenes already live:
+  - If they keep everything in a single top-level file (automations.yaml / scripts.yaml / scenes.yaml), add new entries there — do NOT create a brand-new file under automations/ (or scripts/, scenes/).
+  - If they already use split files (e.g. automations/heating.yaml), add to the appropriate existing file and edit it in place — do NOT collapse the split files into one.
+- Do not switch the user from one layout to the other. When the existing layout is genuinely unclear, prefer the single top-level file (HA's default) or ask which file they want.
 
 Entity ID rules (CRITICAL — prevents broken automations):
 - NEVER invent or guess entity IDs. Only use entity_ids you have seen in this conversation — either from get_entity_states results, from configuration files you read this turn, or from the Home Layout section.
