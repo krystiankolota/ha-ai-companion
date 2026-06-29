@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
 from ..agents.tools import AgentTools
+from ..env_utils import env_positive_int
 from ..config import ConfigurationManager
 from ..memory.manager import MemoryManager
 from ..usage.manager import UsageManager
@@ -1373,11 +1374,9 @@ Managing production HA system. Safety and clarity are paramount."""
             new_messages = []
 
             # Loop to handle multiple rounds of tool calls.
-            # 0/blank/invalid → default 25 (the add-on option defaults to 0 = "model default";
-            # run.sh exports it as "0", so a bare int() would set the limit to 0 and abort every
-            # turn with "maximum iteration limit reached"). Only a positive value overrides.
-            _mi_raw = (os.getenv('MAX_ITERATIONS', '') or '').strip()
-            max_iterations = int(_mi_raw) if _mi_raw.isdigit() and int(_mi_raw) > 0 else 25
+            # 0/blank/invalid → default 25 (the add-on option defaults to 0; run.sh exports
+            # "0", so a bare int() would set the limit to 0 and abort every turn). See env_utils.
+            max_iterations = env_positive_int('MAX_ITERATIONS', 25)
             iteration = 0
 
             # Track cumulative token usage across all iterations
