@@ -1372,8 +1372,12 @@ Managing production HA system. Safety and clarity are paramount."""
             # Track tool calls and results
             new_messages = []
 
-            # Loop to handle multiple rounds of tool calls
-            max_iterations = int(os.getenv('MAX_ITERATIONS', '25'))
+            # Loop to handle multiple rounds of tool calls.
+            # 0/blank/invalid → default 25 (the add-on option defaults to 0 = "model default";
+            # run.sh exports it as "0", so a bare int() would set the limit to 0 and abort every
+            # turn with "maximum iteration limit reached"). Only a positive value overrides.
+            _mi_raw = (os.getenv('MAX_ITERATIONS', '') or '').strip()
+            max_iterations = int(_mi_raw) if _mi_raw.isdigit() and int(_mi_raw) > 0 else 25
             iteration = 0
 
             # Track cumulative token usage across all iterations
