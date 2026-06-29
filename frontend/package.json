@@ -8,6 +8,7 @@
     "postbuild": "node scripts/sync.js",
     "sync": "node scripts/sync.js",
     "check:release": "node scripts/check-release.js",
+    "release": "node scripts/release.js",
     "version:bump": "node scripts/bump-version.js",
     "preview": "vite preview"
   },
