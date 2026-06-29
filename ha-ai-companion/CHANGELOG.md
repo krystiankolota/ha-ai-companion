@@ -5,6 +5,21 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-06-29
+
+### Changed — model config is now "layers" (research / reasoning), not "suggestion / config"
+- **Renamed the dual-model slots to semantic layers.** The cheap slot (read/explore phase + Suggestions + summarization) is now the **research layer** (`research_model` / `research_api_url` / `research_api_key` / `research_usage_tracking`, was `suggestion_*`). The strong slot (planning/writing once tool results exist) is now the **reasoning layer** (`reasoning_*`, was `config_*`). `suggestion_prompt` stays — it's a Suggestions-tab text knob, not a layer.
+- **Back-compat:** old env-var names (`SUGGESTION_*`/`CONFIG_*`) are still read as a fallback, so a mid-upgrade add-on keeps working. Internal attribute names and `usage.jsonl` phase strings are unchanged (renaming them would split historical Usage-tab data). Re-enter the model fields once under the new names after updating.
+- **README/DOCS now recommend models per layer in tiers** (cheapest / balanced / highest), grounded in livebench.ai quality columns + live OpenRouter slugs & pricing. Research layer favours best quality-per-dollar (e.g. `gemini-3.5-flash`), reasoning layer favours top coding/reasoning (e.g. `claude-opus-4.8`).
+
+### Changed — config declutter
+- **Removed 5 add-on options that never did anything for add-on users** (`run.sh` never exported them): `max_tokens`, `suggestion_max_tokens`, `config_max_tokens`, `max_sessions`, `suggestion_temperature`. The code still reads these env vars for advanced/HACS overrides; only the dead add-on knobs are gone. Max sessions is fixed at the default 50.
+- **Wired 3 useful options into the add-on** that were previously HACS-only: `max_iterations`, `input_price_per_1m`, `output_price_per_1m` (`run.sh` now exports them).
+- **Regrouped `config.yaml`** into commented sections (Main model / Research layer / Reasoning layer / Behaviour / Usage & cost / Suggestions / Node-RED / Advanced).
+
+### Changed — agent matches your automation file layout (no new split files)
+- **The agent now detects your existing convention instead of inventing one.** If your automations live in a single `automations.yaml`, new ones are added there (it no longer spawns a stray `automations/something.yaml`). If you already use split files under `automations/`, it keeps adding to the right file. It won't switch you between layouts. System-prompt automation rules updated.
+
 ## [1.17.1] - 2026-06-26
 
 ### Fixed — Node-RED tools were never exposed to the agent

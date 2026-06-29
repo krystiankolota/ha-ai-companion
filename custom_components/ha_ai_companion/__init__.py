@@ -26,22 +26,17 @@ from .const import (
     CONF_NODERED_URL,
     CONF_NODERED_TOKEN,
     CONF_SUGGESTION_PROMPT,
-    CONF_SUGGESTION_MODEL,
-    CONF_SUGGESTION_API_URL,
-    CONF_SUGGESTION_API_KEY,
-    CONF_CONFIG_MODEL,
-    CONF_CONFIG_API_URL,
-    CONF_CONFIG_API_KEY,
-    CONF_SUGGESTION_USAGE_TRACKING,
-    CONF_CONFIG_USAGE_TRACKING,
+    CONF_RESEARCH_MODEL,
+    CONF_RESEARCH_API_URL,
+    CONF_RESEARCH_API_KEY,
+    CONF_REASONING_MODEL,
+    CONF_REASONING_API_URL,
+    CONF_REASONING_API_KEY,
+    CONF_RESEARCH_USAGE_TRACKING,
+    CONF_REASONING_USAGE_TRACKING,
     CONF_INPUT_PRICE_PER_1M,
     CONF_OUTPUT_PRICE_PER_1M,
-    CONF_MAX_TOKENS,
-    CONF_SUGGESTION_MAX_TOKENS,
-    CONF_CONFIG_MAX_TOKENS,
-    CONF_MAX_SESSIONS,
     CONF_MAX_SUGGESTIONS,
-    CONF_SUGGESTION_TEMPERATURE,
     CONF_MAX_ITERATIONS,
 )
 
@@ -113,18 +108,13 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
     if config.get(CONF_TEMPERATURE):
         os.environ["TEMPERATURE"] = str(config.get(CONF_TEMPERATURE))
 
-    if config.get(CONF_SUGGESTION_TEMPERATURE):
-        os.environ["SUGGESTION_TEMPERATURE"] = str(config.get(CONF_SUGGESTION_TEMPERATURE))
-    elif "SUGGESTION_TEMPERATURE" in os.environ:
-        del os.environ["SUGGESTION_TEMPERATURE"]
-
     if config.get(CONF_SYSTEM_PROMPT_FILE):
         os.environ["SYSTEM_PROMPT_FILE"] = config.get(CONF_SYSTEM_PROMPT_FILE)
 
     os.environ["ENABLE_CACHE_CONTROL"] = str(config.get(CONF_ENABLE_CACHE_CONTROL, False)).lower()
     os.environ["USAGE_TRACKING"] = config.get(CONF_USAGE_TRACKING, "stream_options")
-    os.environ["SUGGESTION_USAGE_TRACKING"] = config.get(CONF_SUGGESTION_USAGE_TRACKING, "default")
-    os.environ["CONFIG_USAGE_TRACKING"] = config.get(CONF_CONFIG_USAGE_TRACKING, "default")
+    os.environ["RESEARCH_USAGE_TRACKING"] = config.get(CONF_RESEARCH_USAGE_TRACKING, "default")
+    os.environ["REASONING_USAGE_TRACKING"] = config.get(CONF_REASONING_USAGE_TRACKING, "default")
     os.environ["MEMORY_DIR"] = os.path.join(hass.config.config_dir, ".ai_agent_memories")
     os.environ["SESSIONS_DIR"] = os.path.join(hass.config.config_dir, ".ai_agent_sessions")
 
@@ -148,35 +138,35 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
     elif "SUGGESTION_PROMPT" in os.environ:
         del os.environ["SUGGESTION_PROMPT"]
 
-    if config.get(CONF_SUGGESTION_MODEL):
-        os.environ["SUGGESTION_MODEL"] = config.get(CONF_SUGGESTION_MODEL)
-    elif "SUGGESTION_MODEL" in os.environ:
-        del os.environ["SUGGESTION_MODEL"]
+    if config.get(CONF_RESEARCH_MODEL):
+        os.environ["RESEARCH_MODEL"] = config.get(CONF_RESEARCH_MODEL)
+    elif "RESEARCH_MODEL" in os.environ:
+        del os.environ["RESEARCH_MODEL"]
 
-    if config.get(CONF_SUGGESTION_API_URL):
-        os.environ["SUGGESTION_API_URL"] = config.get(CONF_SUGGESTION_API_URL)
-    elif "SUGGESTION_API_URL" in os.environ:
-        del os.environ["SUGGESTION_API_URL"]
+    if config.get(CONF_RESEARCH_API_URL):
+        os.environ["RESEARCH_API_URL"] = config.get(CONF_RESEARCH_API_URL)
+    elif "RESEARCH_API_URL" in os.environ:
+        del os.environ["RESEARCH_API_URL"]
 
-    if config.get(CONF_SUGGESTION_API_KEY):
-        os.environ["SUGGESTION_API_KEY"] = config.get(CONF_SUGGESTION_API_KEY)
-    elif "SUGGESTION_API_KEY" in os.environ:
-        del os.environ["SUGGESTION_API_KEY"]
+    if config.get(CONF_RESEARCH_API_KEY):
+        os.environ["RESEARCH_API_KEY"] = config.get(CONF_RESEARCH_API_KEY)
+    elif "RESEARCH_API_KEY" in os.environ:
+        del os.environ["RESEARCH_API_KEY"]
 
-    if config.get(CONF_CONFIG_MODEL):
-        os.environ["CONFIG_MODEL"] = config.get(CONF_CONFIG_MODEL)
-    elif "CONFIG_MODEL" in os.environ:
-        del os.environ["CONFIG_MODEL"]
+    if config.get(CONF_REASONING_MODEL):
+        os.environ["REASONING_MODEL"] = config.get(CONF_REASONING_MODEL)
+    elif "REASONING_MODEL" in os.environ:
+        del os.environ["REASONING_MODEL"]
 
-    if config.get(CONF_CONFIG_API_URL):
-        os.environ["CONFIG_API_URL"] = config.get(CONF_CONFIG_API_URL)
-    elif "CONFIG_API_URL" in os.environ:
-        del os.environ["CONFIG_API_URL"]
+    if config.get(CONF_REASONING_API_URL):
+        os.environ["REASONING_API_URL"] = config.get(CONF_REASONING_API_URL)
+    elif "REASONING_API_URL" in os.environ:
+        del os.environ["REASONING_API_URL"]
 
-    if config.get(CONF_CONFIG_API_KEY):
-        os.environ["CONFIG_API_KEY"] = config.get(CONF_CONFIG_API_KEY)
-    elif "CONFIG_API_KEY" in os.environ:
-        del os.environ["CONFIG_API_KEY"]
+    if config.get(CONF_REASONING_API_KEY):
+        os.environ["REASONING_API_KEY"] = config.get(CONF_REASONING_API_KEY)
+    elif "REASONING_API_KEY" in os.environ:
+        del os.environ["REASONING_API_KEY"]
 
     if config.get(CONF_INPUT_PRICE_PER_1M) is not None:
         os.environ["INPUT_PRICE_PER_1M"] = str(config.get(CONF_INPUT_PRICE_PER_1M))
@@ -189,10 +179,6 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
         del os.environ["OUTPUT_PRICE_PER_1M"]
 
     for _conf, _env in [
-        (CONF_MAX_TOKENS, "MAX_TOKENS"),
-        (CONF_SUGGESTION_MAX_TOKENS, "SUGGESTION_MAX_TOKENS"),
-        (CONF_CONFIG_MAX_TOKENS, "CONFIG_MAX_TOKENS"),
-        (CONF_MAX_SESSIONS, "MAX_SESSIONS"),
         (CONF_MAX_SUGGESTIONS, "MAX_SUGGESTIONS"),
         (CONF_MAX_ITERATIONS, "MAX_ITERATIONS"),
     ]:

@@ -5,6 +5,21 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-06-29
+
+### Changed — model config is now "layers" (research / reasoning), not "suggestion / config"
+- **Renamed the dual-model slots to semantic layers.** Cheap slot (read/explore phase + Suggestions + summarization) → **research layer** (`research_*`, was `suggestion_*`). Strong slot (planning/writing once tool results exist) → **reasoning layer** (`reasoning_*`, was `config_*`). `suggestion_prompt` stays (Suggestions-tab text knob, not a layer).
+- **Back-compat:** old env names (`SUGGESTION_*`/`CONFIG_*`) still read as a fallback. Internal attribute names + `usage.jsonl` phase strings unchanged. Re-enter the model fields once under the new names after updating.
+- **README/DOCS recommend models per layer in tiers** (cheapest / balanced / highest), grounded in livebench.ai / llm-stats.com quality + live OpenRouter slugs & pricing.
+
+### Changed — config declutter
+- **Removed 5 dead add-on options** (`run.sh` never exported them): `max_tokens`, `suggestion_max_tokens`, `config_max_tokens`, `max_sessions`, `suggestion_temperature`. Env still read for advanced/HACS; max sessions fixed at default 50.
+- **Wired 3 useful options into the add-on**: `max_iterations`, `input_price_per_1m`, `output_price_per_1m`.
+- **Regrouped `config.yaml`** into commented sections.
+
+### Changed — agent matches your automation file layout (no new split files)
+- **The agent detects your existing convention instead of inventing one.** Single `automations.yaml` → new entries go there (no stray `automations/something.yaml`); existing split-file setups keep working. It won't switch you between layouts.
+
 ## [1.17.1] - 2026-06-26
 
 ### Fixed — Node-RED tools were never exposed to the agent

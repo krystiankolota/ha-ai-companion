@@ -61,21 +61,18 @@ Copy the `custom_components/ha_ai_companion/` folder into your Home Assistant `c
 | `suggestion_prompt` | Extra instructions appended to the system prompt (optional) | — |
 | `enable_cache_control` | Enable prompt caching (Anthropic Claude only) | `false` |
 | `usage_tracking` | Token tracking: `stream_options`, `usage`, `disabled` | `stream_options` |
-| `suggestion_model` | Separate model for the suggestion phase (optional) | main model |
-| `suggestion_api_url` | API URL for suggestion model (optional) | main URL |
-| `suggestion_api_key` | API key for suggestion model (optional) | main key |
-| `config_model` | Separate model for config-editing phase (optional) | main model |
-| `config_api_url` | API URL for config model (optional) | main URL |
-| `config_api_key` | API key for config model (optional) | main key |
+| `max_iterations` | Max tool-call rounds per turn (0 = default 25) | `0` |
+| `research_model` | Research layer (cheaper) — reading/exploring & suggestions (optional) | main model |
+| `research_api_url` | API URL for research layer (optional) | main URL |
+| `research_api_key` | API key for research layer (optional) | main key |
+| `reasoning_model` | Reasoning layer (stronger) — planning & writing changes (optional) | main model |
+| `reasoning_api_url` | API URL for reasoning layer (optional) | main URL |
+| `reasoning_api_key` | API key for reasoning layer (optional) | main key |
 | `nodered_url` | Node-RED base URL (optional) | — |
 | `nodered_token` | Node-RED API token (optional, if auth enabled) | — |
 | `nodered_flows_file` | Path to Node-RED flows JSON export relative to `/config` (optional) | — |
 | `input_price_per_1m` | USD per 1M input tokens — enables 💰 cost display in footer | `0.0` |
 | `output_price_per_1m` | USD per 1M output tokens | `0.0` |
-| `max_tokens` | Global output token limit | — |
-| `suggestion_max_tokens` | Token limit for suggestion phase | — |
-| `config_max_tokens` | Token limit for config-editing phase | — |
-| `max_sessions` | Max conversation sessions to keep | `50` |
 
 ### AI Provider Examples
 
@@ -161,6 +158,59 @@ openai_api_key: "ollama"
 openai_model: "llama3.2"
 usage_tracking: "disabled"
 ```
+
+---
+
+## 🧩 Model layers — which model for which layer
+
+The agent runs two layers. Pointing each at a different model is the single biggest cost/quality lever:
+
+- **Research layer** (`research_model`) — the high-volume work: reading and exploring your config, answering simple read-only questions, and generating Suggestions. Runs *before* any change is written. Optimise for the **best output quality per dollar** — a strong mid-tier model (not the rock-bottom cheapest), since suggestion quality is what you actually read.
+- **Reasoning layer** (`reasoning_model`) — the correctness-critical work: planning and writing config / dashboard / Node-RED changes once context is gathered. Optimise for top **coding + reasoning quality**.
+
+Leave a layer blank to fall back to `openai_model`. A layer activates its own provider only when all three of its fields (model + API URL + API key) are set.
+
+### Picking models from a benchmark
+
+Rankings shift monthly — combine a live quality leaderboard like **[livebench.ai](https://livebench.ai/)** or **[llm-stats.com](https://llm-stats.com/)** (quality + price + context side by side) with the live slugs/pricing on **[openrouter.ai/models](https://openrouter.ai/models)**. Which livebench columns matter depends on the layer:
+
+| Layer | livebench columns to weigh | Then pick the… |
+|-------|----------------------------|----------------|
+| **Research** (cheap) | *Instruction Following*, *Language*, *Data Analysis* — plus the model's $/1M price | cheapest model that still scores well (price/perf sweet spot) |
+| **Reasoning** (strong) | *Coding*, *Reasoning* (YAML/automation logic lives here) | highest-scoring model your budget allows |
+
+### Good picks via OpenRouter (one key, both layers)
+
+OpenRouter slugs + approximate $ per 1M (input / output) pulled from its live catalog — **verify current prices on [openrouter.ai/models](https://openrouter.ai/models)**, they change often:
+
+| Tier | Research layer (high-volume, quality-per-$) | Reasoning layer (correctness-critical) |
+|------|---------------------------------------------|----------------------------------------|
+| **💰 Cheapest** | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-r1-0528` ($0.50 / $2.15) |
+| **⚖️ Balanced** *(recommended)* | `google/gemini-3.5-flash` ($1.50 / $9.00)<br>`openai/gpt-5-mini` ($0.25 / $2.00) | `google/gemini-2.5-pro` ($1.25 / $10)<br>`openai/gpt-5.1` ($1.25 / $10) |
+| **🏆 Highest** | `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-4.8` ($5 / $25)<br>`anthropic/claude-sonnet-4.6` ($3 / $15) |
+
+The research layer carries most of the *token volume* (every read/explore step) **and** produces the suggestions you read — so pick a strong mid-tier model there (e.g. `gemini-3.5-flash`), not the absolute cheapest. The reasoning layer carries most of the *cost per token*, so spend your top budget on it.
+
+### Example: layered setup via OpenRouter
+
+```yaml
+openai_api_url: "https://openrouter.ai/api/v1"
+openai_api_key: "sk-or-v1-..."
+openai_model: "anthropic/claude-sonnet-4.6"   # fallback for anything not layered
+usage_tracking: "usage"
+
+# Research layer — high-volume reading/exploring + suggestions (quality-per-$)
+research_model: "google/gemini-3.5-flash"
+research_api_url: "https://openrouter.ai/api/v1"
+research_api_key: "sk-or-v1-..."
+
+# Reasoning layer — strong, planning & writing changes
+reasoning_model: "anthropic/claude-opus-4.8"
+reasoning_api_url: "https://openrouter.ai/api/v1"
+reasoning_api_key: "sk-or-v1-..."
+```
+
+> Tip: set `input_price_per_1m` / `output_price_per_1m` to your **reasoning** model's price to see real cost in the footer — it dominates spend.
 
 ---
 

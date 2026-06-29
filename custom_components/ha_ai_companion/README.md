@@ -23,19 +23,18 @@ AI-powered Home Assistant companion for managing configuration, dashboards, auto
 | `suggestion_prompt` | Extra instructions added to the system prompt | — |
 | `enable_cache_control` | Prompt caching (Anthropic Claude) | `false` |
 | `usage_tracking` | Token tracking: `stream_options`, `usage`, `disabled` | `stream_options` |
-| `suggestion_model` | Cheaper/faster model for suggestion phase (optional) | main model |
-| `suggestion_api_url` | API URL override for suggestion model (optional) | main URL |
-| `suggestion_api_key` | API key override for suggestion model (optional) | main key |
-| `config_model` | Stronger model for config-editing phase (optional) | main model |
-| `config_api_url` | API URL override for config model (optional) | main URL |
-| `config_api_key` | API key override for config model (optional) | main key |
+| `max_iterations` | Max tool-call rounds per turn (0 = default 25) | `0` |
+| `research_model` | Research layer (cheaper) — reading/exploring & suggestions (optional) | main model |
+| `research_api_url` | API URL override for research layer (optional) | main URL |
+| `research_api_key` | API key override for research layer (optional) | main key |
+| `reasoning_model` | Reasoning layer (stronger) — planning & writing changes (optional) | main model |
+| `reasoning_api_url` | API URL override for reasoning layer (optional) | main URL |
+| `reasoning_api_key` | API key override for reasoning layer (optional) | main key |
 | `nodered_url` | Node-RED base URL (e.g. `http://homeassistant:1880`) | — |
 | `nodered_token` | Node-RED API token (if auth is enabled) | — |
 | `nodered_flows_file` | Path to Node-RED flows JSON export relative to `/config` | — |
 | `input_price_per_1m` | USD per 1M input tokens — enables cost display | `0.0` |
 | `output_price_per_1m` | USD per 1M output tokens | `0.0` |
-| `max_tokens` | Global output token limit | — |
-| `max_sessions` | Max conversation sessions to keep | `50` |
 
 ## What the companion can do
 
