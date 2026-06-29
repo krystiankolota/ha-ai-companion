@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.2] - 2026-06-29
+
+### Fixed — every prompt failed with "Maximum iteration limit reached"
+- **1.18.0 wired `max_iterations` into the add-on, and its default of `0` broke every turn.** `run.sh` now exports `MAX_ITERATIONS=0` (the option default), and `int(os.getenv('MAX_ITERATIONS', '25'))` returned `0` because the env var *was* set — so the agent loop's `while iteration < 0` never executed and immediately reported the iteration limit. Now `0`/blank/invalid → the intended default of 25; only a positive value overrides. (Matches the documented "0 = default".)
+
 ## [1.18.1] - 2026-06-29
 
 ### Fixed — blank white screen after updating to 1.18.0
