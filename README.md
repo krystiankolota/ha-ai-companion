@@ -161,42 +161,46 @@ usage_tracking: "disabled"
 
 ---
 
-## 🧩 Model layers — which model for which layer
+## 🧩 Model layers — which model for each field
 
-The agent runs two layers. Pointing each at a different model is the single biggest cost/quality lever:
+There are **three** model fields. Pointing them at different models is the single biggest cost/quality lever:
 
-- **Research layer** (`research_model`) — the high-volume work: reading and exploring your config, answering simple read-only questions, and generating Suggestions. Runs *before* any change is written. Optimise for the **best output quality per dollar** — a strong mid-tier model (not the rock-bottom cheapest), since suggestion quality is what you actually read.
-- **Reasoning layer** (`reasoning_model`) — the correctness-critical work: planning and writing config / dashboard / Node-RED changes once context is gathered. Optimise for top **coding + reasoning quality**.
+- **Main model** (`openai_model`) — the default used for *everything* unless a layer overrides it. If you leave both layers blank, this one model does all the work — so make it a capable all-rounder. If you set both layers, it's only a rarely-hit fallback and its exact choice barely matters.
+- **Research model** (`research_model`) — the high-volume work: reading/exploring your config, simple read-only questions, and generating Suggestions. Runs *before* any change is written. Optimise for **best quality per dollar** (a strong mid-tier model, not the rock-bottom cheapest — suggestion quality is what you read).
+- **Reasoning model** (`reasoning_model`) — the correctness-critical work: planning and writing config / dashboard / Node-RED changes once context is gathered. Optimise for top **coding + reasoning quality**.
 
-Leave a layer blank to fall back to `openai_model`. A layer activates its own provider only when all three of its fields (model + API URL + API key) are set.
+Leave a layer blank to fall back to the main model. A layer activates its own provider only when all three of its fields (model + API URL + API key) are set.
 
-### Picking models from a benchmark
+### Picking from a benchmark
 
-Rankings shift monthly — combine a live quality leaderboard like **[livebench.ai](https://livebench.ai/)** or **[llm-stats.com](https://llm-stats.com/)** (quality + price + context side by side) with the live slugs/pricing on **[openrouter.ai/models](https://openrouter.ai/models)**. Which livebench columns matter depends on the layer:
+Rankings shift monthly — combine a live quality leaderboard like **[livebench.ai](https://livebench.ai/)** or **[llm-stats.com](https://llm-stats.com/)** (quality + price + context side by side) with the live slugs/pricing on **[openrouter.ai/models](https://openrouter.ai/models)**. Which livebench columns matter depends on the field:
 
-| Layer | livebench columns to weigh | Then pick the… |
-|-------|----------------------------|----------------|
-| **Research** (cheap) | *Instruction Following*, *Language*, *Data Analysis* — plus the model's $/1M price | cheapest model that still scores well (price/perf sweet spot) |
-| **Reasoning** (strong) | *Coding*, *Reasoning* (YAML/automation logic lives here) | highest-scoring model your budget allows |
+| Field | livebench columns to weigh | Pick the… |
+|-------|----------------------------|-----------|
+| **Main** | *Coding* + *Instruction Following* (must do both read & write) | best all-rounder your budget allows |
+| **Research** | *Instruction Following*, *Language*, *Data Analysis* + $/1M price | best quality-per-dollar (sweet spot) |
+| **Reasoning** | *Coding*, *Reasoning* (YAML/automation logic) | highest-scoring model your budget allows |
 
-### Good picks via OpenRouter (one key, both layers)
+### Recommendations per field
 
-OpenRouter slugs + approximate $ per 1M (input / output) pulled from its live catalog — **verify current prices on [openrouter.ai/models](https://openrouter.ai/models)**, they change often:
+OpenRouter slugs + approximate $ per 1M (input / output) from its live catalog — **verify current prices on [openrouter.ai/models](https://openrouter.ai/models)**, they change often:
 
-| Tier | Research layer (high-volume, quality-per-$) | Reasoning layer (correctness-critical) |
-|------|---------------------------------------------|----------------------------------------|
-| **💰 Cheapest** | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-r1-0528` ($0.50 / $2.15) |
-| **⚖️ Balanced** *(recommended)* | `google/gemini-3.5-flash` ($1.50 / $9.00)<br>`openai/gpt-5-mini` ($0.25 / $2.00) | `google/gemini-2.5-pro` ($1.25 / $10)<br>`openai/gpt-5.1` ($1.25 / $10) |
-| **🏆 Highest** | `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-4.8` ($5 / $25)<br>`anthropic/claude-sonnet-4.6` ($3 / $15) |
+| Tier | Main model (`openai_model`) | Research model (`research_model`) | Reasoning model (`reasoning_model`) |
+|------|------------------------------|-----------------------------------|-------------------------------------|
+| **💰 Cheapest** | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-r1-0528` ($0.50 / $2.15) |
+| **⚖️ Balanced** *(recommended)* | `google/gemini-2.5-pro` ($1.25 / $10)<br>`openai/gpt-5.1` ($1.25 / $10) | `google/gemini-3.5-flash` ($1.50 / $9.00)<br>`openai/gpt-5-mini` ($0.25 / $2.00) | `google/gemini-2.5-pro` ($1.25 / $10)<br>`openai/gpt-5.1` ($1.25 / $10) |
+| **🏆 Highest** | `anthropic/claude-sonnet-4.6` ($3 / $15) | `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-4.8` ($5 / $25)<br>`anthropic/claude-sonnet-4.6` ($3 / $15) |
 
-The research layer carries most of the *token volume* (every read/explore step) **and** produces the suggestions you read — so pick a strong mid-tier model there (e.g. `gemini-3.5-flash`), not the absolute cheapest. The reasoning layer carries most of the *cost per token*, so spend your top budget on it.
+**How to read this:**
+- Running **without layers** (simplest)? Only the **Main** column matters — pick one capable all-rounder.
+- Running **with both layers** (best cost control)? Set **Research** + **Reasoning**, and pick a cheap Main as fallback (it's rarely used). Research carries most of the *token volume*; Reasoning carries most of the *cost per token* — spend your top budget there.
 
 ### Example: layered setup via OpenRouter
 
 ```yaml
 openai_api_url: "https://openrouter.ai/api/v1"
 openai_api_key: "sk-or-v1-..."
-openai_model: "anthropic/claude-sonnet-4.6"   # fallback for anything not layered
+openai_model: "google/gemini-2.5-flash"       # cheap fallback — rarely hit when both layers are set
 usage_tracking: "usage"
 
 # Research layer — high-volume reading/exploring + suggestions (quality-per-$)

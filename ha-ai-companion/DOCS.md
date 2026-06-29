@@ -177,15 +177,15 @@ The agent runs two layers; each falls back to the Main Model when left blank. Al
 
 > **Renamed in v1.18.0:** `suggestion_*` → `research_*`, `config_*` → `reasoning_*`. Re-enter these after updating; old env-var names are still read as a fallback.
 
-**Which model for which layer?** Combine a quality leaderboard ([livebench.ai](https://livebench.ai/) — weigh *Instruction Following*/*Language* for research, *Coding*/*Reasoning* for reasoning; or [llm-stats.com](https://llm-stats.com/) for quality+price+context together) with live prices on [openrouter.ai/models](https://openrouter.ai/models). OpenRouter slugs + approx $/1M (in / out), verify current prices:
+**Which model for each field?** Three fields: **Main** (`openai_model`, default for everything unless a layer overrides — make it a capable all-rounder; only this matters if you set no layers), **Research** (`research_model`, cheap high-volume reading/suggestions), **Reasoning** (`reasoning_model`, strong planning/writing). Combine a quality leaderboard ([livebench.ai](https://livebench.ai/) — *Coding*+*Instruction Following* for main, *Instruction Following*/*Language* for research, *Coding*/*Reasoning* for reasoning; or [llm-stats.com](https://llm-stats.com/) for quality+price+context together) with live prices on [openrouter.ai/models](https://openrouter.ai/models). OpenRouter slugs + approx $/1M (in / out), verify current prices:
 
-| Tier | Research layer (high-volume, quality-per-$) | Reasoning layer (correctness-critical) |
-|------|---------------------------------------------|----------------------------------------|
-| 💰 Cheapest | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-r1-0528` ($0.50 / $2.15) |
-| ⚖️ Balanced *(recommended)* | `google/gemini-3.5-flash` ($1.50 / $9.00) · `openai/gpt-5-mini` ($0.25 / $2.00) | `google/gemini-2.5-pro` ($1.25 / $10) · `openai/gpt-5.1` ($1.25 / $10) |
-| 🏆 Highest | `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-4.8` ($5 / $25) · `anthropic/claude-sonnet-4.6` ($3 / $15) |
+| Tier | Main (`openai_model`) | Research (`research_model`) | Reasoning (`reasoning_model`) |
+|------|------------------------|------------------------------|--------------------------------|
+| 💰 Cheapest | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-r1-0528` ($0.50 / $2.15) |
+| ⚖️ Balanced *(recommended)* | `google/gemini-2.5-pro` ($1.25 / $10) · `openai/gpt-5.1` ($1.25 / $10) | `google/gemini-3.5-flash` ($1.50 / $9.00) · `openai/gpt-5-mini` ($0.25 / $2.00) | `google/gemini-2.5-pro` ($1.25 / $10) · `openai/gpt-5.1` ($1.25 / $10) |
+| 🏆 Highest | `anthropic/claude-sonnet-4.6` ($3 / $15) | `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-4.8` ($5 / $25) · `anthropic/claude-sonnet-4.6` ($3 / $15) |
 
-The research layer carries most of the token *volume* and produces the suggestions you read — pick a strong mid-tier model there, not the absolute cheapest. The reasoning layer carries most of the *cost per token* — spend your top budget on it.
+No layers (simplest)? Only **Main** matters. Both layers set (best cost control)? Research carries most of the token *volume*; Reasoning carries most of the *cost per token* — spend your top budget there, and a cheap Main is fine as the rarely-hit fallback.
 
 **Prompt Customisation (optional)**
 
