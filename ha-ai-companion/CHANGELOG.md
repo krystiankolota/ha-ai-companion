@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.3] - 2026-07-06
+
+### Fixed — malformed tool-call JSON crashed the whole run ("Expecting ',' delimiter")
+- **When the LLM emitted invalid JSON in tool-call arguments** (typically an unescaped quote or literal newline inside a long YAML `content` field for `propose_config_changes`/`patch_config_block`), `json.loads` raised an unhandled `JSONDecodeError`, killed the agent run, and surfaced the raw Python error in chat (`❌ Error: Expecting ',' delimiter: line 1 column 3818`). The parse failure is now caught and routed through the standard retry pipeline: the model receives a tool error explaining the JSON is malformed and retries the call (max 2×) instead of the run dying.
+
 ## [1.18.2] - 2026-06-29
 
 ### Fixed — every prompt failed with "Maximum iteration limit reached"

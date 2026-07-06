@@ -1702,7 +1702,12 @@ Managing production HA system. Safety and clarity are paramount."""
                 # Execute each tool call and stream results immediately
                 for tool_idx, tool_call in enumerate(accumulated_tool_calls):
                     function_name = tool_call["function"]["name"]
-                    function_args = json.loads(tool_call["function"]["arguments"] or "{}")
+                    function_args, _args_parse_error = self._parse_tool_args(tool_call["function"]["arguments"])
+                    if _args_parse_error:
+                        logger.warning(
+                            f"[ITERATION {iteration}] Tool '{function_name}' arguments failed to "
+                            f"parse as JSON: {_args_parse_error}"
+                        )
 
                     logger.info(f"[ITERATION {iteration}] Calling tool: {function_name}")
 
@@ -1740,7 +1745,18 @@ Managing production HA system. Safety and clarity are paramount."""
                                 "Call propose_config_changes or respond to the user now."
                             )
 
-                    if _blocked_error:
+                    if _args_parse_error:
+                        result = {
+                            "success": False,
+                            "error": (
+                                f"Malformed tool call arguments: {_args_parse_error}. "
+                                "The JSON generated for this tool call was invalid — likely an "
+                                "unescaped quote, backslash, or literal newline inside a string "
+                                "field (e.g. YAML content). Retry the same tool call now with "
+                                "valid JSON: escape special characters inside any string values."
+                            ),
+                        }
+                    elif _blocked_error:
                         result = {"success": False, "blocked": True, "error": _blocked_error}
                         logger.warning(
                             f"[LOOP] PRE-DISPATCH BLOCKED '{function_name}' "
@@ -2037,6 +2053,20 @@ Managing production HA system. Safety and clarity are paramount."""
                     "event": "error",
                     "data": json.dumps({"error": str(e)})
                 }
+
+    @staticmethod
+    def _parse_tool_args(arguments: Optional[str]) -> tuple:
+        """
+        Parse tool-call arguments JSON. LLM can emit invalid JSON (e.g. unescaped
+        quote/newline inside a YAML content field) — must not crash the whole run,
+        so return (args, error) and let the caller route the error through the
+        retry-directive pipeline like any other tool failure.
+        """
+        import json
+        try:
+            return json.loads(arguments or "{}"), None
+        except json.JSONDecodeError as e:
+            return {}, str(e)
 
     @staticmethod
     def _strip_excess_cache_control(messages: List[Dict[str, Any]], max_blocks: int = 3) -> List[Dict[str, Any]]:
