@@ -104,7 +104,7 @@ echo "# Test config" > test_config/configuration.yaml
 export HA_CONFIG_DIR="./test_config"
 export BACKUP_DIR="./backups"
 export OPENAI_API_KEY="sk-your-key-here"
-export OPENAI_MODEL="gpt-5-mini"
+export OPENAI_MODEL="gpt-5.6-luna"
 export LOG_LEVEL="debug"
 
 # Run development server
@@ -132,7 +132,7 @@ openai_api_key: "sk-your-openai-api-key"
 ```yaml
 openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
 openai_api_key: "your-api-key"
-openai_model: "gemini-2.5-flash"
+openai_model: "gemini-3.5-flash-lite"
 log_level: "info"
 system_prompt_file: ""
 temperature: ""
@@ -157,7 +157,7 @@ output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 |--------|------|---------|-------------|
 | `openai_api_url` | String | `https://generativelanguage.googleapis.com/v1beta/openai/` | API endpoint — any OpenAI-compatible provider |
 | `openai_api_key` | String | *Required* | API key for your provider |
-| `openai_model` | String | `gemini-2.5-flash` | Main model for config edits and general chat |
+| `openai_model` | String | `gemini-3.5-flash-lite` | Main model for config edits and general chat |
 | `log_level` | List | `info` | Log verbosity: `debug`, `info`, `warning`, `error` |
 
 **Model Layers (optional)**
@@ -181,9 +181,9 @@ The agent runs two layers; each falls back to the Main Model when left blank. Al
 
 | Tier | Main (`openai_model`) | Research (`research_model`) | Reasoning (`reasoning_model`) |
 |------|------------------------|------------------------------|--------------------------------|
-| 💰 Cheapest | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-r1-0528` ($0.50 / $2.15) |
-| ⚖️ Balanced *(recommended)* | `google/gemini-2.5-pro` ($1.25 / $10) · `openai/gpt-5.1` ($1.25 / $10) | `google/gemini-3.5-flash` ($1.50 / $9.00) · `openai/gpt-5-mini` ($0.25 / $2.00) | `google/gemini-2.5-pro` ($1.25 / $10) · `openai/gpt-5.1` ($1.25 / $10) |
-| 🏆 Highest | `anthropic/claude-sonnet-4.6` ($3 / $15) | `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-4.8` ($5 / $25) · `anthropic/claude-sonnet-4.6` ($3 / $15) |
+| 💰 Cheapest | `deepseek/deepseek-v4-flash-0731` ($0.14 / $0.28) | `deepseek/deepseek-v4-flash-0731` ($0.14 / $0.28) | `deepseek/deepseek-v4-pro` ($0.44 / $0.87) |
+| ⚖️ Balanced *(recommended)* | `google/gemini-3.1-pro-preview` ($2.00 / $12) · `openai/gpt-5.6-sol` ($5 / $30) | `google/gemini-3.5-flash` ($1.50 / $9.00) | `google/gemini-3.1-pro-preview` ($2.00 / $12) · `openai/gpt-5.6-sol` ($5 / $30) |
+| 🏆 Highest | `anthropic/claude-fable-5` ($10 / $50) | `anthropic/claude-sonnet-5` ($2 / $10) · `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-5` ($5 / $25) · `anthropic/claude-fable-5` ($10 / $50) |
 
 No layers (simplest)? Only **Main** matters. Both layers set (best cost control)? Research carries most of the token *volume*; Reasoning carries most of the *cost per token* — spend your top budget there, and a cheap Main is fine as the rarely-hit fallback.
 
@@ -220,17 +220,17 @@ No layers (simplest)? Only **Main** matters. Both layers set (best cost control)
 
 When both values are set to non-zero, a `💰 $0.0000` cumulative session cost appears next to the token counter in the footer.
 
-**Common pricing reference (as of 2026-03):**
+**Common pricing reference (as of 2026-08):**
 
 | Model | Input / 1M | Output / 1M |
 |-------|-----------|------------|
-| `gemini-2.5-flash` | $0.075 | $0.30 |
-| `claude-haiku-4-5-20251001` | $0.80 | $4.00 |
-| `claude-sonnet-4-5` | $3.00 | $15.00 |
-| `claude-sonnet-4-6` | $3.00 | $15.00 |
-| `claude-opus-4-6` | $15.00 | $75.00 |
-| `gpt-4o-mini` | $0.15 | $0.60 |
-| `gpt-4o` | $2.50 | $10.00 |
+| `gemini-3.5-flash-lite` | $0.30 | $2.50 |
+| `claude-haiku-4-5-20251001` | $1.00 | $5.00 |
+| `claude-sonnet-5` | $2.00 | $10.00 |
+| `claude-opus-5` | $5.00 | $25.00 |
+| `claude-fable-5` | $10.00 | $50.00 |
+| `gpt-5.6-luna` | $0.20 | $1.20 |
+| `gpt-5.6-sol` | $5.00 | $30.00 |
 
 ### AI Provider Setup
 
@@ -246,16 +246,16 @@ Choose a tier based on your priorities. Each example shows a complete ready-to-u
 
 | Provider | Model | Notes |
 |----------|-------|-------|
-| Google Gemini | `gemini-2.5-flash` | Free tier available, very cheap |
+| Google Gemini | `gemini-3.5-flash-lite` | Free tier available, very cheap |
 | Anthropic | `claude-haiku-4-5-20251001` | Fastest Claude, lowest cost |
-| OpenAI | `gpt-4o-mini` | Cheapest OpenAI option |
+| OpenAI | `gpt-5.6-luna` | Cheapest current OpenAI option |
 | Ollama (local) | `llama3.2` | Zero API cost, needs local GPU |
 
 ```yaml
 # Google Gemini — cost
 openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
 openai_api_key: "your-google-api-key"
-openai_model: "gemini-2.5-flash"
+openai_model: "gemini-3.5-flash-lite"
 usage_tracking: "stream_options"
 enable_cache_control: false
 ```
@@ -275,16 +275,16 @@ enable_cache_control: true
 
 | Provider | Model | Notes |
 |----------|-------|-------|
-| Google Gemini | `gemini-2.5-flash` | Best value overall |
-| Anthropic | `claude-sonnet-4-5` | Strong reasoning, moderate cost |
-| OpenAI | `gpt-4o` | Reliable, well-tested |
-| OpenRouter | `anthropic/claude-sonnet-4-5` | Access Claude via OpenRouter |
+| Google Gemini | `gemini-3.5-flash` | Best value overall |
+| Anthropic | `claude-sonnet-5` | Strong reasoning, moderate cost |
+| OpenAI | `gpt-5.6-terra` | Reliable, well-tested |
+| OpenRouter | `anthropic/claude-sonnet-5` | Access Claude via OpenRouter |
 
 ```yaml
 # Google Gemini — balance (default)
 openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
 openai_api_key: "your-google-api-key"
-openai_model: "gemini-2.5-flash"
+openai_model: "gemini-3.5-flash"
 usage_tracking: "stream_options"
 enable_cache_control: false
 ```
@@ -293,7 +293,7 @@ enable_cache_control: false
 # Anthropic — balance
 openai_api_url: "https://api.anthropic.com/v1"
 openai_api_key: "sk-ant-your-key"
-openai_model: "claude-sonnet-4-5"
+openai_model: "claude-sonnet-5"
 usage_tracking: "usage"
 enable_cache_control: true
 ```
@@ -302,7 +302,7 @@ enable_cache_control: true
 # OpenAI — balance
 openai_api_url: "https://api.openai.com/v1"
 openai_api_key: "sk-proj-your-key"
-openai_model: "gpt-4o"
+openai_model: "gpt-5.6-terra"
 usage_tracking: "stream_options"
 enable_cache_control: false
 ```
@@ -313,16 +313,16 @@ enable_cache_control: false
 
 | Provider | Model | Notes |
 |----------|-------|-------|
-| Google Gemini | `gemini-2.5-pro` | Best Gemini model, longer context |
-| Anthropic | `claude-opus-4-6` | Highest capability Claude |
-| Anthropic | `claude-sonnet-4-6` | Near-opus quality, faster |
-| OpenRouter | `google/gemini-2.5-pro` | Gemini Pro via OpenRouter |
+| Google Gemini | `gemini-3.1-pro-preview` | Best Gemini model, longer context |
+| Anthropic | `claude-fable-5` | Highest capability Claude |
+| Anthropic | `claude-opus-5` | Near-top quality, cheaper than Fable 5 |
+| OpenRouter | `google/gemini-3.1-pro-preview` | Gemini Pro via OpenRouter |
 
 ```yaml
 # Anthropic — quality
 openai_api_url: "https://api.anthropic.com/v1"
 openai_api_key: "sk-ant-your-key"
-openai_model: "claude-sonnet-4-6"
+openai_model: "claude-opus-5"
 usage_tracking: "usage"
 enable_cache_control: true
 ```
@@ -331,7 +331,7 @@ enable_cache_control: true
 # Google Gemini — quality
 openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
 openai_api_key: "your-google-api-key"
-openai_model: "gemini-2.5-pro"
+openai_model: "gemini-3.1-pro-preview"
 usage_tracking: "stream_options"
 enable_cache_control: false
 ```
@@ -345,20 +345,20 @@ enable_cache_control: false
 1. Sign up at https://aistudio.google.com/ and create an API key
 2. Free tier available — good starting point
 
-**All models:** `gemini-2.5-flash` · `gemini-2.5-pro`
+**All models:** `gemini-3.5-flash-lite` · `gemini-3.5-flash` · `gemini-3.1-pro-preview`
 
 ##### OpenAI
 
 1. Sign up at https://platform.openai.com/ and create an API key
 
-**All models:** `gpt-4o-mini` · `gpt-4o`
+**All models:** `gpt-5.6-luna` · `gpt-5.6-terra` · `gpt-5.6-sol`
 
 ##### Anthropic
 
 1. Sign up at https://console.anthropic.com/ and create an API key
 2. Enable `cache_control` and set `usage_tracking: usage` for best results
 
-**All models:** `claude-haiku-4-5-20251001` · `claude-sonnet-4-5` · `claude-sonnet-4-6` · `claude-opus-4-6`
+**All models:** `claude-haiku-4-5-20251001` · `claude-sonnet-5` · `claude-opus-5` · `claude-fable-5`
 
 ##### OpenRouter
 
@@ -370,11 +370,11 @@ enable_cache_control: false
 ```yaml
 openai_api_url: "https://openrouter.ai/api/v1"
 openai_api_key: "sk-or-v1-your-key"
-openai_model: "anthropic/claude-sonnet-4-5"
+openai_model: "anthropic/claude-sonnet-5"
 usage_tracking: "usage"
 ```
 
-**Popular models on OpenRouter:** `anthropic/claude-sonnet-4-5` · `google/gemini-2.5-flash` · `openai/gpt-4o`
+**Popular models on OpenRouter:** `anthropic/claude-sonnet-5` · `google/gemini-3.5-flash` · `openai/gpt-5.6-terra`
 
 ##### Local Ollama
 
@@ -594,7 +594,7 @@ usage_tracking: "disabled"        # ✅ Doesn't report usage
    ```yaml
    openai_api_url: "https://your-resource.openai.azure.com/openai/deployments/your-deployment/chat/completions?api-version=2024-02-15-preview"
    openai_api_key: "your-azure-api-key"
-   openai_model: "gpt-5-mini"
+   openai_model: "gpt-5.6-terra"
    ```
 
 ---
@@ -918,7 +918,7 @@ curl http://localhost:8099/api/config/backups?file_path=configuration.yaml
 **Cause:** Model or network latency
 
 **Solution:**
-1. Try a faster model (e.g., `gpt-4o` instead of `gpt-4`)
+1. Try a faster model (e.g., `gpt-5.6-luna` instead of `gpt-5.6-sol`)
 2. Use local Ollama for faster responses
 3. Check API provider status
 4. Check network connectivity
@@ -1008,7 +1008,7 @@ EOF
 export HA_CONFIG_DIR="./test_config"
 export BACKUP_DIR="./backups"
 export OPENAI_API_KEY="sk-your-key-here"
-export OPENAI_MODEL="gpt-4o"
+export OPENAI_MODEL="gpt-5.6-terra"
 export LOG_LEVEL="debug"
 export SYSTEM_PROMPT_FILE=""  # Optional: path to custom prompt file
 

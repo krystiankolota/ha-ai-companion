@@ -54,7 +54,7 @@ Copy the `custom_components/ha_ai_companion/` folder into your Home Assistant `c
 |--------|-------------|---------|
 | `openai_api_url` | API endpoint (any OpenAI-compatible URL) | Google Gemini |
 | `openai_api_key` | API key | *(required)* |
-| `openai_model` | Model name | `gemini-2.5-flash` |
+| `openai_model` | Model name | `gemini-3.5-flash-lite` |
 | `log_level` | Logging level | `info` |
 | `temperature` | Model temperature (optional) | model default |
 | `system_prompt_file` | Custom system prompt file in `/config` (optional) | — |
@@ -78,14 +78,14 @@ Copy the `custom_components/ha_ai_companion/` folder into your Home Assistant `c
 
 #### 💰 Cost — minimize spend
 
-**Google Gemini Flash (best value, free tier available):**
+**Google Gemini Flash Lite (best value, free tier available):**
 ```yaml
 openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
 openai_api_key: "your-google-api-key"
-openai_model: "gemini-2.5-flash"
+openai_model: "gemini-3.5-flash-lite"
 usage_tracking: "stream_options"
-input_price_per_1m: 0.075
-output_price_per_1m: 0.30
+input_price_per_1m: 0.30
+output_price_per_1m: 2.50
 ```
 
 **Anthropic Haiku (fast + cheap Claude):**
@@ -95,51 +95,51 @@ openai_api_key: "sk-ant-..."
 openai_model: "claude-haiku-4-5-20251001"
 enable_cache_control: true
 usage_tracking: "usage"
-input_price_per_1m: 0.80
-output_price_per_1m: 4.00
+input_price_per_1m: 1.00
+output_price_per_1m: 5.00
 ```
 
 #### ⚖️ Balance — good quality at reasonable cost
 
-**Anthropic Sonnet:**
+**Anthropic Sonnet 5:**
 ```yaml
 openai_api_url: "https://api.anthropic.com/v1"
 openai_api_key: "sk-ant-..."
-openai_model: "claude-sonnet-4-5"
+openai_model: "claude-sonnet-5"
 enable_cache_control: true
 usage_tracking: "usage"
-input_price_per_1m: 3.00
-output_price_per_1m: 15.00
+input_price_per_1m: 2.00
+output_price_per_1m: 10.00
 ```
 
-**OpenAI GPT-4o:**
+**OpenAI GPT-5.6 Terra:**
 ```yaml
 openai_api_url: "https://api.openai.com/v1"
 openai_api_key: "sk-proj-..."
-openai_model: "gpt-4o"
+openai_model: "gpt-5.6-terra"
 usage_tracking: "stream_options"
-input_price_per_1m: 2.50
-output_price_per_1m: 10.00
+input_price_per_1m: 2.00
+output_price_per_1m: 12.00
 ```
 
 #### 🏆 Quality — best results, cost secondary
 
-**Anthropic Claude Sonnet 4.6:**
+**Anthropic Claude Opus 5:**
 ```yaml
 openai_api_url: "https://api.anthropic.com/v1"
 openai_api_key: "sk-ant-..."
-openai_model: "claude-sonnet-4-6"
+openai_model: "claude-opus-5"
 enable_cache_control: true
 usage_tracking: "usage"
-input_price_per_1m: 3.00
-output_price_per_1m: 15.00
+input_price_per_1m: 5.00
+output_price_per_1m: 25.00
 ```
 
 **Google Gemini Pro:**
 ```yaml
 openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
 openai_api_key: "your-google-api-key"
-openai_model: "gemini-2.5-pro"
+openai_model: "gemini-3.1-pro-preview"
 usage_tracking: "stream_options"
 ```
 
@@ -147,7 +147,7 @@ usage_tracking: "stream_options"
 ```yaml
 openai_api_url: "https://openrouter.ai/api/v1"
 openai_api_key: "sk-or-v1-..."
-openai_model: "anthropic/claude-sonnet-4-5"
+openai_model: "anthropic/claude-sonnet-5"
 usage_tracking: "usage"
 ```
 
@@ -187,9 +187,9 @@ OpenRouter slugs + approximate $ per 1M (input / output) from its live catalog �
 
 | Tier | Main model (`openai_model`) | Research model (`research_model`) | Reasoning model (`reasoning_model`) |
 |------|------------------------------|-----------------------------------|-------------------------------------|
-| **💰 Cheapest** | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-v3.2` ($0.23 / $0.34) | `deepseek/deepseek-r1-0528` ($0.50 / $2.15) |
-| **⚖️ Balanced** *(recommended)* | `google/gemini-2.5-pro` ($1.25 / $10)<br>`openai/gpt-5.1` ($1.25 / $10) | `google/gemini-3.5-flash` ($1.50 / $9.00)<br>`openai/gpt-5-mini` ($0.25 / $2.00) | `google/gemini-2.5-pro` ($1.25 / $10)<br>`openai/gpt-5.1` ($1.25 / $10) |
-| **🏆 Highest** | `anthropic/claude-sonnet-4.6` ($3 / $15) | `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-4.8` ($5 / $25)<br>`anthropic/claude-sonnet-4.6` ($3 / $15) |
+| **💰 Cheapest** | `deepseek/deepseek-v4-flash-0731` ($0.14 / $0.28) | `deepseek/deepseek-v4-flash-0731` ($0.14 / $0.28) | `deepseek/deepseek-v4-pro` ($0.44 / $0.87) |
+| **⚖️ Balanced** *(recommended)* | `google/gemini-3.1-pro-preview` ($2.00 / $12)<br>`openai/gpt-5.6-sol` ($5 / $30) | `google/gemini-3.5-flash` ($1.50 / $9.00) | `google/gemini-3.1-pro-preview` ($2.00 / $12)<br>`openai/gpt-5.6-sol` ($5 / $30) |
+| **🏆 Highest** | `anthropic/claude-fable-5` ($10 / $50) | `anthropic/claude-sonnet-5` ($2 / $10)<br>`anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-5` ($5 / $25)<br>`anthropic/claude-fable-5` ($10 / $50) |
 
 **How to read this:**
 - Running **without layers** (simplest)? Only the **Main** column matters — pick one capable all-rounder.
@@ -200,7 +200,7 @@ OpenRouter slugs + approximate $ per 1M (input / output) from its live catalog �
 ```yaml
 openai_api_url: "https://openrouter.ai/api/v1"
 openai_api_key: "sk-or-v1-..."
-openai_model: "google/gemini-2.5-flash"       # cheap fallback — rarely hit when both layers are set
+openai_model: "google/gemini-3.5-flash-lite"  # cheap fallback — rarely hit when both layers are set
 usage_tracking: "usage"
 
 # Research layer — high-volume reading/exploring + suggestions (quality-per-$)
@@ -209,7 +209,7 @@ research_api_url: "https://openrouter.ai/api/v1"
 research_api_key: "sk-or-v1-..."
 
 # Reasoning layer — strong, planning & writing changes
-reasoning_model: "anthropic/claude-opus-4.8"
+reasoning_model: "anthropic/claude-opus-5"
 reasoning_api_url: "https://openrouter.ai/api/v1"
 reasoning_api_key: "sk-or-v1-..."
 ```
