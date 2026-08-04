@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.4] - 2026-08-04
+
+### Docs — refreshed model recommendation tables to current models/pricing
+- README and DOCS model-tier tables, pricing references, and provider examples were pinned to models superseded on OpenRouter (`gemini-2.5-*`, `gpt-4o*`, `claude-sonnet-4-5/4-6`, `claude-opus-4-6`, `deepseek-v3.2`/`r1-0528`). Replaced throughout with current models verified against live OpenRouter slugs/pricing (Gemini 3.1/3.5, GPT-5.6 Luna/Terra/Sol, Claude Sonnet 5/Opus 5/Fable 5, DeepSeek V4).
+
 ## [1.18.3] - 2026-07-06
 
 ### Fixed — malformed tool-call JSON crashed the whole run ("Expecting ',' delimiter")
