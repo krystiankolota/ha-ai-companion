@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.5] - 2026-08-20
+
+### Fixed — "flash" in the model-family match killed every DeepSeek write request
+- **Any model whose slug contains `flash` was classified Gemini-family**, because the Tier B plan-before-act check matched the substring `"flash"` alongside `"gemini"`/`"google"`. On `deepseek/deepseek-v4-flash-0731` this fired Tier B on iteration 1: `tool_choice="none"` **and the `tools` array omitted entirely**. DeepSeek responded by printing its native `<|DSML|invoke name="...">` tool-call markup as plain text; the loop saw no `tool_calls`, logged `No tool calls, final response received`, and ended the run at iteration 1 having executed nothing — the user got raw markup in chat and no file was ever read. The family check now matches only `"gemini"`/`"google"`, and lives in a module-level `_is_text_first_family()` helper so it is covered by regression tests. Generic tier words (`flash`/`pro`/`mini`) must never be added to it.
+- **Tool-call markup emitted as text is no longer accepted as a final answer.** Before ending a run with no tool calls, the loop now checks the content for call-shaped markup (`<|DSML|`, `<invoke name=`, `<tool_calls>`, `<function_calls>`) and, if found, retries **once** with tools bound and an instruction to use the real tool-calling API. Bounded by a single-use per-turn flag, so the worst case is one extra call, never a loop. Detection is deliberately narrow — prose that merely mentions tool calls does not trigger it.
+
 ## [1.18.4] - 2026-08-04
 
 ### Docs — refreshed model recommendation tables to current models/pricing

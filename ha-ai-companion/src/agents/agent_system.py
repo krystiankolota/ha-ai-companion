@@ -48,6 +48,37 @@ def _normalize_history_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
+def _is_text_first_family(model: str) -> bool:
+    """Models that must emit a plan BEFORE any tools are bound (Tier B plan-before-act).
+
+    Substring match on purpose - providers prefix/suffix freely
+    ("google/gemini-2.5-flash", "gemini-2.0-flash-exp").
+
+    NEVER add generic tier words like "flash"/"pro"/"mini" here. "flash" matched
+    "deepseek/deepseek-v4-flash-0731" and forced Tier B onto a model with working
+    native tool calling; with tools omitted it emitted DSML tool-call markup as
+    plain text and the run died at iteration 1 having executed nothing (v1.18.5).
+    """
+    return any(x in (model or "").lower() for x in ("gemini", "google"))
+
+
+# Markers that mean the model tried to call a tool as TEXT instead of using the
+# tool-calling API. Deliberately call-shaped: prose that merely mentions "DSML"
+# or "tool calls" must NOT match, or a legitimate answer gets retried.
+_PSEUDO_TOOL_CALL_MARKERS = (
+    "｜dsml｜",   # DeepSeek, e.g. <|DSML|invoke name="...">
+    "<tool_calls>",
+    "<invoke name=",
+    "<function_calls>",
+)
+
+
+def _looks_like_pseudo_tool_call(text: str) -> bool:
+    """True when content contains tool-call markup instead of real tool_calls."""
+    low = (text or "").lower()
+    return any(m in low for m in _PSEUDO_TOOL_CALL_MARKERS)
+
+
 @dataclass
 class Changeset:
     """Represents a proposed set of configuration changes."""
@@ -1388,7 +1419,7 @@ Managing production HA system. Safety and clarity are paramount."""
             self._tool_status_queue = asyncio.Queue()
 
             # Per-turn state (local — safe under concurrent WS connections)
-            turn_state = {"has_read": False, "retry_counts": {}, "seen_calls": {}, "tool_call_count": 0, "verbosity_warned": False, "verbosity_chars": 0}
+            turn_state = {"has_read": False, "retry_counts": {}, "seen_calls": {}, "tool_call_count": 0, "verbosity_warned": False, "verbosity_chars": 0, "pseudo_retry_used": False}
             self.tools.clear_turn_cache()
 
             # Pre-declare so outer except can access partial content on stream errors
@@ -1424,15 +1455,17 @@ Managing production HA system. Safety and clarity are paramount."""
                 # Plan-before-act (P0-2): on the very first call, force Gemini-family
                 # models to emit a planning text response before calling any tools.
                 # Claude-family models receive the instruction via system prompt (Tier A+).
-                _is_gemini = any(x in active_model.lower() for x in ("gemini", "google", "flash"))
+                # Evaluated per-iteration: active_model alternates between the suggestion
+                # and config model across iterations (see dual_model.md).
+                _is_text_first = _is_text_first_family(active_model)
                 _force_text_first = (
                     iteration == 1
                     and not has_tool_results
-                    and _is_gemini
+                    and _is_text_first
                     and _has_write_intent
                 )
                 if _force_text_first:
-                    logger.info("[PLAN] Tier B: tool_choice=none on iter 1 (Gemini + write intent)")
+                    logger.info("[PLAN] Tier B: tool_choice=none on iter 1 (text-first family + write intent)")
 
                 # Call OpenAI API with streaming
                 # When forcing text-first (Tier B), omit tools entirely — passing tools=[...]
@@ -1644,6 +1677,37 @@ Managing production HA system. Safety and clarity are paramount."""
 
                 # Check if we have tool calls
                 if not accumulated_tool_calls:
+                    # Pseudo-tool-call guard: some models emit tool-call markup as TEXT
+                    # (DeepSeek DSML, Anthropic-style <invoke name=...>) instead of using
+                    # the tool-calling API - typically when tools were omitted from the
+                    # request. Accepting that as the final answer ends the run having
+                    # executed nothing. Retry ONCE with tools bound: the retry runs at
+                    # iteration >= 2, where _force_text_first (iteration == 1 only) is
+                    # already False, so tools get attached with no extra logic.
+                    # Bounded by a single-use flag - worst case is one wasted call, never
+                    # a loop. The stale markup already streamed to the UI is overwritten
+                    # by the authoritative text in the final message_complete.
+                    if (_looks_like_pseudo_tool_call(accumulated_content)
+                            and not turn_state["pseudo_retry_used"]):
+                        turn_state["pseudo_retry_used"] = True
+                        logger.warning(
+                            "[PSEUDO-TOOL-CALL] Iteration %s returned tool-call markup as text "
+                            "(model=%s) - retrying once with tools bound",
+                            iteration, active_model,
+                        )
+                        messages.append({"role": "assistant", "content": accumulated_content})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[SYSTEM] Your previous reply printed tool-call markup as plain "
+                                "text instead of making an actual tool call. Tools ARE available "
+                                "on this request. Either call the tool through the native "
+                                "tool-calling API, or answer directly in prose if no tool is "
+                                "needed. Never print tool-call markup as text."
+                            ),
+                        })
+                        continue
+
                     # No tool calls - final response
                     logger.info(f"[ITERATION {iteration}] No tool calls, final response received")
 
@@ -1973,7 +2037,7 @@ Managing production HA system. Safety and clarity are paramount."""
                 # iter 1 without emitting any reasoning text, patch the last tool result
                 # so the next iteration is prompted to state its plan.
                 if (iteration == 1
-                        and not _is_gemini
+                        and not _is_text_first
                         and not accumulated_content.strip()
                         and new_messages):
                     for _tm in reversed(new_messages):
