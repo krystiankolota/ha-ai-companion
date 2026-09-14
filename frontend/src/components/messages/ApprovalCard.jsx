@@ -159,6 +159,12 @@ export default function ApprovalCard({ changeset }) {
           {resultData?.config_reloaded && (
             <div className="text-xs text-gray-400">Configuration reloaded.</div>
           )}
+          {resultData?.reload_error && (
+            <div className="text-xs text-amber-400">
+              ⚠️ Files were written, but Home Assistant rejected the reload: {resultData.reload_error}.
+              The config on disk may be broken — ask the assistant to inspect and fix it.
+            </div>
+          )}
           {resultData?.applied_files && resultData.applied_files.length > 0 && (
             <div className="text-xs text-gray-400 space-y-0.5">
               {resultData.applied_files.map((f, i) => (

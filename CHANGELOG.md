@@ -5,6 +5,13 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.8] - 2026-09-14
+
+### Fixed — reload failures after a passed config validation were invisible to the user
+- Found while reviewing a user-provided session log: `propose_config_changes` writes files, then calls `validate_config()` (HA's `check_config`), then reloads HA. `check_config` validates syntax/schema shallowly and can pass even when the actual component reload's full setup validation rejects the config (observed case: a bad key path nested under the wrong domain in `configuration.yaml`, causing a genuine `service_validation_error` on reload). The reload failure was only logged as a backend `WARNING` — the tool returned `config_reloaded: false` with no error text, and the frontend's `ApprovalCard` hardcoded "✅ Changes applied successfully" for any non-`failed_files` result, so the user saw a clean success message while their on-disk config was actually broken.
+- Backend (`agent_system.py`): `process_approval` now captures the reload exception text as `reload_error` in its returned dict and appends a clear warning to `message` when reload fails after files were written.
+- Frontend (`ApprovalCard.jsx`): the "approved" status now renders an amber warning with the reload error text when `resultData.reload_error` is present, instead of silently showing only the green success line.
+
 ## [1.18.7] - 2026-09-14
 
 ### Changed — simplified always-loaded system prompt (Anthropic/Karpathy best-practice alignment)

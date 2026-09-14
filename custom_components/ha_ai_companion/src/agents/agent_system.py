@@ -2833,6 +2833,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
             # Reload Home Assistant configuration after successful changes (only if validation passed)
             reload_success = False
+            reload_error = None
             if applied_files and not validation_failed:
                 try:
                     from ..ha.ha_websocket import reload_homeassistant_config
@@ -2846,6 +2847,13 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     else:
                         logger.warning("SUPERVISOR_TOKEN not available, skipping config reload")
                 except Exception as e:
+                    # This can happen even though validate_config() passed above: HA's
+                    # check_config endpoint validates syntax/schema shallowly, but actual
+                    # component reload runs full setup validation and can still reject the
+                    # config (e.g. a bad key path silently nested under the wrong domain).
+                    # Surface the real error instead of a bare False so the agent tells the
+                    # user their config file may now be broken and needs a fix + retry.
+                    reload_error = str(e)
                     logger.warning(f"Failed to reload Home Assistant config: {e}")
 
             if failed_files:
@@ -2855,18 +2863,24 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "message": f"Partially applied: {len(applied_files)} succeeded, {len(failed_files)} failed",
                     "applied_files": applied_files,
                     "failed_files": failed_files,
-                    "config_reloaded": reload_success
+                    "config_reloaded": reload_success,
+                    **({"reload_error": reload_error} if reload_error else {})
                 }
             else:
                 message = f"Successfully applied changes to {len(applied_files)} file(s)"
                 if reload_success:
                     message += " and reloaded Home Assistant configuration"
+                elif reload_error:
+                    message += (". WARNING: files were written but Home Assistant rejected the "
+                                f"reload with a real validation error: {reload_error}. The config on "
+                                "disk may be broken — call search_config_files to inspect and fix it.")
                 return {
                     "success": True,
                     "applied": True,
                     "message": message,
                     "applied_files": applied_files,
-                    "config_reloaded": reload_success
+                    "config_reloaded": reload_success,
+                    **({"reload_error": reload_error} if reload_error else {})
                 }
 
         except Exception as e:
