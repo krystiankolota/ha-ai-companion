@@ -94,6 +94,12 @@ class ConfigurationManager:
         Raises:
             ConfigurationError: If path is invalid or outside config_dir
         """
+        # secrets.yaml holds raw credentials in cleartext — block all read/write
+        # access at this single choke point (previously only search_config_files
+        # filtered it out; propose/patch tools could still read or overwrite it).
+        if Path(file_path).name == "secrets.yaml":
+            raise ConfigurationError("Access to secrets.yaml is not permitted")
+
         # Resolve relative path against config_dir
         full_path = (self.config_dir / file_path).resolve()
 

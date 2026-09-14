@@ -323,7 +323,10 @@ async def _register_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
     class AIConfigAgentView(HomeAssistantView):
         """Proxy view for AI Config Agent."""
 
-        requires_auth = False  # Auth handled by panel iframe
+        # Enforce HA's normal session/token auth (cookie or long-lived token) —
+        # this view proxies session history, memory files, and config
+        # read/write, so it must never be reachable without a valid HA login.
+        requires_auth = True
         url = "/api/ha_ai_companion/{path:.*}"
         name = "api:ha_ai_companion"
 
@@ -386,6 +389,14 @@ async def _register_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
     async def websocket_proxy(request):
         """Proxy WebSocket connections to the FastAPI server."""
         import aiohttp
+        from homeassistant.components.http.const import KEY_HASS_USER
+
+        # This route is registered directly on the aiohttp app (not via
+        # HomeAssistantView), so HA's auth middleware still runs and stamps
+        # KEY_HASS_USER on authenticated requests, but nothing rejects an
+        # unauthenticated one automatically — check it ourselves.
+        if request.get(KEY_HASS_USER) is None:
+            return web.Response(status=401, text="Unauthorized")
 
         _LOGGER.info(f"WebSocket proxy request received for path: {request.match_info.get('path', '')}")
 

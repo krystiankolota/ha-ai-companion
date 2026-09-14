@@ -138,18 +138,30 @@ function AppInner() {
     }
   }, [state.currentSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Starting a new chat (or deleting/clearing the active one) must detach the
+  // WS hook from any in-flight run first — otherwise late events (tokens,
+  // resume_failed, etc.) from the old run keep landing in the new, blank
+  // conversation because ADD_DISPLAY_MESSAGE/UPDATE_STREAMING don't check
+  // which session they belong to.
+  const handleNewChat = useCallback(() => {
+    resetWS()
+    newChat()
+  }, [resetWS, newChat])
+
   const handleDeleteSession = useCallback((sessionId) => {
+    if (sessionId === state.currentSessionId) resetWS()
     deleteSession(sessionId)
-  }, [deleteSession])
+  }, [deleteSession, resetWS, state.currentSessionId])
 
   const handleClearAll = useCallback(() => {
     dispatch({ type: Actions.SHOW_CLEAR_ALL_MODAL })
   }, [dispatch])
 
   const handleClearAllDone = useCallback(async () => {
+    resetWS()
     dispatch({ type: Actions.NEW_CHAT })
     await loadSessions(false)
-  }, [dispatch, loadSessions])
+  }, [dispatch, loadSessions, resetWS])
 
   const closeSidebar = useCallback(() => {
     dispatch({ type: Actions.CLOSE_SIDEBAR })
@@ -158,7 +170,7 @@ function AppInner() {
   return (
     <div className="flex h-full overflow-hidden bg-surface-950">
       <Sidebar
-        onNewChat={newChat}
+        onNewChat={handleNewChat}
         onSwitchSession={handleSwitchSession}
         onDeleteSession={handleDeleteSession}
         onClearAll={handleClearAll}
