@@ -52,6 +52,34 @@ _SECRET_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Low-value memory guard: prompt rules alone ("NEVER save session actions /
+# live sensor readings") get violated in practice — this is a code-level
+# check per save, not more prose (verification > instructions). Patterns are
+# intentionally narrow/high-confidence to avoid blocking legitimate saves.
+_LOW_VALUE_MEMORY_PATTERNS = [
+    (re.compile(r'\b(created|added|set up|configured|updated|deleted|removed)\s+(the\s+)?(automation|script|dashboard|card|flow|node-?red\s+tab)\b', re.IGNORECASE),
+     "looks like a session-action echo (e.g. 'created automation ...') — actions are already in config files, not memory-worthy"),
+    (re.compile(r'\b(is currently|is now|current(ly)?\s+(state|temperature|value|reading)\s*(is|:)|reads?\s+\d)\b', re.IGNORECASE),
+     "looks like a live sensor reading or current state — not durable across sessions"),
+    (re.compile(r'^\s*(we|i)\s+(just\s+)?(edited|changed|modified|fixed|wrote)\b', re.IGNORECASE),
+     "looks like a session-action echo — describe the durable fact, not the action taken"),
+]
+
+
+def _low_value_memory_reason(content: str) -> Optional[str]:
+    """Return a short rejection reason if content matches a known low-value
+    pattern, else None. Checked line-by-line so one bad line in an otherwise
+    fine file doesn't need the whole thing rewritten from scratch by the caller."""
+    stripped = (content or "").strip()
+    if not stripped:
+        return "empty content"
+    if len(stripped) < 12:
+        return "too short/generic to be a useful durable fact"
+    for pattern, reason in _LOW_VALUE_MEMORY_PATTERNS:
+        if pattern.search(stripped):
+            return reason
+    return None
+
 
 def _redact_secrets(text: str) -> str:
     """Redact values of credential-like YAML keys, line by line.
@@ -1595,6 +1623,11 @@ class AgentTools:
         """
         if not self.memory_manager:
             return {"success": False, "error": "Memory manager not available"}
+
+        low_value_reason = _low_value_memory_reason(content)
+        if low_value_reason:
+            return {"success": False, "error": f"rejected: {low_value_reason}. "
+                     "Only save durable, user-stated facts that aren't derivable from HA config/state."}
 
         try:
             # Delete superseded files first

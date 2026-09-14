@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.7] - 2026-09-14
+
+### Changed — simplified always-loaded system prompt (Anthropic/Karpathy best-practice alignment)
+- The system prompt injected on **every single chat turn** was 184 lines / ~17k chars, including dashboard/HACS card-fetch rules and Node-RED JSON-format rules that only matter when the user is actually doing that. Split into a ~133-line core prompt plus two topic fragments (`_DASHBOARD_TOPIC_PROMPT`, `_AUTOMATION_SUGGESTIONS_TOPIC_PROMPT`) injected only when `_select_topic_fragments()` detects on-topic keywords in the current message or relevant tool calls earlier in the session (so the fragment stays loaded across a multi-turn flow). No prompt content was deleted — everything moved. `generate_suggestions()` (Suggestions tab) is unaffected since it never used `self.system_prompt`. See `docs/knowledge/system_prompt.md`.
+- Added `tests/test_topic_fragments.py` (9 tests) covering keyword triggers, tool-name session continuity, and malformed-history handling.
+
+### Fixed — memory save discipline was prompt-only and got violated in practice
+- User reported the memory system "stores useless stuff" despite the prompt's explicit NEVER-save rules (session-action echoes, live sensor readings). Added a code-level guard, `_low_value_memory_reason()` in `tools.py`, checked at the top of `save_memory` before any write — rejects session-action echoes ("created automation ..."), live sensor-reading phrasing, and empty/too-short content with an immediate, actionable error instead of a silent low-value save. Added `tests/test_memory_save_guard.py` (8 tests).
+
 ## [1.18.6] - 2026-09-14
 
 ### Fixed — unauthenticated proxy exposed all sessions/memory/config to any LAN client

@@ -269,7 +269,16 @@ class AgentSystem:
             logger.info("Using default system prompt")
 
     def _get_default_system_prompt(self) -> str:
-        """Get the default system prompt for the configuration agent."""
+        """Get the default system prompt for the configuration agent.
+
+        Core rules only — dashboard/HACS and automation-suggestion procedures
+        live in _DASHBOARD_TOPIC_PROMPT / _AUTOMATION_SUGGESTIONS_TOPIC_PROMPT
+        and are injected per-turn only when the topic is actually relevant
+        (see _select_topic_fragments). This keeps the always-loaded prompt
+        under Anthropic's ~200-line guidance instead of paying for the full
+        rulebook — including Node-RED JSON schemas and HACS fetch workflow —
+        on every single turn regardless of what the user asked.
+        """
         return """HA Configuration Assistant with persistent memory. Manage config files safely, suggest automations, remember setup facts across sessions.
 
 Tools:
@@ -293,47 +302,7 @@ Tools:
 - consolidate_memories: Review all memory files, propose MERGE/DELETE/KEEP plan (user must confirm before applying).
 - search_past_sessions: Keyword search across past sessions — use when user references prior work or before starting topic with likely history.
 - reload_config: Reload HA config after approved YAML changes (activates new entities without restart).
-
-Dashboard rules:
-- Call list_dashboards first to discover url_path values.
-- Default: lovelace.yaml. Custom: lovelace/{url_path}.yaml (e.g. lovelace/kitchen.yaml).
-- Review: search_config_files with 'lovelace' or list_dashboards then search_config_files.
-- Edit existing: read via search_config_files, then propose_config_changes with correct path.
-- Create new: call create_dashboard (returns url_path), then call propose_config_changes immediately with file_path='lovelace/{url_path}.yaml'. Do NOT call search_config_files first — new dashboard has no file to read. The system handles empty new dashboards automatically.
-- Delete: call delete_dashboard with url_path (cannot delete default dashboard).
-- Dashboard YAML must include at minimum 'title' and 'views' keys.
-- STORAGE MODE ONLY: never add 'lovelace:' or 'dashboards:' entries to configuration.yaml — YAML-mode dashboards are not UI-editable and break the save flow. Always use create_dashboard.
-- YAML-mode dashboard detected (list_dashboards entry without 'id')? Offer migration: create_dashboard storage twin, copy config via propose_config_changes, then tell user to remove the configuration.yaml entry and restart HA.
-- Custom card configs are schema-checked on propose. On CARD SCHEMA ERROR: fix exactly per the hint, re-propose. Do not retry the same structure.
-- Prefer 'sections' view layout (type: sections, heading cards) for new dashboards — responsive on desktop + mobile.
-
-Custom card components (HACS):
-This rule applies to every HACS custom card or integration (Bubble-Card, Mushroom, mini-graph-card,
-custom-button-card, ApexCharts, or any other). Never assume you know the current YAML syntax from
-training data — card APIs change between major versions.
-
-Slug: component name lowercased, spaces/special chars replaced with hyphens.
-  Examples: "Bubble-Card" → bubble-card, "Mini Graph Card" → mini-graph-card.
-
-Before writing YAML for any custom card:
-1. Check memory for files named pattern_<SLUG>_syntax.md, pattern_<SLUG>_examples.md, etc.
-   (where SLUG is the derived slug for that component).
-2. If none found: tell user "I don't have docs for [component name] saved — want me to fetch them?"
-   then call learn_hacs_component(name="[component name]").
-3. If learn_hacs_component returns status=cached: existing memory files are fresh, proceed.
-4. If user says "refresh docs for [component]": call learn_hacs_component again ignoring cache.
-5. If user provides a GitHub URL for the component: pass it as github_url to learn_hacs_component.
-
-After a successful fetch, distill the returned readme, changelog, and examples into memory:
-- pattern_<SLUG>_syntax.md  — card types, required fields, type values, config keys
-- pattern_<SLUG>_examples.md — 2-3 minimal working YAML blocks
-- pattern_<SLUG>_changelog.md — breaking changes, removed fields, migration notes (skip if no changelog)
-Each file: ≤800 chars, bullet points only, caveman style (no articles/filler). critical=false.
-
-fetch_url rules (CRITICAL — prevents infinite loops):
-- Call fetch_url at most 2 times per topic per turn (once for README, once for a second file if needed).
-- If fetch_url returns truncated=true: do NOT retry with higher max_chars. Use the content you have.
-- If you searched for a term (e.g. "pop-up") and the README doesn't contain it in the fetched portion: STOP fetching. Tell the user the term wasn't found in the documentation retrieved and offer to proceed with what is available.
+- Dashboard editing, custom HACS cards, and Node-RED flow work each have detailed rules — they load automatically below when the current message or tool activity is on-topic; you don't need to ask for them.
 
 Helper entities:
 - Define input_number, input_boolean, input_text, input_select directly in configuration.yaml as YAML blocks. Never tell user to create them in UI.
@@ -400,6 +369,10 @@ NEVER save (not even if unsure):
 - Anything derivable from HA config or entity list
 - Inferred facts user never explicitly stated
 
+Note: save_memory rejects obvious violations of the above (session-action echoes,
+live sensor readings, empty/too-short content) automatically — if rejected, don't
+retry with reworded phrasing of the same non-fact, just skip saving it.
+
 Anti-bloat rules (enforced by system, also your responsibility):
 - Max 25 files — merge related facts into one file
 - Max 800 chars/file — bullet points only, no prose, no articles (a/an/the), no filler words
@@ -433,17 +406,6 @@ Iteration budget awareness:
 - After gathering entities from topology or get_entity_states, do NOT call get_entity_states again for the same domain.
 - If you have enough data to write the YAML, write it immediately — don't gather "just one more thing."
 
-Automation suggestions:
-- Call get_entity_states to see devices. Call search_config_files for existing automations (avoid duplicates).
-- If Node-RED configured, call get_nodered_flows — do NOT suggest automations already in Node-RED.
-- New Node-RED tab: call get_nodered_flows first (check duplicates), generate valid JSON (array: tab node + nodes), call add_nodered_flow.
-- Modify existing tab: call get_nodered_flows for tab id + current nodes, build updated array (tab node + all nodes with changes applied), call edit_nodered_tab with tab_id. NEVER replace all flows — that operation is not available.
-- When editing an existing tab: PRESERVE existing node ids, x/y positions, names and the tab node (with its label) exactly as returned by get_nodered_flows. Change only the properties that need changing; add new nodes with new ids only where needed. Inventing new ids for existing nodes is rejected.
-- Node-RED JSON format: array with one {type:"tab", id, label} node + functional nodes, each {id, type, name, wires, x, y, ...}. Node types: inject, debug, function, change, switch, delay, http request, mqtt in/out, ha-api, ha-entity, ha-state-changed, ha-call-service, ha-events-all, ha-webhook.
-- Group suggestions by area/domain. Explain benefit of each.
-- When Node-RED flows available, note whether suggestion fits HA automations or Node-RED.
-- Offer to implement via propose_config_changes.
-
 Safety & reversibility:
 - Every file change creates automatic timestamped backup before writing.
 - To undo: call list_backups to find backup, then restore_backup — always available and safe.
@@ -455,6 +417,119 @@ Search discipline:
 - If after 2 search_config_files calls you still cannot locate the relevant automation or entity, STOP searching. Ask the user one specific clarifying question (e.g. the exact automation name or entity_id) instead of searching further.
 
 Managing production HA system. Safety and clarity are paramount."""
+
+    # Topic fragments — injected into system_content only when relevant (see
+    # _select_topic_fragments), instead of being part of the always-loaded
+    # core prompt above. Text is unchanged from the prior always-on version.
+    _DASHBOARD_TOPIC_PROMPT = """Dashboard rules:
+- Call list_dashboards first to discover url_path values.
+- Default: lovelace.yaml. Custom: lovelace/{url_path}.yaml (e.g. lovelace/kitchen.yaml).
+- Review: search_config_files with 'lovelace' or list_dashboards then search_config_files.
+- Edit existing: read via search_config_files, then propose_config_changes with correct path.
+- Create new: call create_dashboard (returns url_path), then call propose_config_changes immediately with file_path='lovelace/{url_path}.yaml'. Do NOT call search_config_files first — new dashboard has no file to read. The system handles empty new dashboards automatically.
+- Delete: call delete_dashboard with url_path (cannot delete default dashboard).
+- Dashboard YAML must include at minimum 'title' and 'views' keys.
+- STORAGE MODE ONLY: never add 'lovelace:' or 'dashboards:' entries to configuration.yaml — YAML-mode dashboards are not UI-editable and break the save flow. Always use create_dashboard.
+- YAML-mode dashboard detected (list_dashboards entry without 'id')? Offer migration: create_dashboard storage twin, copy config via propose_config_changes, then tell user to remove the configuration.yaml entry and restart HA.
+- Custom card configs are schema-checked on propose. On CARD SCHEMA ERROR: fix exactly per the hint, re-propose. Do not retry the same structure.
+- Prefer 'sections' view layout (type: sections, heading cards) for new dashboards — responsive on desktop + mobile.
+
+Custom card components (HACS):
+This rule applies to every HACS custom card or integration (Bubble-Card, Mushroom, mini-graph-card,
+custom-button-card, ApexCharts, or any other). Never assume you know the current YAML syntax from
+training data — card APIs change between major versions.
+
+Slug: component name lowercased, spaces/special chars replaced with hyphens.
+  Examples: "Bubble-Card" → bubble-card, "Mini Graph Card" → mini-graph-card.
+
+Before writing YAML for any custom card:
+1. Check memory for files named pattern_<SLUG>_syntax.md, pattern_<SLUG>_examples.md, etc.
+   (where SLUG is the derived slug for that component).
+2. If none found: tell user "I don't have docs for [component name] saved — want me to fetch them?"
+   then call learn_hacs_component(name="[component name]").
+3. If learn_hacs_component returns status=cached: existing memory files are fresh, proceed.
+4. If user says "refresh docs for [component]": call learn_hacs_component again ignoring cache.
+5. If user provides a GitHub URL for the component: pass it as github_url to learn_hacs_component.
+
+After a successful fetch, distill the returned readme, changelog, and examples into memory:
+- pattern_<SLUG>_syntax.md  — card types, required fields, type values, config keys
+- pattern_<SLUG>_examples.md — 2-3 minimal working YAML blocks
+- pattern_<SLUG>_changelog.md — breaking changes, removed fields, migration notes (skip if no changelog)
+Each file: ≤800 chars, bullet points only, caveman style (no articles/filler). critical=false.
+
+fetch_url rules (CRITICAL — prevents infinite loops):
+- Call fetch_url at most 2 times per topic per turn (once for README, once for a second file if needed).
+- If fetch_url returns truncated=true: do NOT retry with higher max_chars. Use the content you have.
+- If you searched for a term (e.g. "pop-up") and the README doesn't contain it in the fetched portion: STOP fetching. Tell the user the term wasn't found in the documentation retrieved and offer to proceed with what is available."""
+
+    _AUTOMATION_SUGGESTIONS_TOPIC_PROMPT = """Automation suggestions:
+- Call get_entity_states to see devices. Call search_config_files for existing automations (avoid duplicates).
+- If Node-RED configured, call get_nodered_flows — do NOT suggest automations already in Node-RED.
+- New Node-RED tab: call get_nodered_flows first (check duplicates), generate valid JSON (array: tab node + nodes), call add_nodered_flow.
+- Modify existing tab: call get_nodered_flows for tab id + current nodes, build updated array (tab node + all nodes with changes applied), call edit_nodered_tab with tab_id. NEVER replace all flows — that operation is not available.
+- When editing an existing tab: PRESERVE existing node ids, x/y positions, names and the tab node (with its label) exactly as returned by get_nodered_flows. Change only the properties that need changing; add new nodes with new ids only where needed. Inventing new ids for existing nodes is rejected.
+- Node-RED JSON format: array with one {type:"tab", id, label} node + functional nodes, each {id, type, name, wires, x, y, ...}. Node types: inject, debug, function, change, switch, delay, http request, mqtt in/out, ha-api, ha-entity, ha-state-changed, ha-call-service, ha-events-all, ha-webhook.
+- Group suggestions by area/domain. Explain benefit of each.
+- When Node-RED flows available, note whether suggestion fits HA automations or Node-RED.
+- Offer to implement via propose_config_changes."""
+
+    # Keyword triggers (checked against the current user message) and tool
+    # names (checked against tool calls already made this session) that turn
+    # a topic fragment on. Tool-name triggers keep the fragment loaded across
+    # a multi-turn flow even if the topic word isn't repeated every message.
+    _DASHBOARD_TRIGGER_KEYWORDS = (
+        "dashboard", "lovelace", "card", "mushroom", "bubble-card", "bubble card",
+        "mini-graph", "apexchart", "button-card", "view", "panel", "tile", "hacs",
+    )
+    _DASHBOARD_TRIGGER_TOOLS = frozenset({
+        "list_dashboards", "create_dashboard", "delete_dashboard",
+        "get_lovelace_resources", "learn_hacs_component",
+    })
+    _SUGGESTIONS_TRIGGER_KEYWORDS = (
+        "suggest", "suggestion", "recommend", "automation idea", "node-red", "nodered", "flow",
+    )
+    _SUGGESTIONS_TRIGGER_TOOLS = frozenset({
+        "get_nodered_flows", "add_nodered_flow", "edit_nodered_tab",
+    })
+
+    @staticmethod
+    def _history_tool_names(conversation_history: Optional[List[Dict[str, Any]]]) -> set:
+        """Return the set of tool function names already called this session."""
+        names: set = set()
+        for msg in conversation_history or []:
+            for tc in (msg.get("tool_calls") or []):
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    names.add(fn["name"])
+        return names
+
+    @classmethod
+    def _select_topic_fragments(
+        cls,
+        user_message: str,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[str]:
+        """Return topic prompt fragments relevant to this turn, or [] if none.
+
+        Cheap substring/tool-name check, mirroring MemoryManager's relevance
+        gating — avoids paying for dashboard/HACS/Node-RED procedures on
+        every turn when the user is doing something unrelated (e.g. asking
+        about an automation or a memory fact). Classmethod (no instance
+        state needed) so it's testable without constructing a full AgentSystem.
+        """
+        message_lower = (user_message or "").lower()
+        used_tools = cls._history_tool_names(conversation_history)
+        fragments = []
+
+        if (any(kw in message_lower for kw in cls._DASHBOARD_TRIGGER_KEYWORDS)
+                or used_tools & cls._DASHBOARD_TRIGGER_TOOLS):
+            fragments.append(cls._DASHBOARD_TOPIC_PROMPT)
+
+        if (any(kw in message_lower for kw in cls._SUGGESTIONS_TRIGGER_KEYWORDS)
+                or used_tools & cls._SUGGESTIONS_TRIGGER_TOOLS):
+            fragments.append(cls._AUTOMATION_SUGGESTIONS_TOPIC_PROMPT)
+
+        return fragments
 
     @staticmethod
     def _format_entity_states_compact(states: list) -> str:
@@ -717,6 +792,12 @@ Managing production HA system. Safety and clarity are paramount."""
             topology = await self._build_home_topology()
             if topology:
                 system_content = system_content + "\n\n" + topology
+
+            # Inject topic fragments (dashboard/HACS, automation suggestions)
+            # only when this turn is actually on-topic — see _select_topic_fragments.
+            topic_fragments = self._select_topic_fragments(user_message, conversation_history)
+            if topic_fragments:
+                system_content = system_content + "\n\n" + "\n\n".join(topic_fragments)
 
             system_message = {
                 "role": "system",
