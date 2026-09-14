@@ -41,6 +41,34 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Inline credential-like keys that must never reach the LLM/frontend even when
+# not wrapped in a `secrets.yaml` !secret reference (secrets.yaml itself is
+# excluded from search_config_files entirely — this catches accidental inline
+# leaks in configuration.yaml and friends, e.g. recorder db_url passwords,
+# other integrations' api_key/token fields).
+_SECRET_KEY_RE = re.compile(
+    r'^(\s*[\w.\-]*(?:password|passwd|api[_-]?key|access[_-]?token|client[_-]?secret|'
+    r'private[_-]?key|secret[_-]?key|auth[_-]?token|bearer)\s*:\s*)(.+)$',
+    re.IGNORECASE,
+)
+
+
+def _redact_secrets(text: str) -> str:
+    """Redact values of credential-like YAML keys, line by line.
+
+    Leaves `!secret xxx` references untouched (they're just names, the real
+    value lives in the excluded secrets.yaml) and leaves non-matching lines
+    untouched.
+    """
+    def _sub(m: 're.Match') -> str:
+        value = m.group(2).strip()
+        if value.startswith('!secret'):
+            return m.group(0)
+        return m.group(1) + '"***REDACTED***"'
+
+    return '\n'.join(_SECRET_KEY_RE.sub(_sub, line) for line in text.splitlines())
+
+
 _EMBED_BATCH = 100      # entities per embeddings API call
 _EMBED_TOP_K = 40       # entities returned by semantic search
 _EMBED_TTL   = 1800     # cache lifetime in seconds (30 min)
@@ -660,6 +688,7 @@ class AgentTools:
                 self._push_status(f"Reading {relative_path}")
                 try:
                     content = await self.config_manager.read_file_raw(relative_path)
+                    content = _redact_secrets(content)
 
                     # If search pattern provided and NOT a file path pattern, check if file contains it or filename matches
                     if search_pattern and not is_file_path_pattern:

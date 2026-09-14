@@ -58,6 +58,14 @@ class TestValidatePath:
         with pytest.raises(ConfigurationError, match="outside config directory"):
             manager._validate_path(outside)
 
+    def test_secrets_yaml_blocked(self, manager):
+        with pytest.raises(ConfigurationError, match="secrets.yaml"):
+            manager._validate_path("secrets.yaml")
+
+    def test_secrets_yaml_blocked_nested(self, manager):
+        with pytest.raises(ConfigurationError, match="secrets.yaml"):
+            manager._validate_path("packages/secrets.yaml")
+
 
 # ---------------------------------------------------------------------------
 # read_file_raw

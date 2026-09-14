@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.6] - 2026-09-14
+
+### Fixed — unauthenticated proxy exposed all sessions/memory/config to any LAN client
+- **`AIConfigAgentView.requires_auth` was `False`**, and the manually-registered `/api/ha_ai_companion/ws/{path}` WebSocket route bypassed HA's auth dispatch entirely. Together these meant every backend endpoint — saved conversations, memory files, config search/patch, live chat — was reachable by anyone who could reach the HA HTTP port, with no HA login required. Fixed: view now sets `requires_auth = True`; the manual WS route checks `request[KEY_HASS_USER]` itself and returns 401 if absent (HA's auth middleware still stamps this on every request regardless of view-level enforcement).
+- **`secrets.yaml` was excluded only in `search_config_files`'s glob filter** — `propose_config_changes`/`patch_config_key`/`patch_config_block` all go through `ConfigurationManager.read_file_raw`/`write_file_raw`, which had no such restriction, so the agent (or a prompt-injected one) could still read/rewrite `secrets.yaml` via those tools. Fixed at the single choke point: `_validate_path()` now rejects any path named `secrets.yaml` for every read/write caller.
+- **Inline credentials in non-`secrets.yaml` files (recorder `password:`, other integrations' `api_key:`/`token:`) were sent to the LLM and frontend verbatim** by `search_config_files`. Added `_redact_secrets()` — regex-redacts credential-like YAML key values line by line, preserving `!secret` references untouched.
+- Root bug reported alongside this review — "New Chat"/delete-current/"Clear All" didn't detach the WebSocket hook from an in-flight run, so a still-running old run's late events (e.g. "AI finished while you were away") landed in the freshly-started conversation. Fixed by resetting WS/run-tracking state before starting or clearing a session.
+
 ## [1.18.5] - 2026-08-20
 
 ### Fixed — "flash" in the model-family match killed every DeepSeek write request
