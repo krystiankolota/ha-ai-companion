@@ -277,6 +277,73 @@ def _cap_tool_result(name: str, content: str) -> str:
             "Narrow the query (filter, domain, area) to see the rest.]")
 
 
+# Tools whose dispatch maps alternative argument names; validate after that mapping.
+_ARG_ALIAS_TOOLS = {"add_nodered_flow", "edit_nodered_tab"}
+_JSON_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool,
+               "array": list, "object": dict}
+
+
+def _coerce_arg(value: Any, spec: Dict[str, Any]) -> Any:
+    """Coerce one argument to its JSON-schema type. Raises ValueError when impossible."""
+    t = spec.get("type")
+    expected = _JSON_TYPES.get(t)
+    if expected is None or (isinstance(value, expected) and (t == "boolean" or not isinstance(value, bool))):
+        return value
+    if t == "string" and isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    if t == "string" and isinstance(value, (int, float)):
+        return str(value)
+    if t == "integer" and isinstance(value, float) and value.is_integer():
+        return int(value)
+    if t == "integer" and isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    if t == "number" and isinstance(value, str):
+        return float(value.strip())
+    if t == "boolean" and isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    if t in ("array", "object") and isinstance(value, str):
+        parsed = json.loads(value)
+        if isinstance(parsed, expected):
+            return parsed
+    raise ValueError(f"expected {t}, got {type(value).__name__}")
+
+
+def _validate_tool_args(name: str, args: Any, schema: Optional[Dict[str, Any]]) -> tuple:
+    """Check tool arguments against the tool's JSON schema before dispatch.
+
+    Returns (args, error). Safe coercions ("5" -> 5, "true" -> True, list -> JSON
+    string) are applied silently; anything else returns one precise error so the
+    model can fix the call instead of hitting a Python TypeError."""
+    if schema is None or name in _ARG_ALIAS_TOOLS:
+        return args, None
+    if not isinstance(args, dict):
+        return args, f"Arguments for {name} must be a JSON object."
+    props = schema.get("properties") or {}
+    problems = []
+    missing = [k for k in schema.get("required") or [] if k not in args]
+    if missing:
+        problems.append(f"missing required {', '.join(missing)}")
+    unknown = [k for k in args if k not in props]
+    if unknown:
+        problems.append(f"unknown argument(s) {', '.join(unknown)}")
+    out = dict(args)
+    for key, value in args.items():
+        spec = props.get(key)
+        if not spec or value is None:
+            continue
+        try:
+            out[key] = _coerce_arg(value, spec)
+        except (ValueError, TypeError) as e:
+            problems.append(f"{key} {e}")
+            continue
+        if spec.get("enum") and out[key] not in spec["enum"]:
+            problems.append(f"{key} must be one of {spec['enum']}")
+    if problems:
+        expected = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in props.items()) or "none"
+        return args, f"Invalid arguments for {name}: {'; '.join(problems)}. Expected: {expected}."
+    return out, None
+
+
 def _merge_reasoning_details(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Merge streamed reasoning_details deltas into whole blocks, in order.
 
@@ -967,6 +1034,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             }
             return
 
+        iteration = 0
+        turn_tool_errors = 0
+        turn_ok = False
+        turn_model = self.model
         try:
             logger.info(f"Agent streaming user message: {user_message[:100]}...")
 
@@ -1592,6 +1663,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
             _has_write_intent_flag = _has_write_intent(user_message)
             _tools_chars = len(json.dumps(tools))
+            _tool_schemas = {t["function"]["name"]: t["function"].get("parameters") or {}
+                             for t in tools if isinstance(t, dict) and t.get("function")}
 
             # Complexity routing (opt-in, COMPLEXITY_ROUTING=on): keep simple,
             # read-only Q&A turns on the cheaper research model for the whole turn.
@@ -1641,6 +1714,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 has_tool_results = any(m.get("role") == "tool" for m in messages)
                 _use_config = not route_to_cheap
                 active_model  = self.config_model  if _use_config else self.suggestion_model
+                turn_model = active_model
                 active_client = self.config_client if _use_config else self.suggestion_client
                 logger.info(f"[ITERATION {iteration}] Model: {active_model} ({'main' if _use_config else 'research'})")
                 yield {
@@ -2012,6 +2086,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 for tool_idx, tool_call in enumerate(accumulated_tool_calls):
                     function_name = tool_call["function"]["name"]
                     function_args, _args_parse_error = self._parse_tool_args(tool_call["function"]["arguments"])
+                    _args_schema_error = None
+                    if not _args_parse_error:
+                        function_args, _args_schema_error = _validate_tool_args(
+                            function_name, function_args, _tool_schemas.get(function_name))
                     if _args_parse_error:
                         logger.warning(
                             f"[ITERATION {iteration}] Tool '{function_name}' arguments failed to "
@@ -2065,6 +2143,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                                 "valid JSON: escape special characters inside any string values."
                             ),
                         }
+                    elif _args_schema_error:
+                        result = {"success": False, "error": _args_schema_error + " Retry with corrected arguments."}
                     elif _blocked_error:
                         result = {"success": False, "blocked": True, "error": _blocked_error}
                         logger.warning(
@@ -2120,6 +2200,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     _is_approval_gated = "changeset_id" in result
                     _is_infra_error = "timed out" in result.get("error", "").lower()
                     if _is_failure and not _is_approval_gated and not _is_infra_error:
+                        turn_tool_errors += 1
                         _err_msg = result.get("error", "")
                         if _err_msg:
                             logger.warning(f"[ITERATION {iteration}] Tool '{function_name}' error: {_err_msg[:300]}")
@@ -2234,6 +2315,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             logger.info(f"Agent completed after {iteration} iteration(s) - Total tokens: {total_input_tokens + total_output_tokens} (input: {total_input_tokens}, output: {total_output_tokens}, cached: {total_cached_tokens})")
 
             cost_usd = total_cost_usd or None
+            turn_ok = iteration < max_iterations
 
             usage_data = {
                 "input_tokens": total_input_tokens,
@@ -2284,6 +2366,14 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "event": "error",
                     "data": json.dumps({"error": str(e)})
                 }
+        finally:
+            # Every terminal path (success, error, watchdog timeout, stop) counts once.
+            self._record_turn(session_id, turn_ok, iteration, turn_tool_errors, turn_model)
+
+    def _record_turn(self, session_id, ok, iterations, tool_errors, model=None) -> None:
+        if self.usage_manager is not None:
+            self.usage_manager.record_turn(session_id=session_id, model=model or self.model, ok=ok,
+                                           iterations=iterations, tool_errors=tool_errors)
 
     @staticmethod
     def _parse_tool_args(arguments: Optional[str]) -> tuple:

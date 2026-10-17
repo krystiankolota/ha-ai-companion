@@ -92,6 +92,34 @@ export default function ModelAdvisor() {
             ))}
           </div>
 
+          {data.observed?.length > 0 && (
+            <div>
+              <div className="text-xs font-semibold text-gray-300">Your usage (last 30 days)</div>
+              <div className="text-[11px] text-gray-500 mb-1">Real chat cost and reliability per model from your own sessions. Success = turn finished without error or iteration limit. Compare with the estimates below.</div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-gray-500 text-left">
+                    <th className="font-normal pr-3">Model</th><th className="font-normal pr-3">Sessions</th>
+                    <th className="font-normal pr-3">Calls/session</th><th className="font-normal pr-3">$/session</th>
+                    <th className="font-normal pr-3">Cache hit</th>
+                    <th className="font-normal pr-3">Success</th><th className="font-normal">Tool errors/turn</th>
+                  </tr></thead>
+                  <tbody>
+                    {data.observed.map(o => (
+                      <tr key={o.model} className="text-gray-300">
+                        <td className="font-mono pr-3">{o.model}</td><td className="pr-3">{o.sessions}</td>
+                        <td className="pr-3">{o.calls_per_session}</td><td className="pr-3">{usd(o.cost_per_session)}</td>
+                        <td className="pr-3">{o.cache_hit == null ? '—' : `${Math.round(o.cache_hit * 100)}%`}</td>
+                        <td className="pr-3">{o.success_rate == null ? '—' : `${Math.round(o.success_rate * 100)}% of ${o.turns}`}</td>
+                        <td>{o.tool_errors_per_turn ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {hasScores ? RANK_INFO.map(r => (
             <div key={r.key}>
               <div className="text-xs font-semibold text-gray-300">{r.title}</div>

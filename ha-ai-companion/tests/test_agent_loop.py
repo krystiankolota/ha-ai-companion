@@ -195,3 +195,69 @@ def test_fast_model_slot(monkeypatch):
     a = asyncio.run(build())
     assert a.config_model == "z-ai/glm-5.3-flash" and a.config_client is a.client
     assert a._fast_client_and_model() == (a.client, "openai/gpt-6-luna")
+
+def test_tool_schemas_match_tool_functions(agent):
+    """Every schema argument must exist on the Python tool, or validated calls crash."""
+    import inspect
+    fake, _, _ = _run(agent, [_final()])
+    holder = {}
+
+    async def build():
+        holder["a"] = agent()
+    asyncio.run(build())
+    tools_obj = holder["a"].tools
+    bad = []
+    for t in fake.requests[0]["tools"]:
+        fn = t["function"]
+        method = getattr(tools_obj, fn["name"], None)
+        if method is None:
+            bad.append(f"{fn['name']}: no AgentTools method")
+            continue
+        sig = inspect.signature(method)
+        if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+            continue
+        for arg in (fn.get("parameters") or {}).get("properties") or {}:
+            if arg not in sig.parameters:
+                bad.append(f"{fn['name']}.{arg}")
+    assert not bad, bad
+
+
+def test_validate_tool_args_coerces_and_reports():
+    from src.agents.agent_system import _validate_tool_args
+    schema = {"type": "object", "required": ["path"], "properties": {
+        "path": {"type": "string"}, "limit": {"type": "integer"}, "force": {"type": "boolean"},
+        "items": {"type": "array"}, "mode": {"type": "string", "enum": ["a", "b"]}}}
+    args, err = _validate_tool_args("t", {"path": "x", "limit": "5", "force": "true", "items": "[1]"}, schema)
+    assert err is None and args == {"path": "x", "limit": 5, "force": True, "items": [1]}
+    _, err = _validate_tool_args("t", {"limit": "many", "colour": 1, "mode": "c"}, schema)
+    assert "missing required path" in err and "unknown argument(s) colour" in err
+    assert "limit expected integer" in err and "mode must be one of" in err
+    assert _validate_tool_args("t", {"x": 1}, None) == ({"x": 1}, None)
+
+
+def test_invalid_tool_args_are_rejected_before_dispatch(agent):
+    fake, events, kinds = _run(agent, [
+        _call("patch_config_key", {"file_path": "automations.yaml", "bogus": 1}),
+        _final("Fixed."),
+    ])
+    assert kinds[-1] == "complete", events
+    sent = json.dumps(fake.requests[1]["messages"])
+    assert "Invalid arguments for patch_config_key" in sent and "unknown argument(s) bogus" in sent
+
+def test_required_null_argument_is_present():
+    from src.agents.agent_system import _validate_tool_args
+    schema = {"type": "object", "required": ["new_value"], "properties": {"new_value": {}}}
+    assert _validate_tool_args("t", {"new_value": None}, schema) == ({"new_value": None}, None)
+
+
+def test_turn_outcome_recorded_once_per_turn(agent):
+    um = MagicMock()
+    _, _, kinds = _run(agent, [_final()], attrs={"usage_manager": um})
+    assert kinds[-1] == "complete"
+    assert um.record_turn.call_count == 1 and um.record_turn.call_args.kwargs["ok"] is True
+    assert um.record_turn.call_args.kwargs["model"] == "openai/gpt-6.1-sol"
+
+    um = MagicMock()
+    _, _, kinds = _run(agent, [], attrs={"usage_manager": um})  # client fails: no scripted reply
+    assert "error" in kinds
+    assert um.record_turn.call_count == 1 and um.record_turn.call_args.kwargs["ok"] is False

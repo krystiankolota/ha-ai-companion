@@ -77,6 +77,21 @@ class UsageManager:
             logger.error("UsageManager.record error: %s", exc)
         return rec
 
+    def record_turn(self, *, session_id: Optional[str], model: str, ok: bool,
+                    iterations: int, tool_errors: int) -> None:
+        """Append one chat-turn outcome to turns.jsonl. Never raises."""
+        rec = {"ts": datetime.now(timezone.utc).isoformat(), "session_id": session_id or "",
+               "model": model or "", "ok": bool(ok), "iterations": int(iterations or 0),
+               "tool_errors": int(tool_errors or 0)}
+        try:
+            path = self.usage_dir / "turns.jsonl"
+            if path.exists() and path.stat().st_size > self.MAX_BYTES:
+                path.replace(self.usage_dir / "turns.1.jsonl")
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception as exc:
+            logger.error("UsageManager.record_turn error: %s", exc)
+
     def _rotate_if_needed(self) -> None:
         try:
             if self.path.exists() and self.path.stat().st_size > self.MAX_BYTES:
@@ -88,9 +103,9 @@ class UsageManager:
         except Exception:
             pass
 
-    def _read_all(self) -> List[Dict]:
+    def _read_all(self, name: str = "usage") -> List[Dict]:
         recs: List[Dict] = []
-        for p in (self.usage_dir / "usage.1.jsonl", self.path):
+        for p in (self.usage_dir / f"{name}.1.jsonl", self.usage_dir / f"{name}.jsonl"):
             if not p.exists():
                 continue
             try:
@@ -115,6 +130,8 @@ class UsageManager:
         by_phase: Dict[str, Dict] = {}
         by_day: Dict[str, Dict] = {}
         by_session: Dict[str, Dict] = {}
+        by_model_chat: Dict[str, Dict] = {}
+        model_sessions: Dict[str, set] = {}
         totals = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "calls": 0}
 
         for r in recs:
@@ -129,6 +146,8 @@ class UsageManager:
             _acc(by_day, (r.get("ts") or "")[:10], r)
             if r.get("session_id"):
                 _acc(by_session, r["session_id"], r)
+                _acc(by_model_chat, r.get("model", ""), r)
+                model_sessions.setdefault(r.get("model") or "unknown", set()).add(r["session_id"])
             totals["input_tokens"] += r.get("input_tokens", 0)
             totals["cached_tokens"] += r.get("cached_tokens", 0)
             totals["output_tokens"] += r.get("output_tokens", 0)
@@ -136,7 +155,22 @@ class UsageManager:
             totals["calls"] += 1
 
         totals["cost_usd"] = round(totals["cost_usd"], 6)
+        for model, b in by_model_chat.items():
+            b["sessions"] = len(model_sessions.get(model, ()))
+        turns_by_model: Dict[str, Dict] = {}
+        for r in self._read_all("turns"):
+            try:
+                if datetime.fromisoformat(r["ts"]).timestamp() < cutoff:
+                    continue
+            except Exception:
+                continue
+            t = turns_by_model.setdefault(r.get("model") or "unknown", {"turns": 0, "ok": 0, "tool_errors": 0})
+            t["turns"] += 1
+            t["ok"] += 1 if r.get("ok") else 0
+            t["tool_errors"] += r.get("tool_errors", 0)
         return {
+            "turns_by_model": turns_by_model,
+            "by_model_chat": by_model_chat,
             "days": days,
             "totals": totals,
             "by_model": by_model,

@@ -116,6 +116,33 @@ class ModelAdvisor:
         }
 
     @staticmethod
+    def observed(usage: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Real chat cost per model from your own usage log (most-used first)."""
+        rows = []
+        turns = (usage or {}).get("turns_by_model") or {}
+        for model, b in ((usage or {}).get("by_model_chat") or {}).items():
+            sessions, calls = b.get("sessions") or 0, b.get("calls") or 0
+            if not sessions or not calls:
+                continue
+            inp = b.get("input_tokens") or 0
+            rows.append({
+                "model": model,
+                "sessions": sessions,
+                "calls_per_session": round(calls / sessions, 1),
+                "cost_per_session": round((b.get("cost_usd") or 0.0) / sessions, 5),
+                "cache_hit": round((b.get("cached_tokens") or 0) / inp, 2) if inp else None,
+                **ModelAdvisor._turn_stats(turns.get(model)),
+            })
+        return sorted(rows, key=lambda r: -r["sessions"])
+
+    @staticmethod
+    def _turn_stats(t: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not t or not t.get("turns"):
+            return {"turns": 0, "success_rate": None, "tool_errors_per_turn": None}
+        return {"turns": t["turns"], "success_rate": round(t["ok"] / t["turns"], 2),
+                "tool_errors_per_turn": round(t["tool_errors"] / t["turns"], 2)}
+
+    @staticmethod
     def score_index(aa_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Optional[float]]]:
         """Map normalized model slug -> best quality indexes across AA variants."""
         out: Dict[str, Dict[str, Optional[float]]] = {}
@@ -248,6 +275,7 @@ class ModelAdvisor:
             "mix": mix,
             "configured": self.check_configured(configured, catalog["data"], by_id, is_openrouter),
             "rankings": self.rank(cands),
+            "observed": self.observed(usage),
             "scored_models": sum(1 for c in cands if c["intelligence"] is not None),
             "candidate_models": len(cands),
             "sources": {

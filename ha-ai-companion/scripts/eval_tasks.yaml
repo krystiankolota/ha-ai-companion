@@ -1,0 +1,49 @@
+# Live eval tasks for scripts/eval_live.py. Read-only on HA: write tasks only
+# check that a changeset is proposed; the script never approves anything.
+#
+# Fields:
+#   prompt          message sent to the companion
+#   expect_tools    at least one of these tools must be called
+#   forbid_full_read  fail if any tool is called with full_content=true
+#   expect_changeset  a staged changeset_id must appear in a tool result
+#   answer_any      final answer must contain one of these (case-insensitive)
+#   max_iterations  fail when the turn needs more LLM calls than this
+
+- id: list-disabled
+  prompt: How many automations do I have? List only the disabled ones, by name.
+  expect_tools: [list_automations]
+  forbid_full_read: true
+  max_iterations: 4
+
+- id: read-one-automation
+  prompt: Show the triggers of the rekuperator automation. Do not change anything.
+  expect_tools: [get_automation, list_automations]
+  forbid_full_read: true
+  answer_any: [trigger, numeric_state, temperatur]
+  max_iterations: 5
+
+- id: entity-state
+  prompt: What is the current outdoor temperature? Short answer.
+  expect_tools: [search_entities, get_entity_states]
+  answer_any: ["°c", " c", "stopni"]
+  max_iterations: 4
+
+- id: ha-health
+  prompt: Are there any problems in my Home Assistant right now? Short list.
+  expect_tools: [get_ha_health, get_ha_issues, find_unavailable_entities]
+  max_iterations: 5
+
+- id: nodered-find
+  prompt: Which Node-RED tab controls the garage sconces (switch.kinkiety_garaz)? Do not change anything.
+  expect_tools: [get_nodered_flows, nodered_get_tab]
+  answer_any: [kinkiety]
+  max_iterations: 5
+
+- id: stage-small-edit
+  prompt: >-
+    In the rekuperator automation, change the notification title to "Rekuperator".
+    Only propose the change for approval.
+  expect_tools: [upsert_automation, patch_config_block, propose_config_changes]
+  expect_changeset: true
+  forbid_full_read: true
+  max_iterations: 7

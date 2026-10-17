@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0] - 2026-10-17
+
+### Added
+- **Your usage in the model advisor.** Per model: sessions, calls per session, real cost per session, cache hit rate, turn success rate and tool errors per turn. Turn outcomes are logged to `.ai_agent_usage/turns.jsonl`.
+- **Tool arguments are checked against the tool schema before the tool runs.** Safe fixes are applied silently (`"5"` → 5, `"true"` → true, list → JSON string). Missing, unknown or wrong-type arguments return one clear error, so the model fixes the call instead of hitting a Python error.
+- **Live end-to-end eval** (`scripts/eval_live.py`, tasks in `scripts/eval_tasks.yaml`). It runs real HA tasks against the installed add-on through ingress and grades tools used, full-file reads, staged changesets, iterations, cost and time. It never approves a changeset.
 ## [1.21.0] - 2026-10-17
 
 ### Changed — simpler model config (OpenRouter first)

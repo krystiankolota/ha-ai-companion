@@ -157,3 +157,19 @@ def test_expired_cache_refetches(tmp_path):
 
     out = asyncio.run(ModelAdvisor(str(tmp_path), fetch=fetch).advise({}, None, True))
     assert out["sources"]["openrouter"]["source"] == "live" and out["candidate_models"] == 3
+
+def test_observed_from_usage_log(tmp_path):
+    from src.usage.manager import UsageManager
+    um = UsageManager(str(tmp_path))
+    for sid in ("s1", "s2"):
+        for _ in range(3):
+            um.record(session_id=sid, phase="main", model="m/a", iteration=1,
+                      input_tokens=1000, cached_tokens=500, output_tokens=100, cost_usd=0.01)
+    um.record(session_id="", phase="suggestion", model="m/a", iteration=0,
+              input_tokens=9000, cached_tokens=0, output_tokens=100, cost_usd=1.0)
+    um.record_turn(session_id="s1", model="m/a", ok=True, iterations=3, tool_errors=1)
+    um.record_turn(session_id="s2", model="m/a", ok=False, iterations=3, tool_errors=0)
+    rows = ModelAdvisor.observed(um.aggregate(days=30))
+    assert rows == [{"model": "m/a", "sessions": 2, "calls_per_session": 3.0,
+                     "cost_per_session": 0.03, "cache_hit": 0.5,
+                     "turns": 2, "success_rate": 0.5, "tool_errors_per_turn": 0.5}]
