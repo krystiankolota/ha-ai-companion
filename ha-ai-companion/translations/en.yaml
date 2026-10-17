@@ -70,7 +70,8 @@ configuration:
   reasoning_effort:
     name: Reasoning effort (optional, OpenRouter)
     description: >-
-      Sent as OpenRouter reasoning.effort for reasoning models.
+      Sent as OpenRouter reasoning.effort for reasoning models. One of:
+      none, minimal, low, medium, high, xhigh.
       Leave empty to use the model default. Higher = better quality, more output tokens.
   enable_cache_control:
     name: Enable Prompt Caching

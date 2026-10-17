@@ -5,6 +5,10 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.1] - 2026-10-17
+
+### Fixed
+- Add-on would not start and settings could not be saved when `reasoning_effort` was empty: the `list(...)` schema rejected the `""` default. It is now a string option; invalid values are ignored with a log warning.
 ## [1.23.0] - 2026-10-17
 
 ### Changed
