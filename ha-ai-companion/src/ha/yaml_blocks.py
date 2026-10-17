@@ -29,6 +29,25 @@ def load_tolerant(text: str) -> Any:
     return yaml.load(text, Loader=_TolerantLoader)  # noqa: S506 — SafeLoader subclass
 
 
+class _TagPreservingDumper(yaml.SafeDumper):
+    """Re-emits "!tag value" strings produced by load_tolerant as real tags."""
+
+
+def _represent_str(dumper, value):
+    if value.startswith("!") and " " in value:
+        tag, rest = value.split(" ", 1)
+        if tag[1:].replace("_", "").isalnum():
+            return dumper.represent_scalar(tag, rest)
+    return dumper.represent_str(value)
+
+
+_TagPreservingDumper.add_representer(str, _represent_str)
+
+
+def dump_tolerant(data: Any) -> str:
+    return yaml.dump(data, Dumper=_TagPreservingDumper, sort_keys=False, allow_unicode=True)
+
+
 @dataclass
 class Block:
     comment_start: int  # 0-based index of the first leading comment line (== start when none)

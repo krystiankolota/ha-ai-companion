@@ -78,6 +78,31 @@ def test_recall_skips_candidates_and_stale(store):
     assert store.recall("pref") == ""
 
 
+def test_recall_stems_polish_allows_rare_and_filters_common_single_tokens(store):
+    store.add("fact", "Rekuperator pracuje cicho nocą")
+    store.add("fact", "Ustawienia rekuperatora zapisano")
+    assert len(store.search("rekuperatora")) == 2
+
+    for i in range(3):
+        store.add("fact", f"Boiler nr {i} działa")
+    assert not store.search("boiler")
+
+
+def test_search_does_not_treat_stopword_only_query_as_empty(store):
+    store.add("fact", "The user likes quiet evenings")
+    assert store.search("the and with") == []
+
+
+def test_preference_recall_budget_is_1200_chars(store):
+    first = "First preference " + "a" * 380
+    second = "Second preference " + "b" * 380
+    store.add("preference", first)
+    store.add("preference", second)
+    body = store.recall("").split("\n", 1)[1]
+    assert PREFERENCE_BUDGET == 1200
+    assert first in body and second in body and len(body) > 600
+
+
 def test_search_folds_polish_diacritics(store):
     store.add("fact", "Łazienka na piętrze ma wentylator")
     assert store.search("lazienka")
@@ -96,6 +121,43 @@ def test_doctor_marks_stale_dupes_and_links(store):
     assert store.get(a["id"])["status"] == "stale"
     assert r["duplicates"] and r["broken_links"] == [d1["id"]]
     assert store.get(d1["id"])["supersedes"] is None
+
+
+def test_doctor_rejects_old_candidates_reports_unused_and_conflicts(store):
+    import datetime
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    old_candidate = store.add("fact", "Candidate is still pending", status="candidate")
+    used_long_ago = store.add("fact", "Night temperature target is 20 degrees")
+    never_used = store.add("decision", "Boiler target temperature is 55 degrees")
+    old_preference = store.add("preference", "Always answer in Polish")
+    store._exec("UPDATE memories SET created=? WHERE id=?",
+                ((now - datetime.timedelta(days=31)).isoformat(), old_candidate["id"]))
+    store._exec("UPDATE memories SET last_used=? WHERE id=?",
+                ((now - datetime.timedelta(days=91)).isoformat(), used_long_ago["id"]))
+    store._exec("UPDATE memories SET created=? WHERE id=?",
+                ((now - datetime.timedelta(days=91)).isoformat(), never_used["id"]))
+    store._exec("UPDATE memories SET created=? WHERE id=?",
+                ((now - datetime.timedelta(days=100)).isoformat(), old_preference["id"]))
+    store._exec("UPDATE memories SET key='temperature' WHERE id IN (?,?)",
+                (used_long_ago["id"], never_used["id"]))
+
+    report = store.doctor(apply=True)
+    assert report["expired_candidates"] == [old_candidate["id"]]
+    assert report["candidates"] == 0
+    assert store.get(old_candidate["id"])["status"] == "rejected"
+    assert set(report["unused"]) == {used_long_ago["id"], never_used["id"]}
+    assert old_preference["id"] not in report["unused"]
+    assert any(set(pair["ids"]) == {used_long_ago["id"], never_used["id"]}
+               for pair in report["conflicts"])
+
+
+def test_doctor_reports_number_conflicts_by_token_overlap(store):
+    earlier = store.add("preference", "Bedroom target temperature is 19 degrees at night")
+    later = store.add("preference", "Bedroom target temperature is 21 degrees at night")
+    report = store.doctor(apply=False)
+    assert any(set(pair["ids"]) == {earlier["id"], later["id"]}
+               for pair in report["conflicts"])
 
 
 def test_migration_from_markdown(tmp_path):

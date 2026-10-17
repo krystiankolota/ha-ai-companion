@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { getModelAdvice } from '../lib/api'
 
-const ROLE_LABELS = { main: 'Main', research: 'Research', reasoning: 'Reasoning' }
+const ROLE_LABELS = { main: 'Main', fast: 'Fast' }
 const RANK_INFO = [
-  { key: 'reasoning', title: 'Reasoning (writes config)', hint: 'Highest coding score; price breaks ties.' },
-  { key: 'research', title: 'Research (reads HA)', hint: 'Best score per dollar among strong models.' },
-  { key: 'budget', title: 'Budget', hint: 'Cheapest model that is still capable.' },
+  { key: 'value', title: 'Best value (main model)', hint: 'Best agent score per dollar among strong models.' },
+  { key: 'quality', title: 'Highest quality', hint: 'Best agentic / coding score; price breaks ties.' },
+  { key: 'fast', title: 'Fast model (side tasks)', hint: 'Cheapest model that is still capable.' },
 ]
 
 function usd(n) {
@@ -25,9 +25,10 @@ function ModelRow({ m }) {
     <tr className="border-t border-surface-800">
       <td className="py-1 pr-2 font-mono text-gray-300 truncate max-w-[14rem]" title={m.id}>{m.id}</td>
       <td className="py-1 px-2 text-right tabular-nums">{score(m.intelligence)}</td>
-      <td className="py-1 px-2 text-right tabular-nums">{score(m.coding)}</td>
+      <td className="py-1 px-2 text-right tabular-nums">{score(m.agentic)}</td>
       <td className="py-1 px-2 text-right tabular-nums text-gray-400">${m.price_in_per_m} / ${m.price_out_per_m}</td>
-      <td className="py-1 pl-2 text-right tabular-nums text-emerald-400">{usd(m.est_cost_per_session)}</td>
+      <td className="py-1 px-2 text-right tabular-nums text-emerald-400">{usd(m.est_cost_per_session)}</td>
+      <td className="py-1 pl-2 text-right tabular-nums text-gray-400">{m.sessions_per_10usd ?? '—'}</td>
     </tr>
   )
 }
@@ -39,9 +40,10 @@ function ModelTable({ rows }) {
         <tr className="text-gray-500">
           <th className="text-left font-normal pb-1">Model</th>
           <th className="text-right font-normal pb-1 px-2">Intel.</th>
-          <th className="text-right font-normal pb-1 px-2">Coding</th>
+          <th className="text-right font-normal pb-1 px-2">Agentic</th>
           <th className="text-right font-normal pb-1 px-2">$/M in / out</th>
-          <th className="text-right font-normal pb-1">Est. / session</th>
+          <th className="text-right font-normal pb-1 px-2">Est. / session</th>
+          <th className="text-right font-normal pb-1">Sessions / $10</th>
         </tr>
       </thead>
       <tbody>{rows.map(m => <ModelRow key={m.id} m={m} />)}</tbody>
@@ -98,9 +100,8 @@ export default function ModelAdvisor() {
             </div>
           )) : (
             <div className="text-xs text-gray-400">
-              Rankings need quality scores. Add a free Artificial Analysis API key
-              (<span className="font-mono">artificial_analysis_api_key</span> option) to rank {data.candidate_models} tool-capable
-              OpenRouter models by score and price. Without it, only prices and model checks are shown.
+              No quality scores available yet. Click Refresh data, or add an optional Artificial Analysis API key
+              (<span className="font-mono">artificial_analysis_api_key</span>) to score more of the {data.candidate_models} tool-capable models.
             </div>
           )}
 
@@ -112,7 +113,8 @@ export default function ModelAdvisor() {
             </div>
             <div>
               Prices: OpenRouter ({src.openrouter?.source}, {when(src.openrouter?.fetched_at)}).
-              Scores: Artificial Analysis ({src.artificial_analysis?.source}{src.artificial_analysis?.fetched_at ? ', ' + when(src.artificial_analysis.fetched_at) : ''}).
+              Scores: Artificial Analysis via OpenRouter ({src.catalog_scores ?? 0} models)
+              {src.artificial_analysis?.source !== 'no-key' && ` + AA API (${src.artificial_analysis?.source}${src.artificial_analysis?.fetched_at ? ', ' + when(src.artificial_analysis.fetched_at) : ''})`}.
               {data.scored_models > 0 && ` ${data.scored_models} of ${data.candidate_models} models matched a score; the rest show as missing.`}
             </div>
           </div>

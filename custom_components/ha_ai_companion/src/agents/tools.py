@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from ..config import ConfigurationManager, ConfigurationError
 from .diffing import content_hash, describe_change, is_disk_file
 from .nav_tools import NavigationToolsMixin
+from ..memory.store import extraction_rejection_reason
 from ..ha.ha_websocket import (
     get_lovelace_config_as_yaml,
     get_repairs_ws,
@@ -77,6 +78,9 @@ def _low_value_memory_reason(content: str) -> Optional[str]:
         return "empty content"
     if len(stripped) < 12:
         return "too short/generic to be a useful durable fact"
+    quality_reason = extraction_rejection_reason(stripped, max_chars=None)
+    if quality_reason:
+        return quality_reason
     for pattern, reason in _LOW_VALUE_MEMORY_PATTERNS:
         if pattern.search(stripped):
             return reason
@@ -114,6 +118,63 @@ def _nodered_tab_snapshot(cur: dict) -> str:
     import json
     tab_meta = {k: v for k, v in cur.items() if k not in ("nodes", "configs")}
     return json.dumps([{"type": "tab", **tab_meta}, *cur.get("nodes", []), *cur.get("configs", [])])
+
+
+def transform_nodered_tab(cur: dict, updates=None, add=None, remove=None) -> list:
+    """Apply a validated partial edit to a Node-RED tab; return its staged flat array."""
+    updates, add, remove = updates or [], add or [], remove or []
+    nodes = [dict(node) for node in cur.get("nodes", [])]
+    by_id = {node.get("id"): node for node in nodes}
+    if len(by_id) != len(nodes) or None in by_id:
+        raise ValueError("Current tab has missing or duplicate node ids.")
+    config_ids = {node.get("id") for node in cur.get("configs", [])}
+    if None in config_ids or len(config_ids) != len(cur.get("configs", [])) or config_ids.intersection(by_id):
+        raise ValueError("Current tab has missing or duplicate config node ids.")
+    remove_ids = set(remove)
+    if not remove_ids.issubset(by_id):
+        raise ValueError(f"Unknown node id(s) to remove: {sorted(remove_ids - set(by_id))}")
+    seen_updates = set()
+    for update in updates:
+        if not isinstance(update, dict) or not isinstance(update.get("set"), dict):
+            raise ValueError("Each update needs an id and a set mapping.")
+        node_id = update.get("id")
+        if node_id not in by_id:
+            raise ValueError(f"Unknown node id to update: {node_id}")
+        if node_id in seen_updates:
+            raise ValueError(f"Duplicate update for node id: {node_id}")
+        if "id" in update["set"]:
+            raise ValueError("Node ids cannot be changed.")
+        seen_updates.add(node_id)
+        by_id[node_id].update(update["set"])
+    add_ids = set()
+    for node in add:
+        if not isinstance(node, dict) or not node.get("id"):
+            raise ValueError("Each added node must have an id.")
+        if node["id"] in by_id or node["id"] in config_ids or node["id"] in add_ids:
+            raise ValueError(f"Node id already exists: {node['id']}")
+        add_ids.add(node["id"])
+    nodes = [node for node in nodes if node.get("id") not in remove_ids]
+    nodes.extend(dict(node) for node in add)
+    for node in nodes:
+        wires = node.get("wires")
+        if isinstance(wires, list):
+            node["wires"] = [[target for target in group if target not in remove_ids]
+                             if isinstance(group, list) else group for group in wires]
+    tab = {key: value for key, value in cur.items() if key not in ("nodes", "configs")}
+    return [{"type": "tab", **tab}, *nodes, *cur.get("configs", [])]
+
+
+def _large_structured_content_error(file_path: str, content: str, force: bool = False) -> Optional[str]:
+    if force or len(content) <= 12000:
+        return None
+    normalized = file_path.replace("\\", "/")
+    if not re.search(r"(^|/)(automations?|scripts?|scenes?)(/|\.yaml$)|(^|/)lovelace(?:/|[^/]*\.yaml$)|(^|/)flows\.json$",
+                     normalized, re.IGNORECASE):
+        return None
+    return (f"{file_path} is a large structured file ({len(content)} chars). "
+            "Use list_automations/outline_file/get_automation or read_range; "
+            "for scripts and scenes, use get_automation(kind='script' or 'scene'). "
+            "Pass force=true only when the full file is required.")
 
 
 def _compact_states(states: list) -> str:
@@ -615,6 +676,7 @@ class AgentTools(NavigationToolsMixin):
         include_lovelace: bool = False,
         context_lines: int = 12,
         full_content: bool = False,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """
         Search ALL configuration files for a pattern and return matching snippets (or full content).
@@ -634,6 +696,7 @@ class AgentTools(NavigationToolsMixin):
                           actual files (skips virtual entities/devices/areas).
             context_lines: Lines of context around each match in snippet mode (default 12).
             full_content: Return full file content instead of snippets (default False).
+            force: Allow full reads of large structured files when full_content is true.
 
         Returns:
             Dict with:
@@ -738,6 +801,9 @@ class AgentTools(NavigationToolsMixin):
                         if total_matches > 0:
                             line_count = content.count("\n") + 1
                             use_full = full_content or line_count <= 60
+                            guard_error = _large_structured_content_error(relative_path, content, force)
+                            if use_full and guard_error:
+                                return {"success": False, "error": guard_error}
                             out_content = content if use_full else _extract_snippets(content, search_pattern, context_lines)
                             entry: Dict[str, Any] = {
                                 "path": relative_path,
@@ -750,6 +816,10 @@ class AgentTools(NavigationToolsMixin):
                     else:
                         # No search pattern OR file path pattern - include all matched files.
                         # Big files come back as an outline (line ranges) unless full_content.
+                        sends_full = full_content or content.count("\n") + 1 <= 60
+                        guard_error = _large_structured_content_error(relative_path, content, force)
+                        if sends_full and guard_error:
+                            return {"success": False, "error": guard_error}
                         entry = {"path": relative_path, "content": content,
                                  "matches": 1 if is_file_path_pattern else None}
                         if not full_content and content.count("\n") + 1 > 60:
@@ -1680,6 +1750,8 @@ class AgentTools(NavigationToolsMixin):
         if not self.memory_manager:
             return {"success": False, "error": "Memory not available"}
         reason = _low_value_memory_reason(text)
+        if not reason and status == "candidate":
+            reason = extraction_rejection_reason(text)
         if reason:
             return {"success": False, "error": f"rejected: {reason}. Only save durable, user-stated facts "
                                                "that HA config/state cannot tell you."}
@@ -2573,6 +2645,53 @@ class AgentTools(NavigationToolsMixin):
             "flows": [],
             "count": 0,
         }
+
+    async def nodered_get_tab(self, tab_id: str) -> Dict[str, Any]:
+        """Read one tab in compact form without layout coordinates or defaults."""
+        if not tab_id or not re.fullmatch(r"[A-Za-z0-9_.\-]+", tab_id):
+            return {"success": False, "error": "Use a valid tab id from get_nodered_flows."}
+        response = await self._nodered_api_request("GET", f"/flow/{tab_id}")
+        cur = response.get("json")
+        if response.get("status") != 200 or not isinstance(cur, dict):
+            return {"success": False, "error": f"Could not read Node-RED tab {tab_id}: {response.get('error') or response.get('status')}"}
+        fields = ("props", "topic", "payload", "repeat", "once", "rules", "outputs", "entity_id",
+                  "domain", "service", "action", "data", "url", "method", "property", "target",
+                  "entity", "broker", "server", "mqtt", "version", "func", "template", "format")
+        compact = []
+        for node in [*cur.get("nodes", []), *cur.get("configs", [])]:
+            row = {"id": node.get("id"), "type": node.get("type")}
+            if node.get("name"):
+                row["name"] = node["name"]
+            if "wires" in node:
+                row["wires"] = node["wires"]
+            for key in fields:
+                value = node.get(key)
+                if value not in (None, "", [], {}, False, 0):
+                    row[key] = value
+            compact.append(row)
+        import json
+        result = {"success": True, "tab": {"id": tab_id, "label": str(cur.get("label", ""))[:300],
+                                           "nodes": compact}}
+        while len(json.dumps(result, ensure_ascii=False, default=str)) > 4000 and compact:
+            compact.pop()
+        return result
+
+    async def nodered_patch_nodes(self, tab_id: str, updates=None, add=None, remove=None,
+                                  description: str = "") -> Dict[str, Any]:
+        """Stage targeted node edits through the standard tab changeset approval path."""
+        import json
+
+        if not tab_id or not re.fullmatch(r"[A-Za-z0-9_.\-]+", tab_id):
+            return {"success": False, "error": "Use a valid tab id from get_nodered_flows."}
+        response = await self._nodered_api_request("GET", f"/flow/{tab_id}")
+        cur = response.get("json")
+        if response.get("status") != 200 or not isinstance(cur, dict):
+            return {"success": False, "error": f"Could not read Node-RED tab {tab_id}: {response.get('error') or response.get('status')}"}
+        try:
+            nodes = transform_nodered_tab(cur, updates, add, remove)
+        except (TypeError, ValueError) as e:
+            return {"success": False, "error": str(e)}
+        return await self.edit_nodered_tab(tab_id, json.dumps(nodes), description)
 
     async def _embed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
         """Embed a list of texts using the configured embeddings API. Returns None on failure."""

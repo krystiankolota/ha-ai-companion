@@ -60,14 +60,14 @@ function BreakdownBar({ title, bucket, haveCost }) {
 
 function DailyBars({ byDay, haveCost }) {
   const days = Object.entries(byDay).map(([d, b]) => ({ d, v: haveCost ? b.cost_usd : b.input_tokens + b.output_tokens, b }))
-  const max = Math.max(...days.map(x => x.v), 1)
+  const max = Math.max(0, ...days.map(x => x.v)) || 1
   return (
     <div className="bg-surface-900 border border-surface-700 rounded-xl p-4">
       <div className="text-sm font-semibold text-gray-200 mb-3">Daily {haveCost ? 'cost' : 'tokens'}</div>
-      <div className="flex items-end gap-1 h-28">
+      <div className="flex items-stretch gap-1 h-28">
         {days.map(({ d, v, b }) => (
-          <div key={d} className="flex-1 flex flex-col items-center justify-end group min-w-0" title={`${d}: ${haveCost ? fmtUsd(b.cost_usd) : fmtTokens(b.input_tokens + b.output_tokens)}`}>
-            <div className="w-full bg-indigo-500 group-hover:bg-indigo-400 rounded-t transition-colors" style={{ height: `${Math.max((v / max) * 100, 2)}%` }} />
+          <div key={d} className="flex-1 h-full flex flex-col items-center justify-end group min-w-0" title={`${d}: ${haveCost ? fmtUsd(b.cost_usd) : fmtTokens(b.input_tokens + b.output_tokens)}`}>
+            <div className="w-full shrink-0 bg-indigo-500 group-hover:bg-indigo-400 rounded-t transition-colors" style={{ height: `${Math.max((v / max) * 85, 2)}%` }} />
             <span className="text-[9px] text-gray-600 mt-1 rotate-0 truncate w-full text-center">{d.slice(5)}</span>
           </div>
         ))}

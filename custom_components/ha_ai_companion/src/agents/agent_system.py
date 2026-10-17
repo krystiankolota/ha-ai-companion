@@ -16,11 +16,150 @@ from ..env_utils import env_positive_int
 from ..config import ConfigurationManager
 from ..memory.store import MemoryStore
 from ..usage.manager import UsageManager
+from ..ha.yaml_blocks import load_tolerant, split_blocks
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 
 
 logger = logging.getLogger(__name__)
+
+def _parse_suggestion_response(raw: str) -> Any:
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, re.IGNORECASE)
+    text = fenced.group(1).strip() if fenced else raw.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    for start, opener in enumerate(text):
+        if opener not in "[{":
+            continue
+        stack = []
+        in_string = escaped = False
+        for end in range(start, len(text)):
+            char = text[end]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char in "[{":
+                stack.append("]" if char == "[" else "}")
+            elif char in "]}":
+                if not stack or stack.pop() != char:
+                    break
+                if not stack:
+                    try:
+                        return json.loads(text[start:end + 1])
+                    except json.JSONDecodeError:
+                        break
+    raise ValueError("The suggestion model returned invalid JSON. Try generating again.")
+
+
+def _normalize_suggestion_text(value: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+
+def _collect_yaml_values(node: Any, keys: set) -> List[str]:
+    values = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in keys:
+                values.extend(value if isinstance(value, list) else [value])
+            else:
+                values.extend(_collect_yaml_values(value, keys))
+    elif isinstance(node, list):
+        for value in node:
+            values.extend(_collect_yaml_values(value, keys))
+    return [str(value) for value in values if value is not None]
+
+
+def _suggestion_outline_items(text: str, resource: str) -> List[Dict[str, Any]]:
+    try:
+        kind, blocks = split_blocks(text)
+        if kind == "list":
+            data = [block.value for block in blocks if isinstance(block.value, dict)]
+        else:
+            data = load_tolerant(text)
+        if isinstance(data, dict) and resource[:-1] in data:
+            data = data[resource[:-1]]
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            config_keys = {"id", "alias", "name", "trigger", "triggers", "action", "actions", "sequence", "entities"}
+            if config_keys.intersection(data):
+                return [data]
+            return [dict(value, alias=value.get("alias") or value.get("name") or name)
+                    for name, value in data.items() if isinstance(value, dict)]
+    except Exception:
+        logger.debug("Could not parse %s for suggestion outline", resource, exc_info=True)
+    return []
+
+
+def _build_suggestion_outlines(resource_files: Dict[str, List[Dict[str, Any]]],
+                               max_chars: int = 20000) -> tuple:
+    outlines = {}
+    aliases = set()
+    remaining = max_chars
+    for resource in ("automations", "scenes", "scripts"):
+        rows = []
+        for file_entry in sorted(resource_files.get(resource, []), key=lambda f: f.get("path", "")):
+            for item in _suggestion_outline_items(file_entry.get("content") or "", resource):
+                alias = str(item.get("alias") or item.get("name") or item.get("id") or "unnamed")
+                if resource == "automations":
+                    aliases.add(alias)
+                if resource == "automations":
+                    trigger_nodes = item.get("triggers", item.get("trigger", []))
+                    triggers = sorted(set(_collect_yaml_values(trigger_nodes, {"platform", "trigger"})))
+                    trigger_entities = sorted(set(_collect_yaml_values(trigger_nodes, {"entity_id"})))
+                    services = sorted(set(_collect_yaml_values(item.get("actions", item.get("action", [])), {"action", "service"})))
+                    targets = sorted(set(_collect_yaml_values(item.get("actions", item.get("action", [])), {"entity_id", "device_id", "area_id"})))
+                    row = (f"{item.get('id', '-')} | {alias} | trigger: "
+                           f"{'+'.join(triggers + trigger_entities) or '-'} | action: "
+                           f"{'+'.join(services + targets) or '-'}")
+                elif resource == "scenes":
+                    entities = sorted((item.get("entities") or {}).keys()) if isinstance(item.get("entities"), dict) else []
+                    row = f"{alias} | entities: {', '.join(entities) or '-'}"
+                else:
+                    actions = item.get("sequence", item.get("actions", item.get("action", [])))
+                    services = sorted(set(_collect_yaml_values(actions, {"action", "service"})))
+                    targets = sorted(set(_collect_yaml_values(actions, {"entity_id", "device_id", "area_id"})))
+                    row = f"{alias} | action: {'+'.join(services + targets) or '-'}"
+                if len(row) + 1 > remaining:
+                    break
+                rows.append(row)
+                remaining -= len(row) + 1
+            if remaining <= 0:
+                break
+        outlines[resource] = "\n".join(rows)
+        if remaining <= 0:
+            break
+    return outlines, sorted(aliases)
+
+
+def _is_duplicate_suggestion(suggestion: Dict[str, Any], aliases: List[str]) -> bool:
+    title_text = _normalize_suggestion_text(suggestion.get("title"))
+    title_tokens = set(title_text.split())
+    candidate_tokens = set(title_tokens)
+    for entity in suggestion.get("entities", []) or []:
+        candidate_tokens.update(_normalize_suggestion_text(str(entity).split(".")[-1]).split())
+    if not candidate_tokens:
+        return False
+    for alias in aliases:
+        alias_text = _normalize_suggestion_text(alias)
+        alias_tokens = set(alias_text.split())
+        if alias_text and alias_text == title_text:
+            return True
+        if len(alias_tokens) == 1:
+            continue
+        if alias_tokens and len(candidate_tokens & alias_tokens) / min(len(candidate_tokens), len(alias_tokens)) >= 0.8:
+            return True
+    return False
 
 # Maps deprecated tool names to their current equivalents.
 # Applied when replaying conversation_history so old sessions don't break.
@@ -123,7 +262,9 @@ _SUMMARY_STEP = 10
 _CAPPED_TOOLS = frozenset({
     "get_entity_states", "search_entities", "list_automations", "get_automation_traces",
     "get_ha_error_log", "get_ha_issues", "get_lovelace_resources", "search_past_sessions",
-    "list_changesets", "list_dashboards", "search_memory",
+    "list_changesets", "list_dashboards", "search_memory", "get_ha_health",
+    "get_automation_trace", "find_unavailable_entities", "find_cleanup_candidates",
+    "nodered_get_tab",
 })
 
 
@@ -258,34 +399,21 @@ class AgentSystem:
 
         self.model = os.getenv('OPENAI_MODEL', 'gpt-4o')
 
-        # Research layer (cheaper) — used for the read/explore phase, suggestions,
-        # summarization, consolidation. Independent provider; all 3 vars must be
-        # set to activate. No fallback mixing: if any are missing, main client is used.
-        # New env names RESEARCH_* with back-compat fallback to the old SUGGESTION_*.
-        # Internal attribute names stay `suggestion_*` (slot key "suggestion" is reused
-        # for usage-tracking rejection memory and usage.jsonl phase aggregation).
-        _s_model = os.getenv('RESEARCH_MODEL')   or os.getenv('SUGGESTION_MODEL')
-        _s_url   = os.getenv('RESEARCH_API_URL') or os.getenv('SUGGESTION_API_URL')
-        _s_key   = os.getenv('RESEARCH_API_KEY') or os.getenv('SUGGESTION_API_KEY')
-        if _s_model and _s_url and _s_key:
-            self.suggestion_model = _s_model
-            self.suggestion_client = AsyncOpenAI(api_key=_s_key, base_url=_s_url)
-        else:
-            self.suggestion_model = self.model
-            self.suggestion_client = self.client
+        # Fast model — side tasks only (suggestions, summaries, memory extraction).
+        # Same provider/key as main. The chat loop never switches models mid-turn:
+        # each model has its own provider cache, so a switch re-bills the whole prefix.
+        # Legacy RESEARCH_*/SUGGESTION_* env names still work; a separate URL+key is
+        # honoured only when both are set. Internal names stay `suggestion_*` (usage slot key).
+        _f_model = (os.getenv('FAST_MODEL') or os.getenv('RESEARCH_MODEL') or os.getenv('SUGGESTION_MODEL') or '').strip()
+        _f_url   = os.getenv('RESEARCH_API_URL') or os.getenv('SUGGESTION_API_URL')
+        _f_key   = os.getenv('RESEARCH_API_KEY') or os.getenv('SUGGESTION_API_KEY')
+        self.suggestion_model = _f_model or self.model
+        self.suggestion_client = (AsyncOpenAI(api_key=_f_key, base_url=_f_url)
+                                  if _f_model and _f_url and _f_key else self.client)
 
-        # Reasoning layer (stronger) — used once tool results exist (planning, writing
-        # config/Lovelace/Node-RED changes). New env names REASONING_* with back-compat
-        # fallback to the old CONFIG_*. Internal attribute names stay `config_*`.
-        _c_model = os.getenv('REASONING_MODEL')   or os.getenv('CONFIG_MODEL')
-        _c_url   = os.getenv('REASONING_API_URL') or os.getenv('CONFIG_API_URL')
-        _c_key   = os.getenv('REASONING_API_KEY') or os.getenv('CONFIG_API_KEY')
-        if _c_model and _c_url and _c_key:
-            self.config_model = _c_model
-            self.config_client = AsyncOpenAI(api_key=_c_key, base_url=_c_url)
-        else:
-            self.config_model = self.model
-            self.config_client = self.client
+        # The chat/tool loop always uses the main model.
+        self.config_model = self.model
+        self.config_client = self.client
 
         # Get temperature from environment variable, use None if not specified
         temperature_str = os.getenv('TEMPERATURE')
@@ -295,10 +423,6 @@ class AgentSystem:
         # Can be overridden via SUGGESTION_TEMPERATURE env var.
         suggestion_temp_str = os.getenv('RESEARCH_TEMPERATURE') or os.getenv('SUGGESTION_TEMPERATURE', '0.2')
         self.suggestion_temperature = float(suggestion_temp_str)
-
-        # Pricing (cost display in UI) — default 0 means cost won't be shown
-        self.input_price_per_1m = float(os.getenv('INPUT_PRICE_PER_1M', '0') or '0')
-        self.output_price_per_1m = float(os.getenv('OUTPUT_PRICE_PER_1M', '0') or '0')
 
         # Per-agent max_tokens limits (0 = no limit / model default)
         def _int_env(key: str) -> Optional[int]:
@@ -331,16 +455,12 @@ class AgentSystem:
 
         # Store usage tracking mode (global) and per-phase overrides
         self.usage_tracking = usage_tracking
-        _su = (os.getenv('RESEARCH_USAGE_TRACKING') or os.getenv('SUGGESTION_USAGE_TRACKING', 'default')).strip().lower()
-        self.suggestion_usage_tracking = usage_tracking if _su == 'default' else _su
-        _cu = (os.getenv('REASONING_USAGE_TRACKING') or os.getenv('CONFIG_USAGE_TRACKING', 'default')).strip().lower()
-        self.config_usage_tracking = usage_tracking if _cu == 'default' else _cu
+        self.suggestion_usage_tracking = usage_tracking
+        self.config_usage_tracking = usage_tracking
 
         logger.info(f"AgentSystem initialized with model: {self.model}")
         if self.suggestion_model != self.model:
-            logger.info(f"Suggestion model override: {self.suggestion_model}")
-        if self.config_model != self.model:
-            logger.info(f"Config model override: {self.config_model}")
+            logger.info(f"Fast model (side tasks): {self.suggestion_model}")
         if self.temperature is not None:
             logger.info(f"Temperature: {self.temperature}")
         logger.info(f"Cache control: {'enabled' if self.enable_cache_control else 'disabled'}")
@@ -421,8 +541,8 @@ How to work:
 
 Automations (preferred path — never rewrite automations.yaml as a whole):
 - list_automations: one line per automation (id, alias, state, last run, file:lines).
-- get_automation: exact YAML of one automation.
-- upsert_automation: add/replace ONE automation; other automations are untouched. Keep id to replace, omit id to add.
+- get_automation: exact YAML of one automation, script, or scene (set kind for scripts/scenes).
+- upsert_automation: add/replace ONE automation, script, or scene (set kind); other items are untouched.
 - remove_automation: only when the user asked to delete.
 - get_automation_traces: why an automation did / did not run (step results, errors).
 
@@ -431,7 +551,7 @@ Other config files:
 - search_config_files: text search across config (snippets; full_content only for small files).
 - patch_config_key / patch_config_block: targeted edits of mapping files (configuration.yaml etc.).
 - propose_config_changes: full new content of a file — use for new files or when the targeted tools cannot express the edit. Preserve every existing item, comment, and !secret/!include tag. Deleting automations/scripts/scenes needs confirm_delete=true and an explicit user request.
-- Scripts/scenes in a single scripts.yaml/scenes.yaml: read the item with outline_file + read_range, edit with patch_config_block or propose_config_changes.
+- For scripts.yaml/scenes.yaml, prefer get_automation(kind='script'|'scene') and upsert_automation(kind='script'|'scene').
 - File layout: match the user's existing layout (single file vs split files). Never move items between files unless asked.
 - Never reproduce file content in text — call the tool directly.
 
@@ -471,7 +591,8 @@ Production system: safety and clarity first."""
     # core prompt above. Text is unchanged from the prior always-on version.
     _NAV_TOOLS = frozenset({
         "outline_file", "read_range", "search_entities", "list_automations", "get_automation",
-        "upsert_automation", "remove_automation", "get_automation_traces",
+        "upsert_automation", "remove_automation", "get_automation_traces", "get_ha_health",
+        "get_automation_trace", "find_unavailable_entities", "find_cleanup_candidates",
     })
 
     @staticmethod
@@ -511,7 +632,7 @@ Production system: safety and clarity first."""
                 "name": name, "description": description,
                 "parameters": {"type": "object", "properties": properties or {}, "required": list(required)},
             }}
-        auto_ref = {"automation": {"type": "string", "description": "Automation id, entity_id (automation.x), or exact alias."}}
+        auto_ref = {"automation": {"type": "string", "description": "Item id, entity_id, or exact alias."}}
         return [
             fn("outline_file",
                "Map of a config file: top-level items with line ranges (files ≤60 lines come back whole). "
@@ -530,19 +651,29 @@ Production system: safety and clarity first."""
             fn("list_automations",
                "All automations, one line each: id | alias | state | last triggered | file:lines. Optional text filter.",
                {"query": {"type": "string"}}),
-            fn("get_automation", "Exact YAML of ONE automation and the file/lines it lives in.", auto_ref, ["automation"]),
+            fn("get_automation", "Exact YAML of one automation, script, or scene.", {
+                **auto_ref, "kind": {"type": "string", "enum": ["automation", "script", "scene"]}},
+               ["automation"]),
             fn("upsert_automation",
-               "Add or replace ONE automation (staged for approval). Give only that automation's YAML (mapping). "
-               "Keep its id to replace it; omit id to add a new one. Other automations are untouched — never copy them. "
-               "File is chosen automatically (where it already lives, else the UI automations file).",
+               "Add or replace ONE automation, script, or scene (staged for approval). Give only that item's YAML. "
+               "Keep its id to replace it; use a new id to add. Other items stay untouched.",
                {"automation_yaml": {"type": "string"},
-                "file_path": {"type": "string", "description": "Only for NEW automations in a split-file setup."}},
+                "kind": {"type": "string", "enum": ["automation", "script", "scene"]},
+                "file_path": {"type": "string", "description": "Only for a new item in a split-file setup."}},
                ["automation_yaml"]),
             fn("remove_automation", "Remove ONE automation (staged for approval). Only when the user asked.", auto_ref, ["automation"]),
             fn("get_automation_traces",
                "Recent runs of an automation and step-by-step results/errors of one run (latest by default). "
                "Use to debug 'why did/didn't it run'.",
                {**auto_ref, "run_id": {"type": "string"}}, ["automation"]),
+            fn("get_ha_health", "Compact HA repairs, failed integrations, pending updates, and top logs.",
+               {"include_ignored": {"type": "boolean"} }),
+            fn("get_automation_trace", "Compact trace of one automation run; index 0 is the latest.",
+               {**auto_ref, "run_index": {"type": "integer", "description": "0 = latest run."}}, ["automation"]),
+            fn("find_unavailable_entities", "List old unavailable/unknown entities grouped by integration.",
+               {"min_age_hours": {"type": "number", "description": "Default 24."}}),
+            fn("find_cleanup_candidates", "Report possible stale entities, unused helpers, and old mobile notify services; no removals.",
+               {}),
         ]
 
     _DASHBOARD_TOPIC_PROMPT = """Dashboard rules:
@@ -597,6 +728,11 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 - When Node-RED flows available, note whether suggestion fits HA automations or Node-RED.
 - Offer to implement via upsert_automation (one automation per call)."""
 
+    _MAINTENANCE_TOPIC_PROMPT = """HA maintenance:
+- Use get_ha_health for repairs, failed integrations, updates, and top errors.
+- Use get_automation_trace for one automation run; use find_unavailable_entities for old unavailable entities.
+- Use find_cleanup_candidates for a report only. Never remove registry entries or helpers without explicit user action."""
+
     # Keyword triggers (checked against the current user message) and tool
     # names (checked against tool calls already made this session) that turn
     # a topic fragment on. Tool-name triggers keep the fragment loaded across
@@ -614,6 +750,13 @@ fetch_url rules (CRITICAL — prevents infinite loops):
     )
     _SUGGESTIONS_TRIGGER_TOOLS = frozenset({
         "get_nodered_flows", "add_nodered_flow", "edit_nodered_tab",
+    })
+    _MAINTENANCE_TRIGGER_KEYWORDS = (
+        "repair", "unavailable", "error", "log", "cleanup", "clean up", "update", "trace",
+        "naprawa", "niedostępn", "niedostepn", "błąd", "blad", "dziennik",
+    )
+    _MAINTENANCE_TRIGGER_TOOLS = frozenset({
+        "get_ha_health", "get_automation_trace", "find_unavailable_entities", "find_cleanup_candidates",
     })
 
     @staticmethod
@@ -652,6 +795,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         if (any(kw in message_lower for kw in cls._SUGGESTIONS_TRIGGER_KEYWORDS)
                 or used_tools & cls._SUGGESTIONS_TRIGGER_TOOLS):
             fragments.append(cls._AUTOMATION_SUGGESTIONS_TOPIC_PROMPT)
+
+        if (any(kw in message_lower for kw in cls._MAINTENANCE_TRIGGER_KEYWORDS)
+                or used_tools & cls._MAINTENANCE_TRIGGER_TOOLS):
+            fragments.append(cls._MAINTENANCE_TOPIC_PROMPT)
 
         return fragments
 
@@ -715,6 +862,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 return await asyncio.wait_for(self.tools.get_nodered_flows(), timeout=60.0)
             except asyncio.TimeoutError:
                 return {"success": False, "error": "Tool execution timed out after 60 seconds"}
+        elif function_name == "nodered_get_tab":
+            return await self.tools.nodered_get_tab(**function_args)
+        elif function_name == "nodered_patch_nodes":
+            return await self.tools.nodered_patch_nodes(**function_args)
         elif function_name == "add_nodered_flow":
             # Normalize alternative param names Gemini sometimes uses
             import json as _json
@@ -1095,6 +1246,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                                 "full_content": {
                                     "type": "boolean",
                                     "description": "Return whole files instead of snippets. Default false."
+                                },
+                                "force": {
+                                    "type": "boolean",
+                                    "description": "Allow large structured full reads only when necessary."
                                 }
                             },
                             "required": []
@@ -1351,6 +1506,38 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     {
                         "type": "function",
                         "function": {
+                            "name": "nodered_get_tab",
+                            "description": "Read one Node-RED tab compactly by id.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"tab_id": {"type": "string"}},
+                                "required": ["tab_id"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "nodered_patch_nodes",
+                            "description": "Stage targeted edits to nodes in one tab for approval; removed ids are cleared from wires.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "tab_id": {"type": "string"},
+                                    "updates": {"type": "array", "items": {"type": "object",
+                                        "properties": {"id": {"type": "string"}, "set": {"type": "object"}},
+                                        "required": ["id", "set"]}},
+                                    "add": {"type": "array", "items": {"type": "object"}},
+                                    "remove": {"type": "array", "items": {"type": "string"}},
+                                    "description": {"type": "string"}
+                                },
+                                "required": ["tab_id"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
                             "name": "add_nodered_flow",
                             "description": (
                                 "Stage a NEW Node-RED flow tab for approval (never touches existing flows; "
@@ -1431,6 +1618,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             total_input_tokens = 0
             total_output_tokens = 0
             total_cached_tokens = 0
+            total_cost_usd = 0.0  # provider-reported (OpenRouter usage.cost)
 
             # Initialize status queue for streaming tool progress events
             self._tool_status_queue = asyncio.Queue()
@@ -1449,10 +1637,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 # No mid-turn pruning: removing blocks changes the prefix and voids the
                 # provider cache for the whole rest of the turn. Size is bounded at insertion.
 
-                # Select client+model: config once tool results exist, suggestion before that.
+                # One model per turn (cache-friendly): main, or fast for opted-in simple turns.
                 has_tool_results = any(m.get("role") == "tool" for m in messages)
-                # Simple-turn routing keeps the cheap model even after tool results.
-                _use_config = has_tool_results and not route_to_cheap
+                _use_config = not route_to_cheap
                 active_model  = self.config_model  if _use_config else self.suggestion_model
                 active_client = self.config_client if _use_config else self.suggestion_client
                 logger.info(f"[ITERATION {iteration}] Model: {active_model} ({'main' if _use_config else 'research'})")
@@ -1460,7 +1647,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "event": "model",
                     "data": json.dumps({
                         "model": active_model,
-                        "role": "main" if _use_config else "research",
+                        "role": "main" if _use_config else "fast",
                         "iteration": iteration,
                     }),
                 }
@@ -1473,8 +1660,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 # Plan-before-act (P0-2): on the very first call, force Gemini-family
                 # models to emit a planning text response before calling any tools.
                 # Claude-family models receive the instruction via system prompt (Tier A+).
-                # Evaluated per-iteration: active_model alternates between the suggestion
-                # and config model across iterations (see dual_model.md).
                 _is_text_first = _is_text_first_family(active_model)
                 _force_text_first = (
                     iteration == 1
@@ -1736,6 +1921,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         )
                     except Exception as _uerr:
                         logger.debug("usage record failed: %s", _uerr)
+                total_cost_usd += call_cost or 0.0
 
                 # Check if we have tool calls
                 if not accumulated_tool_calls:
@@ -2047,11 +2233,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
             logger.info(f"Agent completed after {iteration} iteration(s) - Total tokens: {total_input_tokens + total_output_tokens} (input: {total_input_tokens}, output: {total_output_tokens}, cached: {total_cached_tokens})")
 
-            billable_input = max(0, total_input_tokens - total_cached_tokens)
-            cost_usd = (
-                billable_input * self.input_price_per_1m +
-                total_output_tokens * self.output_price_per_1m
-            ) / 1_000_000 if (self.input_price_per_1m or self.output_price_per_1m) else None
+            cost_usd = total_cost_usd or None
 
             usage_data = {
                 "input_tokens": total_input_tokens,
@@ -2472,6 +2654,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         combined = (user_message + " " + assistant_content).lower()
         return any(trigger in combined for trigger in self._CONSOLIDATION_TRIGGERS)
 
+    def _fast_client_and_model(self):
+        """Client+model for side tasks (fast slot; falls back to main)."""
+        return self.suggestion_client, self.suggestion_model
+
     async def _run_memory_consolidation(self, conversation_messages: List[Dict[str, Any]]) -> None:
         """
         Background pass after each user turn: let the LLM review what was discussed
@@ -2509,7 +2695,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 "  - Inferred or assumed facts the user never said out loud\n\n"
                 "If nothing from the conversation qualifies: call NO tools at all.\n"
                 "If an existing memory (shown as #id) is wrong: save the correction with replaces=[id].\n"
-                "One short fact per save. Saves become candidates the user reviews.\n"
+                "Save only user preferences, decisions with their reasons, and facts NOT derivable from Home Assistant.\n"
+                "Never save entity lists, areas, devices, dashboard structure, automation contents, or IDs.\n"
+                "Save one fact per record, keep each record to 200 characters or less, and do not use Markdown headings.\n"
+                "Saves become candidates the user reviews.\n"
                 f"Current date/time: {now_str}"
             )
             if memory_context:
@@ -2545,8 +2734,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
             # Non-streaming, single pass, no retry loop.
             # Use suggestion model (cheaper) for background consolidation work.
-            consolidation_client = self.suggestion_client
-            consolidation_model = self.suggestion_model
+            consolidation_client, consolidation_model = self._fast_client_and_model()
             response = await self._completion_with_usage(
                 consolidation_client, 'suggestion', phase="consolidation",
                 model=consolidation_model,
@@ -2875,6 +3063,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             context_sections = []
             # Track included file paths to avoid sending the same file content in multiple sections
             included_paths: set = set()
+            suggestion_resource_files = {"automations": [], "scenes": [], "scripts": []}
 
             if 'entity_states' in active_types:
                 await _emit("Fetching entity states…")
@@ -2891,58 +3080,66 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 await _emit("Loading automations…")
                 # Read all automation files (supports single-file and split-file setups).
                 # Search for 'alias' which is present in every YAML automation block.
-                automations_result = await self.tools.search_config_files(search_pattern="alias", full_content=True)
+                automations_result = await self.tools.search_config_files(search_pattern="alias", full_content=True, force=True)
+                if not automations_result.get("success", True):
+                    logger.warning("Suggestions: automation read failed: %s", automations_result.get("error"))
                 automations_files = automations_result.get("files", [])
-                automation_contents = []
                 for f in automations_files:
                     p = f.get("path", "")
                     if "automation" in p.lower() and p not in included_paths:
                         included_paths.add(p)
-                        automation_contents.append(f"# {p}\n{f.get('content', '')}")
-                automations_text = "\n\n".join(automation_contents) if automation_contents else json.dumps(automations_files, indent=2)
-                context_sections.append(f"## Existing automations\n{automations_text}")
-                context_summary.append({"type": "automations", "files": len(automation_contents), "chars": len(automations_text)})
-                await _emit(f"✓ Automations: {len(automation_contents)} file(s)")
+                        suggestion_resource_files["automations"].append(f)
+                await _emit(f"✓ Automations: {len(suggestion_resource_files['automations'])} file(s)")
 
             if 'scenes' in active_types:
                 try:
                     await _emit("Loading scenes…")
-                    scenes_result = await self.tools.search_config_files(search_pattern="scene:", full_content=True)
+                    scenes_result = await self.tools.search_config_files(search_pattern="/**/*scene*.yaml", full_content=True, force=True)
+                    if not scenes_result.get("success", True):
+                        raise RuntimeError(scenes_result.get("error", "scene files could not be read"))
                     scenes_files = [
                         f for f in scenes_result.get("files", [])
                         if "scene" in f.get("path", "").lower() and f.get("path") not in included_paths
                     ]
                     for f in scenes_files:
                         included_paths.add(f.get("path", ""))
-                    if scenes_files:
-                        scenes_text = "\n\n".join(f"# {f['path']}\n{f.get('content', '')}" for f in scenes_files)
-                        context_sections.append(f"## Existing scenes\n{scenes_text}")
-                        context_summary.append({"type": "scenes", "files": len(scenes_files), "chars": len(scenes_text)})
-                        await _emit(f"✓ Scenes: {len(scenes_files)} file(s)")
-                    else:
-                        await _emit("✓ Scenes: none found")
-                except Exception:
-                    pass
+                    suggestion_resource_files["scenes"] = scenes_files
+                    await _emit(f"✓ Scenes: {len(scenes_files)} file(s)" if scenes_files else "✓ Scenes: none found")
+                except Exception as e:
+                    logger.warning("Could not load scenes for suggestions: %s", e)
+                    await _emit("⚠ Scenes context is missing; suggestions may not account for existing scenes.")
 
             if 'scripts' in active_types:
                 try:
                     await _emit("Loading scripts…")
-                    scripts_result = await self.tools.search_config_files(search_pattern="sequence:", full_content=True)
+                    scripts_result = await self.tools.search_config_files(search_pattern="/**/*script*.yaml", full_content=True, force=True)
+                    if not scripts_result.get("success", True):
+                        raise RuntimeError(scripts_result.get("error", "script files could not be read"))
                     scripts_files = [
                         f for f in scripts_result.get("files", [])
                         if "script" in f.get("path", "").lower() and f.get("path") not in included_paths
                     ]
                     for f in scripts_files:
                         included_paths.add(f.get("path", ""))
-                    if scripts_files:
-                        scripts_text = "\n\n".join(f"# {f['path']}\n{f.get('content', '')}" for f in scripts_files)
-                        context_sections.append(f"## Existing scripts\n{scripts_text}")
-                        context_summary.append({"type": "scripts", "files": len(scripts_files), "chars": len(scripts_text)})
-                        await _emit(f"✓ Scripts: {len(scripts_files)} file(s)")
-                    else:
-                        await _emit("✓ Scripts: none found")
-                except Exception:
-                    pass
+                    suggestion_resource_files["scripts"] = scripts_files
+                    await _emit(f"✓ Scripts: {len(scripts_files)} file(s)" if scripts_files else "✓ Scripts: none found")
+                except Exception as e:
+                    logger.warning("Could not load scripts for suggestions: %s", e)
+                    await _emit("⚠ Scripts context is missing; suggestions may not account for existing scripts.")
+
+            suggestion_outlines, existing_automation_aliases = _build_suggestion_outlines(suggestion_resource_files)
+            for resource, heading in (("automations", "automations"), ("scenes", "scenes"), ("scripts", "scripts")):
+                if resource not in active_types:
+                    continue
+                outline_text = suggestion_outlines.get(resource, "")
+                if outline_text:
+                    section = f"## Existing {heading} (compact outline)\n{outline_text}"
+                    context_sections.append(section)
+                    context_summary.append({
+                        "type": resource,
+                        "files": len(suggestion_resource_files[resource]),
+                        "chars": len(outline_text),
+                    })
 
             if 'dashboards' in active_types:
                 try:
@@ -2965,8 +3162,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             context_sections.append(f"## Existing dashboards\n" + "\n\n".join(dashboard_contents))
                         context_summary.append({"type": "dashboards", "count": len(dashboard_list)})
                         await _emit(f"✓ Dashboards: {len(dashboard_list)} loaded")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Could not load dashboards for suggestions: %s", e)
+                    await _emit("⚠ Dashboard context is missing; suggestions may not account for existing dashboards.")
 
             nodered_text = ""
             if 'nodered' in active_types:
@@ -2975,8 +3173,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     nodered_result = await self.tools.get_nodered_flows()
                     if nodered_result.get("success"):
                         nodered_text = json.dumps(nodered_result.get("flows", []))  # compact — indent=2 wastes ~30% tokens
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Could not load Node-RED context for suggestions: %s", e)
+                    await _emit("⚠ Node-RED context is missing; suggestions may not account for existing flows.")
                 if nodered_text:
                     context_sections.append(f"## Existing Node-RED flows\n{nodered_text}")
                     context_summary.append({"type": "nodered", "chars": len(nodered_text)})
@@ -2997,8 +3196,12 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         await _emit(f"✓ Memory: {len(memory_context)} chars")
                     else:
                         await _emit("✓ Memory: empty")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Could not load memory context for suggestions: %s", e)
+                    await _emit("⚠ Memory context is missing; suggestions may lack saved device relationships.")
+            elif 'memory' in active_types:
+                logger.warning("Memory context is unavailable for suggestions")
+                await _emit("⚠ Memory context is missing; suggestions may lack saved device relationships.")
 
             # 3. Build remaining context
             suggestion_prompt_env = os.getenv("SUGGESTION_PROMPT", "").strip()
@@ -3009,10 +3212,11 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 config_dir = os.getenv("HA_CONFIG_DIR", "/config")
                 dismissed_path = os.path.join(config_dir, ".ai_agent_suggestions_dismissed.json")
                 if os.path.exists(dismissed_path):
-                    with open(dismissed_path, "r") as f:
+                    with open(dismissed_path, "r", encoding="utf-8") as f:
                         dismissed = json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Could not load dismissed suggestions context: %s", e)
+                await _emit("⚠ Dismissed suggestions context is missing; previously dismissed items may reappear.")
             if dismissed:
                 dismissed_list = "\n".join(f"- {t}" for t in dismissed)
                 context_sections.append(f"## User has dismissed these suggestions — do NOT suggest them again\n{dismissed_list}")
@@ -3022,10 +3226,11 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             try:
                 applied_path = os.path.join(config_dir, ".ai_agent_suggestions_applied.json")
                 if os.path.exists(applied_path):
-                    with open(applied_path, "r") as f:
+                    with open(applied_path, "r", encoding="utf-8") as f:
                         applied = json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Could not load applied suggestions context: %s", e)
+                await _emit("⚠ Applied suggestions context is missing; previously applied items may reappear.")
             if applied:
                 applied_list = "\n".join(f"- {t}" for t in applied)
                 context_sections.append(f"## User has already applied these suggestions — do NOT suggest them again\n{applied_list}")
@@ -3239,38 +3444,33 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "context_summary": context_summary,
                 }
 
-            # Strip markdown code fences if present
-            if raw.startswith("```"):
-                fence_match = re.search(r'^```(?:json)?\s*\n?([\s\S]*?)\n?```', raw)
-                if fence_match:
-                    raw = fence_match.group(1).strip()
-                else:
-                    raw = raw.split("```")[1]
-                    if raw.startswith("json"):
-                        raw = raw[4:]
-                    raw = raw.strip()
-
             try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                # LLM sometimes wraps JSON in extra text or produces minor syntax errors.
-                # Try to extract the outermost JSON object as a fallback.
-                m = re.search(r'\{[\s\S]*\}', raw)
-                if m:
-                    try:
-                        parsed = json.loads(m.group())
-                    except json.JSONDecodeError as inner_err:
-                        logger.warning(f"Suggestions JSON unrecoverable after extraction ({inner_err}); returning empty result")
-                        return {"success": True, "suggestions": [], "naming_issues": [], "context_summary": context_summary}
-                else:
-                    logger.warning("Suggestions JSON parse failed, no JSON block found; returning empty result")
-                    return {"success": True, "suggestions": [], "naming_issues": [], "context_summary": context_summary}
+                parsed = _parse_suggestion_response(raw)
+            except ValueError as parse_error:
+                logger.warning("Suggestions JSON parse failed: %s", parse_error)
+                await _emit({"event": "error", "message": str(parse_error)})
+                return {"success": False, "error": str(parse_error), "context_summary": context_summary}
             if isinstance(parsed, dict):
                 suggestions = parsed.get("suggestions", [])
                 naming_issues = parsed.get("naming_issues", [])
             else:
                 suggestions = parsed
                 naming_issues = []
+            if not isinstance(suggestions, list):
+                message = "The suggestion model returned JSON with no suggestions array. Try generating again."
+                await _emit({"event": "error", "message": message})
+                return {"success": False, "error": message, "context_summary": context_summary}
+
+            before_filter = len(suggestions)
+            suggestions = [
+                suggestion for suggestion in suggestions
+                if not isinstance(suggestion, dict)
+                or str(suggestion.get("type", "new")).lower() == "improvement"
+                or not _is_duplicate_suggestion(suggestion, existing_automation_aliases)
+            ]
+            removed_duplicates = before_filter - len(suggestions)
+            if removed_duplicates:
+                logger.info("Dropped %d suggestions duplicating existing automation aliases", removed_duplicates)
 
             logger.info(f"Generated {len(suggestions)} automation suggestions, {len(naming_issues)} naming issues")
             await _emit(f"✓ Done: {len(suggestions)} suggestion(s), {len(naming_issues)} naming issue(s)")
@@ -3279,5 +3479,3 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         except Exception as e:
             logger.error(f"Failed to generate suggestions: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
-
-

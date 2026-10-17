@@ -76,7 +76,7 @@ def agent(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setenv("OPENAI_API_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("OPENAI_MODEL", "openai/gpt-6.1-sol")
-    for k in ("RESEARCH_MODEL", "SUGGESTION_MODEL", "REASONING_MODEL", "CONFIG_MODEL"):
+    for k in ("FAST_MODEL", "RESEARCH_MODEL", "SUGGESTION_MODEL", "REASONING_MODEL", "CONFIG_MODEL"):
         monkeypatch.delenv(k, raising=False)
     cm = MagicMock()
     files = {"automations.yaml": AUTOMATIONS}
@@ -179,3 +179,19 @@ def test_reasoning_effort_sent_only_when_set(agent, monkeypatch):
     monkeypatch.setenv("REASONING_EFFORT", "turbo")
     fake, _, _ = _run(agent, [_final()])
     assert "reasoning" not in fake.requests[0]["extra_body"]
+
+
+def test_fast_model_slot(monkeypatch):
+    """Main model runs the whole loop; FAST_MODEL only feeds side tasks, same client."""
+    for k, v in {"OPENAI_API_KEY": "t", "OPENAI_API_URL": "https://openrouter.ai/api/v1",
+                 "OPENAI_MODEL": "z-ai/glm-5.3-flash", "FAST_MODEL": "openai/gpt-6-luna"}.items():
+        monkeypatch.setenv(k, v)
+    for k in ("RESEARCH_API_URL", "RESEARCH_API_KEY", "SUGGESTION_API_URL", "SUGGESTION_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+    async def build():
+        return AgentSystem(MagicMock())
+
+    a = asyncio.run(build())
+    assert a.config_model == "z-ai/glm-5.3-flash" and a.config_client is a.client
+    assert a._fast_client_and_model() == (a.client, "openai/gpt-6-luna")

@@ -102,7 +102,14 @@ export default function MemoryTab() {
     <div className="flex flex-col h-full overflow-y-auto px-4 py-4 max-w-3xl mx-auto w-full">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h2 className="text-sm font-semibold text-gray-100">AI Memory</h2>
+          <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
+            AI Memory
+            {!!counts.candidate && (
+              <span className="rounded-full bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300" aria-label={`${counts.candidate} memories to review`}>
+                {counts.candidate}
+              </span>
+            )}
+          </h2>
           <p className="text-xs text-gray-500 mt-0.5">
             Facts the AI cannot read from Home Assistant. Only active memories are used in chats.
           </p>
@@ -137,7 +144,7 @@ export default function MemoryTab() {
         <div className="bg-surface-900 border border-surface-700 rounded-xl px-4 py-3 mb-3 text-xs text-gray-300 flex justify-between gap-3">
           <span>
             {doctor.success === false ? `Health check failed: ${doctor.error}` :
-              `${doctor.stale?.length || 0} retired as stale · ${doctor.unverified?.length || 0} unverified · ${doctor.duplicates?.length || 0} possible duplicate pair(s) · ${doctor.candidates || 0} to review${doctor.note?.startsWith('Entity check skipped') ? ' · entity check skipped (HA lists unavailable)' : ''}`}
+              `${doctor.stale?.length || 0} retired as stale · ${doctor.unverified?.length || 0} unverified · ${doctor.duplicates?.length || 0} duplicate pair(s) · ${doctor.conflicts?.length || 0} conflict pair(s) · ${doctor.unused?.length || 0} unused · ${doctor.expired_candidates?.length || 0} expired candidate(s) · ${doctor.candidates || 0} to review${doctor.note?.startsWith('Entity check skipped') ? ' · entity check skipped (HA lists unavailable)' : ''}`}
           </span>
           <button onClick={() => setDoctor(null)} className="text-gray-500 hover:text-gray-300" aria-label="Dismiss">✕</button>
         </div>

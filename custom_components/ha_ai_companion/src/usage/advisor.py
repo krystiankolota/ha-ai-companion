@@ -1,8 +1,9 @@
 """Model advisor — data-backed model suggestions for OpenRouter users.
 
 Sources:
-- OpenRouter ``/api/v1/models`` (public, no key): price, cache price, context, tool support.
-- Artificial Analysis ``/api/v2/data/llms/models`` (optional free key): quality indexes.
+- OpenRouter ``/api/v1/models`` (public, no key): price, cache price, context, tool support,
+  and ``benchmarks.artificial_analysis`` quality indexes for many models.
+- Artificial Analysis ``/api/v2/data/llms/models`` (optional free key): fills or overrides scores.
 - The user's own ``usage.jsonl`` mix: tokens per call and calls per session.
 
 Both remote payloads are cached on disk with their retrieval date (last-known-good):
@@ -135,6 +136,12 @@ class ModelAdvisor:
         return out
 
     @staticmethod
+    def catalog_scores(m: Dict[str, Any]) -> Dict[str, Optional[float]]:
+        aa = ((m.get("benchmarks") or {}).get("artificial_analysis") or {})
+        return {"intelligence": aa.get("intelligence_index"), "coding": aa.get("coding_index"),
+                "agentic": aa.get("agentic_index")}
+
+    @staticmethod
     def candidates(catalog: List[Dict[str, Any]], mix: Dict[str, Any],
                    scores: Dict[str, Dict[str, Optional[float]]]) -> List[Dict[str, Any]]:
         now = time.time()
@@ -159,7 +166,9 @@ class ModelAdvisor:
             p_cache = _price(pricing, "input_cache_read")
             cached = min(mix["cached"], mix["input"])
             per_call = (mix["input"] - cached) * p_in + cached * (p_cache if p_cache is not None else p_in) + mix["output"] * p_out
-            s = scores.get(_norm(mid)) or scores.get(_norm(m.get("canonical_slug") or "")) or {}
+            api = scores.get(_norm(mid)) or scores.get(_norm(m.get("canonical_slug") or "")) or {}
+            s = {k: api.get(k) if api.get(k) is not None else v for k, v in ModelAdvisor.catalog_scores(m).items()}
+            per_session = per_call * mix["calls_per_session"]
             out.append({
                 "id": mid,
                 "name": m.get("name") or mid,
@@ -168,31 +177,40 @@ class ModelAdvisor:
                 "price_out_per_m": round(p_out * 1e6, 4),
                 "price_cache_per_m": round(p_cache * 1e6, 4) if p_cache is not None else None,
                 "est_cost_per_call": round(per_call, 6),
-                "est_cost_per_session": round(per_call * mix["calls_per_session"], 5),
+                "est_cost_per_session": round(per_session, 5),
+                "sessions_per_10usd": int(10 / per_session) if per_session > 0 else None,
                 "intelligence": s.get("intelligence"),
                 "coding": s.get("coding"),
+                "agentic": s.get("agentic"),
             })
         return out
+
+    @staticmethod
+    def quality(c: Dict[str, Any]) -> Optional[float]:
+        """Agent work is tool use: prefer the agentic index, else intelligence (same 0-100
+        scale; the coding index uses another scale, so it is shown but not mixed in)."""
+        for k in ("agentic", "intelligence"):
+            if c.get(k) is not None:
+                return c[k]
+        return None
 
     @staticmethod
     def rank(cands: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         scored = [c for c in cands if c["intelligence"] is not None]
         if not scored:
-            return {"reasoning": [], "research": [], "budget": []}
-        top_int = max(c["intelligence"] for c in scored)
-
-        def quality(c, field):
-            return c[field] if c[field] is not None else c["intelligence"]
-
-        # Reasoning: writes config — best coding/intelligence, cost only breaks ties.
-        reasoning = sorted(scored, key=lambda c: (-quality(c, "coding"), c["est_cost_per_call"]))
-        # Research: many tool-reading calls — best quality per dollar among strong models.
-        strong = [c for c in scored if c["intelligence"] >= 0.8 * top_int]
-        research = sorted(strong, key=lambda c: -c["intelligence"] / max(c["est_cost_per_call"], 1e-9))
-        # Budget: cheapest that is still reasonably capable.
-        capable = [c for c in scored if c["intelligence"] >= 0.6 * top_int]
-        budget = sorted(capable, key=lambda c: c["est_cost_per_call"])
-        return {"reasoning": reasoning[:TOP_N], "research": research[:TOP_N], "budget": budget[:TOP_N]}
+            return {"quality": [], "value": [], "fast": []}
+        q = ModelAdvisor.quality
+        top = max(q(c) for c in scored)
+        cost = lambda c: max(c["est_cost_per_call"], 1e-9)  # noqa: E731
+        # Quality: best agent score; price breaks ties.
+        quality = sorted(scored, key=lambda c: (-q(c), c["est_cost_per_call"]))
+        # Value (recommended main model): best score per dollar among strong models.
+        strong = [c for c in scored if q(c) >= 0.75 * top]
+        value = sorted(strong, key=lambda c: -q(c) / cost(c))
+        # Fast (side tasks): cheapest model that is still reasonably capable.
+        capable = [c for c in scored if q(c) >= 0.6 * top]
+        fast = sorted(capable, key=cost)
+        return {"quality": quality[:TOP_N], "value": value[:TOP_N], "fast": fast[:TOP_N]}
 
     @staticmethod
     def check_configured(configured: Dict[str, str], catalog: List[Dict[str, Any]],
@@ -235,5 +253,6 @@ class ModelAdvisor:
             "sources": {
                 "openrouter": {k: catalog.get(k) for k in ("source", "fetched_at", "error")},
                 "artificial_analysis": {k: aa.get(k) for k in ("source", "fetched_at", "error")},
+                "catalog_scores": sum(1 for m in catalog["data"] if ModelAdvisor.catalog_scores(m)["intelligence"] is not None),
             },
         }

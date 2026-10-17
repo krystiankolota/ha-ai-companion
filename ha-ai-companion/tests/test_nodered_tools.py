@@ -10,7 +10,7 @@ import sys, os
 # Import via src package so relative imports inside agent_system.py resolve correctly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.agents.tools import AgentTools
+from src.agents.tools import AgentTools, transform_nodered_tab
 
 
 # ---------------------------------------------------------------------------
@@ -218,3 +218,59 @@ class TestDeployUpdateTab:
         payload = next(c for c in tools.api_calls if c[0] == "PUT")[2]
         assert payload["configs"] == []
         assert old_cfg in payload["nodes"]
+
+
+def test_nodered_patch_transform_updates_adds_removes_and_cleans_wires():
+    current = {
+        **CURRENT_FLOW,
+        "nodes": [
+            {"id": "n1", "type": "inject", "name": "old", "wires": [["n2", "n3"], []]},
+            {"id": "n2", "type": "debug", "wires": [[]]},
+        ],
+    }
+    result = transform_nodered_tab(
+        current,
+        updates=[{"id": "n1", "set": {"name": "new"}}],
+        add=[{"id": "n4", "type": "debug", "wires": [["n2"]]}],
+        remove=["n2"],
+    )
+    nodes = {node.get("id"): node for node in result}
+    assert nodes["n1"]["name"] == "new"
+    assert nodes["n1"]["wires"] == [["n3"], []]
+    assert "n2" not in nodes and nodes["n4"]["wires"] == [[]] and "cfg1" in nodes
+
+
+def test_nodered_patch_transform_rejects_unknown_ids_and_duplicate_adds():
+    with pytest.raises(ValueError, match="Unknown node id"):
+        transform_nodered_tab(CURRENT_FLOW, updates=[{"id": "missing", "set": {"name": "x"}}])
+    with pytest.raises(ValueError, match="already exists"):
+        transform_nodered_tab(CURRENT_FLOW, add=[{"id": "n1", "type": "debug"}])
+
+
+@pytest.mark.asyncio
+async def test_nodered_patch_nodes_stages_standard_changeset():
+    tools = make_tools({("GET", f"/flow/{TAB_ID}"): {"status": 200, "json": CURRENT_FLOW}})
+    captured = {}
+
+    class FakeAgentSystem:
+        def store_changeset(self, changeset):
+            captured.update(changeset)
+            return changeset["changeset_id"]
+
+    tools.agent_system = FakeAgentSystem()
+    result = await tools.nodered_patch_nodes(
+        TAB_ID, updates=[{"id": "n1", "set": {"name": "changed"}}], remove=["n2"])
+    assert result["success"] and captured["file_changes"][0]["file_path"] == f"nodered/flow/{TAB_ID}.json"
+    staged = json.loads(captured["file_changes"][0]["new_content"])
+    n1 = next(node for node in staged if node.get("id") == "n1")
+    assert n1["name"] == "changed" and n1["wires"] == [[]]
+
+
+@pytest.mark.asyncio
+async def test_nodered_get_tab_is_compact():
+    tools = make_tools({("GET", f"/flow/{TAB_ID}"): {"status": 200, "json": CURRENT_FLOW}})
+    result = await tools.nodered_get_tab(TAB_ID)
+    assert result["success"] and result["tab"]["label"] == CURRENT_FLOW["label"]
+    node = result["tab"]["nodes"][0]
+    assert node["id"] == "n1" and node["wires"] == [["n2"]]
+    assert not {"x", "y", "z"}.intersection(node)

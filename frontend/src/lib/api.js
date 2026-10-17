@@ -97,30 +97,24 @@ export async function generateSuggestions(resourceTypes, extraPrompt, onStatus, 
   const decoder = new TextDecoder()
   let buffer = ''
   let result = null
+  const handle = (line) => {
+    if (!line.trim()) return
+    let event
+    try { event = JSON.parse(line) } catch { return }
+    if (event.event === 'status' && onStatus) onStatus(event.message)
+    else if (event.event === 'context_ready' && onContextReady) onContextReady(event)
+    else if (event.event === 'result') result = event
+    else if (event.event === 'error') throw new Error(event.message || 'Suggestion generation failed')
+  }
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split('\n')
     buffer = lines.pop()
-    for (const line of lines) {
-      if (!line.trim()) continue
-      try {
-        const event = JSON.parse(line)
-        if (event.event === 'status' && onStatus) {
-          onStatus(event.message)
-        } else if (event.event === 'context_ready' && onContextReady) {
-          onContextReady(event)
-        } else if (event.event === 'result') {
-          result = event
-        } else if (event.event === 'error') {
-          throw new Error(event.message)
-        }
-      } catch (e) {
-        if (e.message && !line.includes(e.message)) throw e
-      }
-    }
+    lines.forEach(handle)
   }
+  handle(buffer + decoder.decode())
   return result
 }
 

@@ -258,8 +258,10 @@ class HomeAssistantWebSocket:
             List of repair issue dicts with issue_id, domain, title, description, severity, is_fixable
         """
         try:
-            result = await self.call("repairs/list", include_ignored=include_ignored)
+            result = await self.call("repairs/list_issues")
             issues = result.get("issues", []) if result else []
+            if not include_ignored:
+                issues = [i for i in issues if not i.get("ignored")]
             logger.info(f"Retrieved {len(issues)} repair issue(s)")
             return issues
         except Exception as e:

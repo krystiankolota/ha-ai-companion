@@ -7,8 +7,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import pytest
 
-from src.agents.nav_tools import summarize_trace
-from src.agents.tools import AgentTools
+from src.agents.nav_tools import format_ha_health, summarize_trace
+from src.agents.tools import AgentTools, _large_structured_content_error
 from src.config.manager import ConfigurationManager
 
 AUTOS = """\
@@ -170,6 +170,101 @@ def test_ambiguous_alias_is_not_resolved(tools, tmp_path):
     assert not r["success"] and "unique" in r["error"]
 
 
+def test_script_and_scene_items_read_and_stage_one_item(tools, tmp_path):
+    (tmp_path / "configuration.yaml").write_text(
+        "automation: !include automations.yaml\nscript: !include scripts.yaml\nscene: !include scenes.yaml\n",
+        encoding="utf-8")
+    scripts = ("script.one:\n  alias: First\n  sequence: []\n"
+               "# Keep this comment\nscript.two:\n  alias: Second\n  sequence: []\n")
+    scenes = ("- id: one\n  name: First\n  entities: {}\n"
+              "# Keep scene comment\n- id: two\n  name: Second\n  entities: {}\n")
+    (tmp_path / "scripts.yaml").write_text(scripts, encoding="utf-8")
+    (tmp_path / "scenes.yaml").write_text(scenes, encoding="utf-8")
+
+    got = run(tools.get_automation("First", kind="script"))
+    assert got["success"] and got["id"] == "script.one" and "alias: First" in got["yaml"]
+    got = run(tools.get_automation("two", kind="scene"))
+    assert got["success"] and got["id"] == "two" and "name: Second" in got["yaml"]
+
+    staged = run(tools.upsert_automation(
+        "id: script.one\nalias: First v2\nsequence: []\n", kind="script"))
+    assert staged["success"], staged
+    staged_text = tools.stored["cs"]["file_changes"][0]["new_content"]
+    assert "script.one:\n  alias: First v2\n  sequence: []\n" in staged_text
+    assert staged_text.endswith("# Keep this comment\nscript.two:\n  alias: Second\n  sequence: []\n")
+
+    staged = run(tools.upsert_automation(
+        "id: one\nname: First v2\nentities: {}\n", kind="scene"))
+    assert staged["success"], staged
+    staged_text = tools.stored["cs"]["file_changes"][0]["new_content"]
+    assert staged_text.startswith("- id: one\n  name: First v2")
+    assert staged_text.endswith("# Keep scene comment\n- id: two\n  name: Second\n  entities: {}\n")
+
+
+def test_full_content_guard_for_large_structured_file(tools, tmp_path):
+    content = "alias: needle\n" + ("# large\n" * 2200)
+    assert _large_structured_content_error("automations.yaml", content)
+    assert _large_structured_content_error("automations.yaml", content, force=True) is None
+    (tmp_path / "automations.yaml").write_text(content, encoding="utf-8")
+    blocked = run(tools.search_config_files(search_pattern="needle", full_content=True))
+    assert not blocked["success"] and "read_range" in blocked["error"] and "force=true" in blocked["error"]
+    allowed = run(tools.search_config_files(search_pattern="needle", full_content=True, force=True))
+    assert allowed["success"] and len(allowed["files"][0]["content"]) > 12000
+
+
+def test_health_summary_formats_repairs_failures_updates_and_grouped_logs():
+    report = format_ha_health(
+        [{"issue_id": "active", "title": "Fix me"}, {"issue_id": "ignored", "ignored": True}],
+        [{"domain": "mqtt", "title": "MQTT", "state": "setup_error", "reason": "bad config"},
+         {"domain": "light", "state": "loaded"}],
+        [{"entity_id": "update.core", "state": "on",
+          "attributes": {"friendly_name": "Core", "installed_version": "1", "latest_version": "2"}}],
+        [{"level": "ERROR", "name": "mqtt", "message": ["Failed to connect"], "count": 2},
+         {"level": "ERROR", "name": "mqtt", "message": ["Failed to connect"], "count": 3}],
+    )
+    assert [i["issue_id"] for i in report["repairs"]] == ["active"]
+    assert report["failed_config_entries"][0]["domain"] == "mqtt"
+    assert report["pending_updates"][0]["latest"] == "2"
+    assert report["logs"] == [{"level": "ERROR", "source": "mqtt", "count": 5,
+                              "message": "Failed to connect"}]
+
+
+def test_get_ha_health_uses_fake_websocket_data():
+    t = AgentTools.__new__(AgentTools)
+    t.config_manager = type("Config", (), {"hass": None})()
+    t._turn_registry_cache = {}
+
+    async def ws_call(command, **kwargs):
+        return {
+            "repairs/list_issues": {"issues": [{"issue_id": "repair", "title": "Repair"}]},
+            "config_entries/get": {"config_entries": [{"domain": "mqtt", "state": "setup_error"}]},
+            "system_log/list": [{"level": "WARNING", "name": "mqtt", "message": ["Warn"], "count": 2}],
+        }[command]
+
+    async def states():
+        return [{"entity_id": "update.core", "state": "on",
+                 "attributes": {"friendly_name": "Core", "latest_version": "2"}}]
+
+    t._ws_call = ws_call
+    t._all_states = states
+    result = run(t.get_ha_health())
+    assert result["success"] and result["repairs"][0]["issue_id"] == "repair"
+    assert result["failed_config_entries"][0]["domain"] == "mqtt"
+    assert result["pending_updates"][0]["name"] == "Core"
+
+
+def test_trace_summary_keeps_step_results_and_drops_variable_payloads():
+    result = summarize_trace({
+        "run_id": "r1", "trigger": "time", "error": "boom",
+        "trace": {"action/0": [{"result": {"done": True, "params": {"huge": "x"},
+                                             "conditions": [True]},
+                                "changed_variables": {"secret": "large"}}]},
+    })
+    assert result["trigger"] == "time" and result["error"] == "boom"
+    assert result["steps"][0]["result"] == {"done": True, "conditions": [True]}
+    assert "changed_variables" not in result["steps"][0]
+
+
 def test_single_item_dir_files_are_indexed_read_only(tmp_path, monkeypatch, tools):
     (tmp_path / "configuration.yaml").write_text(
         "automation: !include automations.yaml\nautomation one: !include_dir_list single\n", encoding="utf-8")
@@ -265,3 +360,18 @@ def test_search_config_files_without_pattern_outlines_big_files(tmp_path):
     files = {f["path"]: f for f in asyncio.run(run())["files"]}
     assert files["small.yaml"]["content"].strip() == "a: 1"
     assert files["automations.yaml"]["content"] is None and len(files["automations.yaml"]["outline"]) == 30
+
+
+def test_script_upsert_into_empty_mapping_keeps_secret_tags(tools, tmp_path):
+    (tmp_path / "configuration.yaml").write_text("script: !include scripts.yaml\n", encoding="utf-8")
+    (tmp_path / "scripts.yaml").write_text("{}\n", encoding="utf-8")
+    staged = run(tools.upsert_automation(
+        "notify_me:\n  alias: Notify\n  sequence:\n    - action: rest_command.x\n      data:\n        token: !secret tok\n",
+        kind="script"))
+    assert staged["success"], staged
+    text = tools.stored["cs"]["file_changes"][0]["new_content"]
+    assert "{}" not in text
+    assert "token: !secret " in text
+    from src.ha.yaml_blocks import load_tolerant
+    parsed = load_tolerant(text)["notify_me"]
+    assert parsed["sequence"][0]["data"]["token"] == "!secret tok"

@@ -24,12 +24,11 @@
           "nodered_url": "Node-RED URL (optional, e.g. http://homeassistant:1880)",
           "nodered_token": "Node-RED API Token (optional, if auth is enabled)",
           "nodered_flows_file": "Node-RED Flows File fallback (optional, relative to /config)",
-          "input_price_per_1m": "Input price per 1M tokens in USD (optional, enables cost display)",
-          "output_price_per_1m": "Output price per 1M tokens in USD (optional)",
           "max_tokens": "Max output tokens — all phases (optional, 0 = model default)",
           "suggestion_max_tokens": "Max output tokens — suggestion phase (optional override)",
           "config_max_tokens": "Max output tokens — config phase (optional override)",
-          "max_sessions": "Max saved conversation sessions (default: 50)"
+          "max_sessions": "Max saved conversation sessions (default: 50)",
+          "fast_model": "Fast model (optional — cheaper model for suggestions, summaries, memory)"
         }
       }
     },
@@ -55,14 +54,11 @@
           "log_level": "Log Level",
           "usage_tracking": "Usage Tracking Method",
           "enable_cache_control": "Enable Cache Control (Anthropic Claude only)",
-          "max_sessions": "Max saved conversation sessions",
-          "input_price_per_1m": "Input price per 1M tokens in USD (0 = disabled)",
-          "output_price_per_1m": "Output price per 1M tokens in USD"
+          "max_sessions": "Max saved conversation sessions"
         }
       },
       "suggestion_phase": {
-        "title": "Suggestion & Config Phase",
-        "description": "Step 2 of 3 — Override model/API for the suggestion phase (generating automation ideas) and the config phase (editing YAML). Leave blank to use the main model.",
+        "title": "Fast model & suggestions",
         "data": {
           "suggestion_model": "Suggestion Phase Model (blank = use main model)",
           "suggestion_api_url": "Suggestion Phase API URL (blank = use main URL)",
@@ -73,7 +69,8 @@
           "config_model": "Config Phase Model (blank = use main model)",
           "config_api_url": "Config Phase API URL (blank = use main URL)",
           "config_api_key": "Config Phase API Key (blank = use main key)",
-          "config_max_tokens": "Config Phase Max Tokens (0 = model default)"
+          "config_max_tokens": "Config Phase Max Tokens (0 = model default)",
+          "fast_model": "Fast model (optional — cheaper model for suggestions, summaries, memory)"
         }
       },
       "advanced": {

@@ -39,6 +39,11 @@ def test_nodered_keyword_triggers_suggestions_fragment():
     assert AgentSystem._AUTOMATION_SUGGESTIONS_TOPIC_PROMPT in frags
 
 
+def test_maintenance_keywords_trigger_maintenance_fragment():
+    for message in ("Show repairs and errors", "naprawa encji niedostępnej", "check update log"):
+        assert AgentSystem._MAINTENANCE_TOPIC_PROMPT in AgentSystem._select_topic_fragments(message)
+
+
 def test_prior_dashboard_tool_call_keeps_fragment_loaded():
     history = [
         {"role": "assistant", "tool_calls": [{"function": {"name": "list_dashboards"}}]},

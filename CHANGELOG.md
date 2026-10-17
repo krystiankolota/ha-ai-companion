@@ -5,6 +5,26 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] - 2026-10-17
+
+### Changed — simpler model config (OpenRouter first)
+- **Two model slots: main + optional fast.** The research/reasoning/config split is gone. The main model runs every chat turn, so the provider prompt cache stays warm. The optional `fast_model` handles suggestions, summaries and memory extraction. Blank means "use main". Old `research_model` values still work in HACS when they used the main provider.
+- **OpenRouter defaults.** The default URL is `https://openrouter.ai/api/v1` and the default model is `z-ai/glm-5.3-flash`.
+- **Real cost.** Turn cost is now the provider-reported cost. The manual price options are removed.
+- **Add-on update note:** the removed options are dropped. Set `fast_model` again if you used a research model.
+
+### Added
+- **Model advisor uses Artificial Analysis scores from the OpenRouter catalog** (no key needed). New columns: Agentic and Sessions/$10. New rankings: Best value, Highest quality, Fast model.
+- **Maintenance tools:** `get_ha_health`, `get_automation_trace`, `find_unavailable_entities`, `find_cleanup_candidates`.
+- **Script and scene editing** with `get_automation`/`upsert_automation` (`kind: script|scene`). Only the edited item changes; `!secret` and other tags are kept.
+- **Node-RED tab tools:** `nodered_get_tab` and `nodered_patch_nodes` edit single nodes instead of whole flows.
+- **Memory doctor** runs on startup and daily. It reports expired, unused and conflicting records. Preferences get a 1200-char context budget.
+
+### Fixed
+- **Usage tab daily chart** was flat because the bar scale had a $1 minimum.
+- **Suggestions:** atomic UTF-8 writes, dismissed suggestions can be restored, results survive errors, "Implement" no longer marks a suggestion applied, tolerant JSON parsing, and improvements to existing automations are no longer dropped as duplicates.
+- **Large file guard:** full reads of structured files over 12k chars need `force=true`, so the agent reads single items instead.
+- **Repairs** use the correct `repairs/list_issues` WebSocket command.
 ## [1.20.0] - 2026-10-17
 
 ### Changed — token diet (fewer credits per turn)

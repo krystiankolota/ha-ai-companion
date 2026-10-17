@@ -9,6 +9,7 @@ import asyncio
 import os
 import re
 import logging
+import tempfile
 from datetime import datetime, timezone
 import json as json_lib
 
@@ -16,11 +17,12 @@ from .config import ConfigurationManager
 from .agents import AgentSystem
 from .agents.diffing import describe_change
 from .memory import MemoryStore
+from .memory.store import extraction_rejection_reason
 from .conversations import ConversationManager
 from .tasks import TaskManager
 from .runs import RunRegistry
 
-version = "1.20.0"
+version = "1.21.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -178,13 +180,20 @@ async def lifespan(_: FastAPI):
         logger.error(f"Failed to initialize task manager: {e}", exc_info=True)
 
     async def _memory_doctor_daily():
-        await asyncio.sleep(300)  # let HA connections settle first
         while True:
             try:
                 if agent_system and memory_manager:
                     r = await agent_system.tools.memory_doctor()
-                    logger.info("Memory doctor: %d stale, %d duplicate pair(s), %d candidate(s)",
-                                len(r.get("stale", [])), len(r.get("duplicates", [])), r.get("candidates", 0))
+                    logger.info(
+                        "Memory doctor: %d stale, %d duplicate pair(s), %d conflict pair(s), "
+                        "%d unused, %d expired candidate(s), %d candidate(s)",
+                        len(r.get("stale", [])), len(r.get("duplicates", [])),
+                        len(r.get("conflicts", [])), len(r.get("unused", [])),
+                        len(r.get("expired_candidates", [])), r.get("candidates", 0),
+                    )
+                    if (r.get("note") or "").startswith("Entity check skipped"):
+                        await asyncio.sleep(60)
+                        continue
             except Exception as e:
                 logger.warning(f"Memory doctor failed: {e}")
             await asyncio.sleep(86400)
@@ -671,20 +680,22 @@ async def clear_all_sessions():
             prompt = (
                 "Review these Home Assistant conversation sessions and extract facts worth saving as persistent agent memories.\n\n"
                 "Save ONLY durable facts the user stated that HA itself cannot tell:\n"
-                "- How the user wants things done (preference)\n"
-                "- Residents, their devices, unclear device purposes, routines (fact)\n"
-                "- Agreed design choices (decision)\n\n"
-                "Skip: one-off tasks, what was done in a session, states, anything in HA config/registry.\n\n"
+                "- User preferences\n"
+                "- Decisions, including their reasons\n"
+                "- Facts that are not derivable from Home Assistant\n\n"
+                "Skip entity lists, areas, devices, dashboard structure, automation contents, IDs, one-off tasks, and live state.\n"
+                "Save one fact per record, use no Markdown headings, and keep each record to 200 characters or less.\n\n"
                 'Return JSON: {"memories": [{"kind": "preference|fact|decision", "text": "one short fact"}]}\n'
                 'If nothing worth saving: {"memories": []}\n\n'
                 f"Conversations:\n{conv_text}"
             )
 
             data = {"memories": []}
+            fast_client, fast_model = agent_system._fast_client_and_model()
             try:
                 resp = await agent_system._completion_with_usage(
-                    agent_system.suggestion_client, 'suggestion', phase="memory_extraction",
-                    model=agent_system.suggestion_model,
+                    fast_client, 'suggestion', phase="memory_extraction",
+                    model=fast_model,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
                     max_tokens=1500,
@@ -695,8 +706,8 @@ async def clear_all_sessions():
                 try:
                     import re as _re
                     resp = await agent_system._completion_with_usage(
-                        agent_system.suggestion_client, 'suggestion', phase="memory_extraction",
-                        model=agent_system.suggestion_model,
+                        fast_client, 'suggestion', phase="memory_extraction",
+                        model=fast_model,
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=1500,
                         temperature=0.2,
@@ -710,7 +721,7 @@ async def clear_all_sessions():
 
             for mem in data.get("memories", []):
                 kind, text = mem.get("kind", "fact"), (mem.get("text") or "").strip()
-                if text and memory_manager:
+                if text and memory_manager and not extraction_rejection_reason(text):
                     try:
                         r = memory_manager.add(kind if kind in ("preference", "fact", "decision") else "fact",
                                                text, status="candidate", source="session-extract")
@@ -740,19 +751,34 @@ def _dismissed_path() -> str:
     config_dir = os.getenv("HA_CONFIG_DIR", "/config")
     return os.path.join(config_dir, DISMISSED_FILE_KEY)
 
+def _write_suggestions_json(path: str, data: Any):
+    directory = os.path.dirname(path) or "."
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=directory, prefix=".suggestions-", suffix=".tmp",
+            delete=False,
+        ) as f:
+            temp_path = f.name
+            json_lib.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, path)
+    except Exception:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
 def _read_dismissed() -> list:
     path = _dismissed_path()
     if os.path.exists(path):
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json_lib.load(f)
         except Exception:
             pass
     return []
 
 def _write_dismissed(titles: list):
-    with open(_dismissed_path(), "w") as f:
-        json_lib.dump(titles, f, indent=2)
+    _write_suggestions_json(_dismissed_path(), titles)
 
 
 SUGGESTIONS_HISTORY_KEY = ".ai_agent_suggestions_history.json"
@@ -766,7 +792,7 @@ def _read_suggestions_history() -> list:
     path = _suggestions_history_path()
     if os.path.exists(path):
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json_lib.load(f)
             if isinstance(data, list):
                 return data
@@ -786,8 +812,7 @@ def _append_to_history(payload: dict):
     history.insert(0, payload)
     history = history[:max(1, max_s)]
     try:
-        with open(_suggestions_history_path(), "w") as f:
-            json_lib.dump(history, f, indent=2)
+        _write_suggestions_json(_suggestions_history_path(), history)
     except Exception as e:
         logger.warning(f"Failed to write suggestions history: {e}")
 
@@ -798,7 +823,7 @@ async def get_suggestions():
     path = _suggestions_path()
     if os.path.exists(path):
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json_lib.load(f)
         except Exception as e:
             logger.warning(f"Failed to read suggestions file: {e}")
@@ -816,6 +841,20 @@ async def dismiss_suggestion(request: Request):
     if title not in dismissed:
         dismissed.append(title)
         _write_dismissed(dismissed)
+    return {"dismissed": dismissed}
+
+@app.post("/api/suggestions/restore")
+async def restore_suggestion(request: Request):
+    """Remove a suggestion title from the persistent dismissed list."""
+    body = await request.json()
+    title = body.get("title", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    dismissed = _read_dismissed()
+    if title not in dismissed:
+        raise HTTPException(status_code=404, detail="suggestion is not dismissed")
+    dismissed.remove(title)
+    _write_dismissed(dismissed)
     return {"dismissed": dismissed}
 
 
@@ -848,15 +887,14 @@ def _read_applied() -> list:
     path = _applied_path()
     if os.path.exists(path):
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json_lib.load(f)
         except Exception:
             pass
     return []
 
 def _write_applied(titles: list):
-    with open(_applied_path(), "w") as f:
-        json_lib.dump(titles, f, indent=2)
+    _write_suggestions_json(_applied_path(), titles)
 
 @app.post("/api/suggestions/applied")
 async def mark_suggestion_applied(request: Request):
@@ -901,8 +939,12 @@ async def generate_suggestions(request: Request):
         pass
 
     queue: asyncio.Queue = asyncio.Queue()
+    error_event_emitted = False
 
     async def progress_cb(payload):
+        nonlocal error_event_emitted
+        if isinstance(payload, dict) and payload.get("event") == "error":
+            error_event_emitted = True
         await queue.put(payload)
 
     async def run_generation():
@@ -922,8 +964,7 @@ async def generate_suggestions(request: Request):
                 }
                 try:
                     cache = {k: v for k, v in payload.items() if k != "event"}
-                    with open(_suggestions_path(), "w") as f:
-                        json_lib.dump(cache, f, indent=2)
+                    _write_suggestions_json(_suggestions_path(), cache)
                 except Exception as e:
                     logger.warning(f"Failed to cache suggestions: {e}")
                 try:
@@ -932,7 +973,8 @@ async def generate_suggestions(request: Request):
                     logger.warning(f"Failed to append to suggestions history: {e}")
                 await queue.put(payload)
             else:
-                await queue.put({"event": "error", "message": result.get("error", "Generation failed")})
+                if not error_event_emitted:
+                    await queue.put({"event": "error", "message": result.get("error", "Generation failed")})
         except Exception as e:
             logger.error(f"Suggestions generation error: {e}", exc_info=True)
             await queue.put({"event": "error", "message": str(e)})
@@ -982,8 +1024,8 @@ async def get_model_advice(refresh: bool = False):
     _model_advisor.aa_api_key = os.getenv("ARTIFICIAL_ANALYSIS_API_KEY") or None
     configured, or_roles = {}, set()
     if agent_system:
-        configured = {"main": agent_system.model, "research": agent_system.suggestion_model, "reasoning": agent_system.config_model}
-        clients = {"main": "client", "research": "suggestion_client", "reasoning": "config_client"}
+        configured = {"main": agent_system.model, "fast": agent_system.suggestion_model}
+        clients = {"main": "client", "fast": "suggestion_client"}
         for role, attr in clients.items():
             if "openrouter.ai" in str(getattr(getattr(agent_system, attr, None), "base_url", "")):
                 or_roles.add(role)

@@ -9,7 +9,7 @@ import re
 import sqlite3
 import threading
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -67,9 +67,18 @@ KINDS = ("preference", "fact", "decision", "procedure")
 STATUSES = ("candidate", "active", "superseded", "stale", "rejected")
 
 MAX_TEXT_CHARS = 800
-PREFERENCE_BUDGET = 600
+PREFERENCE_BUDGET = 1200
 RECALL_BUDGET = 1200
 RECALL_LIMIT = 5
+
+_STOPWORDS = {
+    "aby", "albo", "ale", "bez", "byc", "być", "co", "czy", "dla", "do", "gdy",
+    "i", "ich", "jak", "jako", "jest", "jeszcze", "lub", "ma", "moze", "może",
+    "na", "nad", "nie", "od", "oraz", "po", "pod", "przez", "sie", "się", "tak",
+    "ten", "to", "w", "we", "z", "za", "ze", "że", "a", "an", "and", "are", "as",
+    "at", "be", "but", "by", "for", "from", "has", "have", "in", "is", "it", "of",
+    "on", "or", "the", "this", "to", "was", "were", "with",
+}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -108,8 +117,24 @@ def _fold(text: str) -> str:
 
 
 def _tokens(text: str) -> set:
-    # 5-char stems give crude matching across Polish/English inflections.
-    return {w[:5] for w in re.split(r"[\W_]+", _fold(text)) if len(w) >= 3}
+    words = (w for w in re.split(r"[\W_]+", _fold(text)) if len(w) >= 3 and w not in _STOPWORDS)
+    return {w[:5] if len(w) >= 5 else w for w in words}
+
+
+def extraction_rejection_reason(text: str, max_chars: Optional[int] = 300) -> Optional[str]:
+    """Reject extracted memories that are too long, structured, or mostly HA entity IDs."""
+    text = (text or "").strip()
+    if max_chars is not None and len(text) > max_chars:
+        return f"exceeds {max_chars} characters"
+    if re.search(r"(?m)^\s{0,3}#{1,6}(?:\s|$)", text):
+        return "contains a Markdown heading"
+    if len(text.splitlines()) > 3:
+        return "contains more than three lines"
+    words = text.split()
+    entity_tokens = re.findall(r"\b[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\b", text, re.IGNORECASE)
+    if words and len(entity_tokens) / len(words) > 0.4:
+        return "mostly contains Home Assistant entity IDs"
+    return None
 
 
 def _hash(text: str) -> str:
@@ -266,14 +291,20 @@ class MemoryStore:
             sql += " AND kind = ?"
             args.append(kind)
         rows = self._rows(sql + " ORDER BY updated DESC", args)
-        if not q:
+        if not (query or "").strip():
             return rows[:limit]
+        if not q:
+            return []
+        active_token_counts: Dict[str, int] = {}
+        for r in self.list(status="active"):
+            for token in _tokens(r["text"] + " " + (r["key"] or "") + " " + r["entities"]):
+                active_token_counts[token] = active_token_counts.get(token, 0) + 1
         scored = []
         for r in rows:
             hay = _tokens(r["text"] + " " + (r["key"] or "") + " " + r["entities"].replace(".", " ").replace("_", " "))
-            s = len(q & hay)
-            if s:
-                scored.append((s, r))
+            shared = q & hay
+            if len(shared) >= 2 or any(active_token_counts.get(token, 0) <= 2 for token in shared):
+                scored.append((len(shared), r))
         scored.sort(key=lambda x: -x[0])
         return [r for _, r in scored[:limit]]
 
@@ -310,10 +341,33 @@ class MemoryStore:
         - active/candidate records that reference entity_ids missing from HA -> stale
         - near-duplicate active records
         - supersede links pointing at missing records
-        - candidate backlog
+        - old candidates, unused records, and conflicts
         """
-        issues: Dict[str, Any] = {"stale": [], "unverified": [], "duplicates": [], "broken_links": [], "candidates": 0}
+        issues: Dict[str, Any] = {
+            "stale": [], "unverified": [], "duplicates": [], "broken_links": [],
+            "unused": [], "conflicts": [], "expired_candidates": [], "candidates": 0,
+        }
         live = self.list(status="active") + self.list(status="candidate")
+        now = datetime.now(timezone.utc)
+        cutoff_90 = now - timedelta(days=90)
+        cutoff_30 = now - timedelta(days=30)
+
+        def parse_timestamp(value):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+            except (AttributeError, TypeError, ValueError):
+                return None
+
+        for r in live:
+            if r["status"] == "candidate":
+                created = parse_timestamp(r.get("created"))
+                if created and created < cutoff_30:
+                    issues["expired_candidates"].append(r["id"])
+            elif r["kind"] != "preference":
+                reference_date = parse_timestamp(r.get("last_used")) if r.get("last_used") else parse_timestamp(r.get("created"))
+                if reference_date and reference_date < cutoff_90:
+                    issues["unused"].append(r["id"])
         if valid_entity_ids:
             by_obj: Dict[str, List[str]] = {}
             for eid in valid_entity_ids:
@@ -339,6 +393,15 @@ class MemoryStore:
                 ta, tb = _tokens(a["text"]), _tokens(b["text"])
                 if ta and tb and len(ta & tb) / min(len(ta), len(tb)) >= 0.8:
                     issues["duplicates"].append([a["id"], b["id"]])
+                overlap = len(ta & tb) / max(1, min(len(ta), len(tb)))
+                numbers_a = set(re.findall(r"\d+[:.]?\d*", a["text"]))
+                numbers_b = set(re.findall(r"\d+[:.]?\d*", b["text"]))
+                same_key = bool(a.get("key") and a["key"] == b.get("key"))
+                if same_key or (overlap >= 0.5 and numbers_a and numbers_b and numbers_a != numbers_b):
+                    issues["conflicts"].append({
+                        "ids": [a["id"], b["id"]],
+                        "key": a.get("key") if same_key else None,
+                    })
         ids = {r["id"] for r in self._rows("SELECT id FROM memories")}
         issues["broken_links"] = [r["id"] for r in self._rows("SELECT id, supersedes FROM memories WHERE supersedes IS NOT NULL")
                                   if r["supersedes"] not in ids]
@@ -349,6 +412,12 @@ class MemoryStore:
                 self._exec("UPDATE memories SET status='stale', updated=? WHERE id=?", (now, s["id"]))
             for rid in issues["broken_links"]:
                 self._exec("UPDATE memories SET supersedes=NULL WHERE id=?", (rid,))
+            for rid in issues["expired_candidates"]:
+                self._exec("UPDATE memories SET status='rejected', updated=? WHERE id=? AND status IN ('candidate','stale')",
+                           (now, rid))
+        issues["candidates"] = len([r for r in live if r["status"] == "candidate"]) - (
+            len(issues["expired_candidates"]) if apply else 0
+        )
         self._exec("INSERT OR REPLACE INTO meta(k, v) VALUES ('doctor_last_run', ?)", (_now(),))
         return issues
 

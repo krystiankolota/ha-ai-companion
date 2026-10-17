@@ -130,23 +130,21 @@ openai_api_key: "sk-your-openai-api-key"
 #### Full Configuration
 
 ```yaml
-openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+openai_api_url: "https://openrouter.ai/api/v1"
 openai_api_key: "your-api-key"
-openai_model: "gemini-3.5-flash-lite"
+openai_model: "z-ai/glm-5.3-flash"
+fast_model: ""
 log_level: "info"
 system_prompt_file: ""
 temperature: ""
 enable_cache_control: false
 max_iterations: 0
 usage_tracking: "stream_options"
-research_model: ""               # Optional cheaper layer (reading, suggestions)
-reasoning_model: ""              # Optional stronger layer (planning, writing)
+reasoning_effort: ""
 suggestion_prompt: ""
 nodered_url: ""
 nodered_token: ""
 nodered_flows_file: ""
-input_price_per_1m: 0.0          # Optional: USD per 1M input tokens (enables cost display)
-output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 ```
 
 #### Configuration Parameters
@@ -155,37 +153,24 @@ output_price_per_1m: 0.0         # Optional: USD per 1M output tokens
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `openai_api_url` | String | `https://generativelanguage.googleapis.com/v1beta/openai/` | API endpoint — any OpenAI-compatible provider |
+| `openai_api_url` | String | `https://openrouter.ai/api/v1` | API endpoint — any OpenAI-compatible provider |
 | `openai_api_key` | String | *Required* | API key for your provider |
-| `openai_model` | String | `gemini-3.5-flash-lite` | Main model for config edits and general chat |
+| `openai_model` | String | `z-ai/glm-5.3-flash` | Main model for every chat/tool-loop iteration |
+| `fast_model` | String | `""` | Optional model for Suggestions, conversation summaries, and memory tasks. Uses the main model when blank. It uses the same API URL and key. |
 | `log_level` | List | `info` | Log verbosity: `debug`, `info`, `warning`, `error` |
 
-**Model Layers (optional)**
+**Model slots**
 
-The agent runs two layers; each falls back to the Main Model when left blank. All three fields of a layer (model + API URL + API key) must be set together to activate that layer's own provider.
+The main model runs the full chat and tool loop on every iteration. The agent does not switch models mid-turn, which helps keep the provider prompt cache stable. The optional `fast_model` is used only for the Suggestions tab, conversation summaries, and memory extraction and consolidation. It uses the main provider URL and key; blank means use the main model. `COMPLEXITY_ROUTING=on` is an opt-in exception: simple read-only turns can use the fast model for the whole turn.
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `research_model` | String | `""` | **Research layer (cheaper)** — reading/exploring config, simple read-only questions, the Suggestions tab. Used before the agent writes changes. Tip: use a cheaper/faster model here. |
-| `research_api_url` | String | `""` | API URL override for the research layer. Leave empty to reuse `openai_api_url`. |
-| `research_api_key` | String | `""` | API key override for the research layer. Leave empty to reuse `openai_api_key`. |
-| `reasoning_model` | String | `""` | **Reasoning layer (stronger)** — planning and writing changes (config edits, devices, Lovelace, Node-RED) once context is gathered. Tip: use a stronger model here. |
-| `reasoning_api_url` | String | `""` | API URL override for the reasoning layer. Leave empty to reuse `openai_api_url`. |
-| `reasoning_api_key` | String | `""` | API key override for the reasoning layer. Leave empty to reuse `openai_api_key`. |
-| `research_usage_tracking` | List | `default` | Per-layer usage-tracking override (`default`/`stream_options`/`usage`/`disabled`). |
-| `reasoning_usage_tracking` | List | `default` | Per-layer usage-tracking override. |
+**Which model should I choose?** The main model needs to handle both reading and edits. The fast model is for side tasks, so choose one that is capable but inexpensive. OpenRouter prices below are USD per 1M input/output tokens as of October 2026; prices change, so check the model advisor before choosing.
 
-> **Renamed in v1.18.0:** `suggestion_*` → `research_*`, `config_*` → `reasoning_*`. Re-enter these after updating; old env-var names are still read as a fallback.
-
-**Which model for each field?** Three fields: **Main** (`openai_model`, default for everything unless a layer overrides — make it a capable all-rounder; only this matters if you set no layers), **Research** (`research_model`, cheap high-volume reading/suggestions), **Reasoning** (`reasoning_model`, strong planning/writing). Combine a quality leaderboard ([livebench.ai](https://livebench.ai/) — *Coding*+*Instruction Following* for main, *Instruction Following*/*Language* for research, *Coding*/*Reasoning* for reasoning; or [llm-stats.com](https://llm-stats.com/) for quality+price+context together) with live prices on [openrouter.ai/models](https://openrouter.ai/models). OpenRouter slugs + approx $/1M (in / out), verify current prices:
-
-| Tier | Main (`openai_model`) | Research (`research_model`) | Reasoning (`reasoning_model`) |
-|------|------------------------|------------------------------|--------------------------------|
-| 💰 Cheapest | `deepseek/deepseek-v4-flash-0731` ($0.14 / $0.28) | `deepseek/deepseek-v4-flash-0731` ($0.14 / $0.28) | `deepseek/deepseek-v4-pro` ($0.44 / $0.87) |
-| ⚖️ Balanced *(recommended)* | `google/gemini-3.1-pro-preview` ($2.00 / $12) · `openai/gpt-5.6-sol` ($5 / $30) | `google/gemini-3.5-flash` ($1.50 / $9.00) | `google/gemini-3.1-pro-preview` ($2.00 / $12) · `openai/gpt-5.6-sol` ($5 / $30) |
-| 🏆 Highest | `anthropic/claude-fable-5` ($10 / $50) | `anthropic/claude-sonnet-5` ($2 / $10) · `anthropic/claude-haiku-4.5` ($1.00 / $5.00) | `anthropic/claude-opus-5` ($5 / $25) · `anthropic/claude-fable-5` ($10 / $50) |
-
-No layers (simplest)? Only **Main** matters. Both layers set (best cost control)? Research carries most of the token *volume*; Reasoning carries most of the *cost per token* — spend your top budget there, and a cheap Main is fine as the rarely-hit fallback.
+| Use | Model | Input / output per 1M | Notes |
+|------|-------|-----------------------|-------|
+| Recommended main | `z-ai/glm-5.3-flash` | $0.15 / $0.50 (cache $0.03) | AA agentic score 50.9; about $0.014 per turn |
+| Main alternative | `anthropic/claude-haiku-5.5` | $0.10 / $0.50 | Lower-cost alternative |
+| Hard edits | `openai/gpt-6.1-sol` | $1 / $5 | About $0.09 per turn |
+| Recommended fast model | `openai/gpt-6-luna` | $0.05 / $0.25 | For side tasks |
 
 **Prompt Customisation (optional)**
 
@@ -214,27 +199,6 @@ Advanced env var (not an option): `TOOL_RESULT_MAX_CHARS` (default 12000) caps e
 | `nodered_token` | String | `""` | Node-RED API token — only needed if Node-RED authentication is enabled |
 | `nodered_flows_file` | String | `""` | Path to a Node-RED flows JSON export relative to `/config`, used as fallback when the live API is unreachable |
 | `artificial_analysis_api_key` | String | `""` | Optional free key from artificialanalysis.ai. Adds quality scores to the model advisor in the Usage tab |
-
-**Cost Display (optional)**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `input_price_per_1m` | Float | `0.0` | USD cost per 1 million input (prompt) tokens. Set to enable cost tracking in the UI footer. |
-| `output_price_per_1m` | Float | `0.0` | USD cost per 1 million output (completion) tokens. |
-
-When both values are set to non-zero, a `💰 $0.0000` cumulative session cost appears next to the token counter in the footer.
-
-**Common pricing reference (as of 2026-08):**
-
-| Model | Input / 1M | Output / 1M |
-|-------|-----------|------------|
-| `gemini-3.5-flash-lite` | $0.30 | $2.50 |
-| `claude-haiku-4-5-20251001` | $1.00 | $5.00 |
-| `claude-sonnet-5` | $2.00 | $10.00 |
-| `claude-opus-5` | $5.00 | $25.00 |
-| `claude-fable-5` | $10.00 | $50.00 |
-| `gpt-5.6-luna` | $0.20 | $1.20 |
-| `gpt-5.6-sol` | $5.00 | $30.00 |
 
 ### AI Provider Setup
 
@@ -517,7 +481,8 @@ On OpenRouter, a test showed about 91% lower cost for a repeated GPT-6 Luna call
 The **Usage** tab has a **Model advisor** panel. It:
 - checks your configured models against the live OpenRouter catalog, and warns if a model id is wrong or has no tool support;
 - estimates the cost per session for each model from your own last 30 days of usage;
-- ranks models for **Reasoning**, **Research**, and **Budget** use, if you add `artificial_analysis_api_key` (a free key from artificialanalysis.ai). Without the key it shows no rankings, because it does not guess quality.
+- ranks models by **value** (best agent score per dollar among strong models; recommended main), **quality** (agentic, then coding, then intelligence score), and **fast** (cheapest capable; recommended fast model). The scores come from Artificial Analysis indexes embedded in the public catalog, so no key is needed. An optional `artificial_analysis_api_key` fills or overrides scores.
+- shows estimated sessions per $10.
 
 Data is cached for 24 hours. If a refresh fails, the last good copy is shown with its date.
 
@@ -629,9 +594,9 @@ The chat interface supports natural language requests about your Home Assistant 
 
 #### Token Usage and Cost Display
 
-The footer displays cumulative token usage and optional cost for the current session:
+The footer displays cumulative token usage and provider-reported cost for the current session:
 - **📊 ↓ ↑** — Input / output / cached token counters (always visible after first message)
-- **💰 $0.0000** — Session cost in USD (only visible when `input_price_per_1m` / `output_price_per_1m` are configured)
+- **💰 $0.0000** — Session cost in USD, from provider usage data. OpenRouter reports cost; other providers show no cost.
 
 Counters accumulate across all messages in the session and reset when starting a new conversation.
 

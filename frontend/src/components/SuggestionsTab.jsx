@@ -459,10 +459,6 @@ export default function SuggestionsTab({ onImplement }) {
     setGenerating(true)
     setStatusLines(['Starting…'])
     setStatus('')
-    setSuggestions([])
-    setNamingIssues([])
-    setContextSummary(null)
-    setPromptDetails(null)
     try {
       const types = resourceTypes.length ? resourceTypes : DEFAULT_RESOURCE_TYPES
       const data = await apiGenerateSuggestions(
@@ -522,18 +518,16 @@ export default function SuggestionsTab({ onImplement }) {
 
   const handleRestore = async (title) => {
     try {
-      const remaining = [...dismissedTitles].filter(t => t !== title)
-      await clearDismissedSuggestions()
-      await Promise.all(remaining.map(t =>
-        fetch('api/suggestions/dismiss', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: t }),
-        })
-      ))
-      setDismissedTitles(new Set(remaining))
+      await restoreDismissedSuggestion(title)
+      setDismissedTitles(prev => {
+        const next = new Set(prev)
+        next.delete(title)
+        return next
+      })
+      setStatus('')
     } catch (e) {
       console.warn('Failed to restore:', e)
+      setStatus(`Error: ${e.message}`)
     }
   }
 
@@ -556,13 +550,11 @@ export default function SuggestionsTab({ onImplement }) {
 
   const addToChat = (s) => {
     switchToChat(buildSuggestionMessage(s))
-    handleMarkApplied(s.title)
   }
 
   const handleImplement = (s) => {
     dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'chat' })
     if (onImplement) onImplement(buildSuggestionMessage(s))
-    handleMarkApplied(s.title)
   }
 
   return (

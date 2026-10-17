@@ -27,17 +27,8 @@ from .const import (
     CONF_NODERED_URL,
     CONF_NODERED_TOKEN,
     CONF_SUGGESTION_PROMPT,
-    CONF_RESEARCH_MODEL,
-    CONF_RESEARCH_API_URL,
-    CONF_RESEARCH_API_KEY,
-    CONF_REASONING_MODEL,
-    CONF_REASONING_API_URL,
-    CONF_REASONING_API_KEY,
+    CONF_FAST_MODEL,
     CONF_AA_API_KEY,
-    CONF_RESEARCH_USAGE_TRACKING,
-    CONF_REASONING_USAGE_TRACKING,
-    CONF_INPUT_PRICE_PER_1M,
-    CONF_OUTPUT_PRICE_PER_1M,
     CONF_MAX_SUGGESTIONS,
     CONF_MAX_ITERATIONS,
 )
@@ -101,7 +92,7 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
     # Set environment variables from config (options override initial setup data)
     config = {**entry.data, **entry.options}
     os.environ["OPENAI_API_KEY"] = config.get(CONF_API_KEY, "")
-    os.environ["OPENAI_API_URL"] = config.get(CONF_API_URL, "https://api.openai.com/v1")
+    os.environ["OPENAI_API_URL"] = config.get(CONF_API_URL, "https://openrouter.ai/api/v1")
     os.environ["OPENAI_MODEL"] = config.get(CONF_MODEL, "gpt-4o")
     os.environ["HA_CONFIG_DIR"] = hass.config.config_dir
     os.environ["BACKUP_DIR"] = os.path.join(hass.config.config_dir, ".ai_agent_backups")
@@ -117,8 +108,6 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     os.environ["ENABLE_CACHE_CONTROL"] = str(config.get(CONF_ENABLE_CACHE_CONTROL, False)).lower()
     os.environ["USAGE_TRACKING"] = config.get(CONF_USAGE_TRACKING, "stream_options")
-    os.environ["RESEARCH_USAGE_TRACKING"] = config.get(CONF_RESEARCH_USAGE_TRACKING, "default")
-    os.environ["REASONING_USAGE_TRACKING"] = config.get(CONF_REASONING_USAGE_TRACKING, "default")
     os.environ["MEMORY_DIR"] = os.path.join(hass.config.config_dir, ".ai_agent_memories")
     os.environ["SESSIONS_DIR"] = os.path.join(hass.config.config_dir, ".ai_agent_sessions")
 
@@ -147,45 +136,18 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
     elif "SUGGESTION_PROMPT" in os.environ:
         del os.environ["SUGGESTION_PROMPT"]
 
-    if config.get(CONF_RESEARCH_MODEL):
-        os.environ["RESEARCH_MODEL"] = config.get(CONF_RESEARCH_MODEL)
-    elif "RESEARCH_MODEL" in os.environ:
-        del os.environ["RESEARCH_MODEL"]
-
-    if config.get(CONF_RESEARCH_API_URL):
-        os.environ["RESEARCH_API_URL"] = config.get(CONF_RESEARCH_API_URL)
-    elif "RESEARCH_API_URL" in os.environ:
-        del os.environ["RESEARCH_API_URL"]
-
-    if config.get(CONF_RESEARCH_API_KEY):
-        os.environ["RESEARCH_API_KEY"] = config.get(CONF_RESEARCH_API_KEY)
-    elif "RESEARCH_API_KEY" in os.environ:
-        del os.environ["RESEARCH_API_KEY"]
-
-    if config.get(CONF_REASONING_MODEL):
-        os.environ["REASONING_MODEL"] = config.get(CONF_REASONING_MODEL)
-    elif "REASONING_MODEL" in os.environ:
-        del os.environ["REASONING_MODEL"]
-
-    if config.get(CONF_REASONING_API_URL):
-        os.environ["REASONING_API_URL"] = config.get(CONF_REASONING_API_URL)
-    elif "REASONING_API_URL" in os.environ:
-        del os.environ["REASONING_API_URL"]
-
-    if config.get(CONF_REASONING_API_KEY):
-        os.environ["REASONING_API_KEY"] = config.get(CONF_REASONING_API_KEY)
-    elif "REASONING_API_KEY" in os.environ:
-        del os.environ["REASONING_API_KEY"]
-
-    if config.get(CONF_INPUT_PRICE_PER_1M) is not None:
-        os.environ["INPUT_PRICE_PER_1M"] = str(config.get(CONF_INPUT_PRICE_PER_1M))
-    elif "INPUT_PRICE_PER_1M" in os.environ:
-        del os.environ["INPUT_PRICE_PER_1M"]
-
-    if config.get(CONF_OUTPUT_PRICE_PER_1M) is not None:
-        os.environ["OUTPUT_PRICE_PER_1M"] = str(config.get(CONF_OUTPUT_PRICE_PER_1M))
-    elif "OUTPUT_PRICE_PER_1M" in os.environ:
-        del os.environ["OUTPUT_PRICE_PER_1M"]
+    # Legacy "research_model" feeds the fast slot only when it used the main
+    # provider and the user has never set fast_model (blank means "use main").
+    if CONF_FAST_MODEL in config:
+        _fast = config.get(CONF_FAST_MODEL)
+    elif config.get("research_api_url") or config.get("research_api_key"):
+        _fast = None
+    else:
+        _fast = config.get("research_model")
+    if _fast:
+        os.environ["FAST_MODEL"] = _fast
+    else:
+        os.environ.pop("FAST_MODEL", None)
 
     for _conf, _env in [
         (CONF_MAX_SUGGESTIONS, "MAX_SUGGESTIONS"),

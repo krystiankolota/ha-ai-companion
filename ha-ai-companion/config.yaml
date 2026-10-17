@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "1.20.0"
+version: "1.21.0"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -43,29 +43,19 @@ privileged: []
 
 # User-configurable options
 options:
-  # ── Main model (used for everything unless a layer overrides it) ──
-  openai_api_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+  # ── Model (OpenRouter recommended: one key, provider cost + caching) ──
+  openai_api_url: "https://openrouter.ai/api/v1"
   openai_api_key: ""
-  openai_model: "gemini-2.5-flash"
-  # ── Research layer (cheaper: reading/exploring, suggestions). Blank = use main. ──
-  research_model: ""
-  research_api_url: ""
-  research_api_key: ""
-  # ── Reasoning layer (stronger: planning, writing changes). Blank = use main. ──
-  reasoning_model: ""
-  reasoning_api_url: ""
-  reasoning_api_key: ""
+  openai_model: "z-ai/glm-5.3-flash"
+  # Optional cheaper model for side tasks (suggestions, summaries, memory). Blank = main.
+  fast_model: ""
   # ── Behaviour ──
   log_level: "info"
   temperature: ""
+  reasoning_effort: ""
   enable_cache_control: false
   max_iterations: 0
-  # ── Usage / cost ──
   usage_tracking: "stream_options"
-  research_usage_tracking: "default"
-  reasoning_usage_tracking: "default"
-  input_price_per_1m: 0.0
-  output_price_per_1m: 0.0
   # ── Suggestions feature ──
   suggestion_prompt: ""
   # ── Node-RED ──
@@ -80,22 +70,13 @@ schema:
   openai_api_url: url
   openai_api_key: password?
   openai_model: str
-  research_model: str?
-  research_api_url: str?
-  research_api_key: str?
-  reasoning_model: str?
-  reasoning_api_url: str?
-  reasoning_api_key: str?
+  fast_model: str?
   log_level: list(debug|info|warning|error)
   temperature: str?
   reasoning_effort: list(none|minimal|low|medium|high|xhigh)?
   enable_cache_control: bool
   max_iterations: int?
   usage_tracking: list(stream_options|usage|disabled)
-  research_usage_tracking: list(default|stream_options|usage|disabled)?
-  reasoning_usage_tracking: list(default|stream_options|usage|disabled)?
-  input_price_per_1m: float?
-  output_price_per_1m: float?
   suggestion_prompt: str?
   nodered_url: str?
   nodered_token: str?

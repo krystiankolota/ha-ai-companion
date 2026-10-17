@@ -56,14 +56,30 @@ def test_score_index_merges_variants_and_ranks():
     assert scores["gpt-6-luna"]["intelligence"] == 70
     cands = ModelAdvisor.candidates(CATALOG, ModelAdvisor.usage_mix(None), scores)
     r = ModelAdvisor.rank(cands)
-    assert r["reasoning"][0]["id"] == "openai/gpt-6.1-sol"
-    assert r["research"][0]["id"] != "openai/gpt-6.1-sol"  # value pick beats the expensive top model
-    assert r["budget"][0]["id"] == "openai/gpt-6-luna"
+    assert r["quality"][0]["id"] == "openai/gpt-6.1-sol"
+    assert r["value"][0]["id"] != "openai/gpt-6.1-sol"  # value pick beats the expensive top model
+    assert r["fast"][0]["id"] == "openai/gpt-6-luna"
 
 
 def test_rank_empty_without_scores():
     cands = ModelAdvisor.candidates(CATALOG, ModelAdvisor.usage_mix(None), {})
-    assert ModelAdvisor.rank(cands) == {"reasoning": [], "research": [], "budget": []}
+    assert ModelAdvisor.rank(cands) == {"quality": [], "value": [], "fast": []}
+
+
+def test_catalog_benchmarks_used_without_aa_key():
+    cat = [dict(_m("z-ai/glm-5.3-flash", 1.5e-7, 5e-7, 3e-8),
+                benchmarks={"artificial_analysis": {"intelligence_index": 41.8, "coding_index": None, "agentic_index": 50.9}}),
+           dict(_m("openai/gpt-6.1-sol", 1e-6, 5e-6, 5e-8),
+                benchmarks={"artificial_analysis": {"intelligence_index": 51.8, "coding_index": None, "agentic_index": None}})]
+    cands = ModelAdvisor.candidates(cat, ModelAdvisor.usage_mix(None), {})
+    glm = next(c for c in cands if c["id"] == "z-ai/glm-5.3-flash")
+    assert glm["agentic"] == 50.9 and glm["sessions_per_10usd"] > 0
+    r = ModelAdvisor.rank(cands)
+    assert r["quality"][0]["id"] == "openai/gpt-6.1-sol"  # agentic missing -> falls back to intelligence 51.8 > 50.9
+    assert r["value"][0]["id"] == "z-ai/glm-5.3-flash"
+    # AA API score overrides the catalog value
+    api = ModelAdvisor.candidates(cat, ModelAdvisor.usage_mix(None), {"glm-5-3-flash": {"intelligence": 60, "coding": None}})
+    assert next(c for c in api if c["id"] == "z-ai/glm-5.3-flash")["intelligence"] == 60
 
 
 def test_usage_mix_from_history():
@@ -77,20 +93,20 @@ def test_usage_mix_from_history():
 
 def test_check_configured_flags():
     rows = ModelAdvisor.check_configured(
-        {"main": "openai/gpt-6.1-sol", "research": "acme/no-tools", "reasoning": "openai/gpt-61-typo"},
+        {"main": "openai/gpt-6.1-sol", "fast": "acme/no-tools", "other": "openai/gpt-61-typo"},
         CATALOG, {}, True)
     issues = {r["role"]: r["issues"] for r in rows}
     assert issues["main"] == []
-    assert "tool-calling" in issues["research"][0]
-    assert "Not found" in issues["reasoning"][0]
+    assert "tool-calling" in issues["fast"][0]
+    assert "Not found" in issues["other"][0]
 
 
 def test_check_configured_per_role_provider():
     rows = ModelAdvisor.check_configured(
-        {"main": "openai/gpt-61-typo", "research": "gpt-4o"}, CATALOG, {}, {"main"})
+        {"main": "openai/gpt-61-typo", "fast": "gpt-4o"}, CATALOG, {}, {"main"})
     issues = {r["role"]: r["issues"] for r in rows}
     assert "Not found" in issues["main"][0]
-    assert issues["research"] == []  # direct provider: no OpenRouter catalog check
+    assert issues["fast"] == []  # direct provider: no OpenRouter catalog check
 
 
 def test_strip_usage_params_keeps_session_id():
