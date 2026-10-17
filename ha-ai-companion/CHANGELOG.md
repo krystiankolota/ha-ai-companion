@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Smaller context.** New navigation tools read one automation, script or section instead of whole files. YAML paths accept a redundant `automations` prefix on included list files and ignore case and spacing in names; ambiguous or unknown paths fail with a hint that lists the closest names. Shorter system prompt.
 - **Memory v2.** SQLite store (`.ai_agent_memories/memory.db`) that keeps only preferences and facts Home Assistant cannot provide. Auto-extracted facts wait in **To review**. Only matching active memories are injected. **Check health** retires memories that mention removed entities. Old markdown memories are imported once for review.
 - **Model advisor** (Usage tab): ranks OpenRouter models by price and quality data (optional `artificial_analysis_api_key`) against your real usage mix.
-- **Developer tooling:** `scripts/analyze_log.py` summarizes an add-on log per turn (tokens, waits, tool errors, retries); scripted agent-loop tests; CI workflow.
+- **Developer tooling:** `scripts/analyze_log.py` summarizes an add-on log per turn (tokens, waits, tool errors, retries); scripted agent-loop tests.
 ## [1.18.5] - 2026-08-20
 
 ### Fixed — "flash" in the model-family match killed every DeepSeek write request
