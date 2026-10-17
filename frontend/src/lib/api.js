@@ -50,6 +50,10 @@ export function getUsage(days = 30) {
   return apiFetch(`api/usage?days=${days}`)
 }
 
+export function getModelAdvice(refresh = false) {
+  return apiFetch(`api/models/advice${refresh ? '?refresh=true' : ''}`)
+}
+
 // Approval
 export function submitApproval(changeId, approved) {
   return apiFetch('api/approve', {
@@ -61,6 +65,14 @@ export function submitApproval(changeId, approved) {
 
 export function getChangeset(changesetId) {
   return apiFetch(`api/changeset/${changesetId}`)
+}
+
+export function getAppliedChangesets(limit = 20) {
+  return apiFetch(`api/changesets?limit=${limit}`)
+}
+
+export function restoreChangeset(changesetId) {
+  return apiFetch(`api/changesets/${changesetId}/restore`, { method: 'POST' })
 }
 
 // Suggestions
@@ -153,30 +165,30 @@ export function getSuggestionsHistory() {
 }
 
 // Memory
-export function getMemoryFiles() {
+export function getMemories() {
   return apiFetch('api/memory')
 }
 
-export function getMemoryFile(filename) {
-  return apiFetch(`api/memory/${encodeURIComponent(filename)}`)
-}
-
-export function deleteMemoryFile(filename) {
-  return apiFetch(`api/memory/${encodeURIComponent(filename)}`, { method: 'DELETE' })
-}
-
-export function updateMemoryFile(filename, content) {
-  return apiFetch(`api/memory/${encodeURIComponent(filename)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  })
-}
-
-export function createMemoryFile(filename, content) {
+export function createMemory(kind, text) {
   return apiFetch('api/memory', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename, content }),
+    body: JSON.stringify({ kind, text }),
   })
+}
+
+export function updateMemory(id, fields) {
+  return apiFetch(`api/memory/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  })
+}
+
+export function deleteMemory(id) {
+  return apiFetch(`api/memory/${id}`, { method: 'DELETE' })
+}
+
+export function runMemoryDoctor() {
+  return apiFetch('api/memory/doctor', { method: 'POST' })
 }

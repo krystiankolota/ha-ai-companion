@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-10-17
+
+### Changed — v2 refactor: OpenRouter/GPT support, live progress, restore, smarter context, memory v2
+- **Model routing per family.** GPT, Claude, Gemini and DeepSeek models each get the request shape they accept. OpenRouter prompt caching uses block-level `cache_control`. A rejected usage parameter is retried without it, and other `extra_body` keys (such as `session_id`) are kept.
+- **Live progress and resume.** The chat shows what the agent is doing (heartbeats per step). A run keeps going when you switch tabs or reload, and the session can be resumed.
+- **Correct diffs.** Diffs are built on the server from the real before/after content. Fixed a layout bug that put a wide blank gap before the code.
+- **Changes tab and restore.** Every applied changeset is stored in `.ai_agent_changesets/`. **Restore** (tab or `restore_changeset` tool) stages a revert that you review as a normal diff. Pending changesets now expire after `CHANGESET_TTL_HOURS` (default 24) instead of 1 hour.
+- **Smaller context.** New navigation tools read one automation, script or section instead of whole files. YAML paths accept a redundant `automations` prefix on included list files and ignore case and spacing in names; ambiguous or unknown paths fail with a hint that lists the closest names. Shorter system prompt.
+- **Memory v2.** SQLite store (`.ai_agent_memories/memory.db`) that keeps only preferences and facts Home Assistant cannot provide. Auto-extracted facts wait in **To review**. Only matching active memories are injected. **Check health** retires memories that mention removed entities. Old markdown memories are imported once for review.
+- **Model advisor** (Usage tab): ranks OpenRouter models by price and quality data (optional `artificial_analysis_api_key`) against your real usage mix.
+- **Developer tooling:** `scripts/analyze_log.py` summarizes an add-on log per turn (tokens, waits, tool errors, retries); scripted agent-loop tests; CI workflow.
 ## [1.18.8] - 2026-09-14
 
 ### Fixed — reload failures after a passed config validation were invisible to the user

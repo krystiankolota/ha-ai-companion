@@ -2,13 +2,17 @@ import asyncio
 import logging
 import os
 import re
+import time
+import unicodedata
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
 from ..agents.tools import AgentTools
+from .diffing import content_hash
+from .changeset_history import ChangesetHistory
 from ..env_utils import env_positive_int
 from ..config import ConfigurationManager
-from ..memory.manager import MemoryManager
+from ..memory.store import MemoryStore
 from ..usage.manager import UsageManager
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
@@ -79,13 +83,101 @@ def _looks_like_pseudo_tool_call(text: str) -> bool:
     return any(m in low for m in _PSEUDO_TOOL_CALL_MARKERS)
 
 
+def _fold(text: str) -> str:
+    """Lowercase and strip diacritics ("Zrób" -> "zrob"); ł has no decomposition."""
+    decomposed = unicodedata.normalize("NFKD", (text or "").lower().replace("ł", "l"))
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+_WRITE_INTENT_KEYWORDS = tuple(_fold(k) for k in (
+    "create", "add", "fix", "change", "modify", "update", "edit", "make",
+    "automate", "repair", "delete", "remove", "build", "configure", "set",
+    "enable", "disable", "adjust", "rewrite", "improve", "turn on", "turn off",
+    "restore", "rollback", "revert",
+    # Polish
+    "stwórz", "dodaj", "zmień", "napraw", "zmodyfikuj", "zaktualizuj",
+    "edytuj", "zrób", "skonfiguruj", "usuń", "wyłącz", "włącz", "popraw",
+    "przywróć", "cofnij",
+))
+
+
+def _has_write_intent(message: str) -> bool:
+    folded = _fold(message)
+    return any(kw in folded for kw in _WRITE_INTENT_KEYWORDS)
+
+
+def _complexity_routing_enabled() -> bool:
+    # Opt-in: when on, short read-only turns never reach the main model, which
+    # hid the user's chosen main model (log 2026-10-16, gpt-6.1-sol never ran).
+    return os.getenv("COMPLEXITY_ROUTING", "off").strip().lower() in ("on", "1", "true", "yes")
+
+
+def _merge_reasoning_details(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge streamed reasoning_details deltas into whole blocks, in order.
+
+    OpenRouter streams one delta per text fragment with the same (type, index).
+    Blocks must be passed back unchanged and in order on the next tool turn.
+    """
+    merged: Dict[Any, Dict[str, Any]] = {}
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        key = (chunk.get("type"), str(chunk.get("index", 0)))
+        block = merged.get(key)
+        if block is None:
+            merged[key] = dict(chunk)
+            continue
+        for field, value in chunk.items():
+            if field in ("text", "summary") and isinstance(value, str):
+                block[field] = (block.get(field) or "") + value
+            elif value not in (None, ""):
+                block[field] = value
+    return list(merged.values())
+
+
+HEARTBEAT_INTERVAL_S = 5.0
+
+
+async def _await_with_heartbeat(awaitable, timeout: Optional[float], interval: float = HEARTBEAT_INTERVAL_S):
+    """Await `awaitable`, yielding ("heartbeat", elapsed_s) every `interval`.
+
+    Ends with ("done", result). Raises asyncio.TimeoutError after `timeout`
+    seconds (None = no limit). The inner task is cancelled if the consumer
+    stops early (run stopped) so no orphan provider read keeps running.
+    """
+    task = asyncio.ensure_future(awaitable)
+    start = time.monotonic()
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=interval)
+            if done:
+                yield "done", task.result()
+                return
+            elapsed = time.monotonic() - start
+            if timeout is not None and elapsed >= timeout:
+                raise asyncio.TimeoutError()
+            yield "heartbeat", elapsed
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+async def _next_chunk(iterator):
+    """__anext__ wrapper: StopAsyncIteration can't cross an async generator (PEP 479)."""
+    try:
+        return True, await iterator.__anext__()
+    except StopAsyncIteration:
+        return False, None
+
+
 @dataclass
 class Changeset:
     """Represents a proposed set of configuration changes."""
     changeset_id: str
-    file_changes: List[Dict[str, str]]  # List of {file_path, new_content}
+    file_changes: List[Dict[str, Any]]  # {file_path, new_content, original_content, base_hash}
     created_at: str
     expires_at: str
+    restored_from: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -108,7 +200,7 @@ class AgentSystem:
         system_prompt: Optional[str] = None,
         enable_cache_control: bool = False,
         usage_tracking: str = 'stream_options',
-        memory_manager: Optional[MemoryManager] = None,
+        memory_manager: Optional[MemoryStore] = None,
         conversation_manager=None,
     ):
         """
@@ -122,7 +214,7 @@ class AgentSystem:
                 - 'stream_options': Use stream_options.include_usage (OpenAI format)
                 - 'usage': Use usage.include (alternative format)
                 - 'disabled': Don't request usage tracking
-            memory_manager: Optional MemoryManager for persistent cross-session memories
+            memory_manager: Optional MemoryStore for persistent cross-session memories
         """
         self.config_manager = config_manager
         self.memory_manager = memory_manager
@@ -199,18 +291,17 @@ class AgentSystem:
             'main': None, 'suggestion': None, 'config': None
         }
 
-        # Store cache control setting. Auto-enable for Anthropic models even when
-        # the option is left off: the agent loop (stable system+schema prefix
-        # re-sent every iteration) is the ideal prompt-caching pattern, and
-        # cached input is billed at ~10%. cache_control is only attached to
-        # requests when this flag is on, and OpenRouter ignores it for non-
-        # Anthropic models, so this is safe. Explicit env override wins.
+        # Store cache control setting. Auto-enable for Anthropic models and for
+        # OpenRouter even when the option is left off: the agent loop (stable
+        # system+schema prefix re-sent every iteration) is the ideal prompt-caching
+        # pattern. OpenRouter maps block-level markers per provider and drops them
+        # where unsupported, so this is safe. DISABLE_CACHE_AUTO opts out.
         self.enable_cache_control = enable_cache_control
         if not self.enable_cache_control and os.getenv('DISABLE_CACHE_AUTO', '').strip().lower() not in ('1', 'true', 'yes'):
             _m = (self.model or '').lower()
-            if 'claude' in _m or 'anthropic' in _m:
+            if 'claude' in _m or 'anthropic' in _m or 'openrouter' in os.getenv('OPENAI_API_URL', '').lower():
                 self.enable_cache_control = True
-                logger.info("Cache control auto-enabled for Anthropic model %s", self.model)
+                logger.info("Cache control auto-enabled for %s", self.model)
 
         # Store usage tracking mode (global) and per-phase overrides
         self.usage_tracking = usage_tracking
@@ -245,6 +336,13 @@ class AgentSystem:
 
         # In-memory storage for pending changesets
         self.pending_changesets: Dict[str, Changeset] = {}
+        try:
+            self.changeset_history: Optional[ChangesetHistory] = ChangesetHistory(
+                os.getenv('CHANGESET_HISTORY_DIR') or str(Path(config_manager.config_dir) / ".ai_agent_changesets")
+            )
+        except Exception as exc:
+            logger.error("Failed to init ChangesetHistory: %s", exc)
+            self.changeset_history = None
 
         # Home topology cache (areas → entities) — refreshed every 10 minutes
         self._topology_cache: Optional[str] = None
@@ -279,148 +377,140 @@ class AgentSystem:
         rulebook — including Node-RED JSON schemas and HACS fetch workflow —
         on every single turn regardless of what the user asked.
         """
-        return """HA Configuration Assistant with persistent memory. Manage config files safely, suggest automations, remember setup facts across sessions.
+        return """HA Configuration Assistant with persistent memory. You read and change a production Home Assistant config. Every write is staged for user approval, backed up, and can be restored.
 
-Tools:
-- search_config_files: Search config files (use first when reading config). Includes lovelace.yaml (default) and lovelace/{url_path}.yaml (custom).
-- propose_config_changes: Propose file changes for approval. Supports lovelace.yaml and lovelace/{url_path}.yaml.
-- list_dashboards: List all Lovelace dashboards with url_path and virtual file path.
-- create_dashboard: Create new Lovelace dashboard (returns url_path for editing).
-- delete_dashboard: Delete Lovelace dashboard by url_path.
-- get_entity_states: Live current states of all entities (use for automation suggestions).
-- get_ha_issues: Watchman missing entity/service refs + Spook repair issues. Call when user mentions issues, Watchman, Spook, broken refs, or asks to fix missing entities.
-- get_ha_error_log: HA core errors/warnings (system_log, deduplicated). Call when user reports something broken or after config changes to verify nothing failed.
-- get_lovelace_resources: Installed custom card JS modules. Call before writing dashboard YAML with custom: card types.
-- get_nodered_flows: Read Node-RED flows via API or backup (always call before add_nodered_flow or edit_nodered_tab).
-- add_nodered_flow: Stage NEW flow tab for approval (non-destructive, never touches existing flows).
-- edit_nodered_tab: Stage update to EXISTING flow tab (only that tab; requires tab_id from get_nodered_flows).
-- read_memories: Read persistent memory files from previous sessions.
-- save_memory: Save memory file to persist knowledge across sessions.
-- delete_memory: Delete outdated memory file.
-- list_memory_stats: Audit memory files — sizes, ages, stale flags.
-- audit_memory_entities: Validate entity_ids in memories against the live registry — flags missing entities and domain renames (light.x -> switch.x).
-- consolidate_memories: Review all memory files, propose MERGE/DELETE/KEEP plan (user must confirm before applying).
-- search_past_sessions: Keyword search across past sessions — use when user references prior work or before starting topic with likely history.
-- reload_config: Reload HA config after approved YAML changes (activates new entities without restart).
-- Dashboard editing, custom HACS cards, and Node-RED flow work each have detailed rules — they load automatically below when the current message or tool activity is on-topic; you don't need to ask for them.
+How to work:
+- State your plan in one short sentence, then act. Batch independent tool calls in one response.
+- Read only what you need. Never load whole big files: use outline_file then read_range, or the automation tools below.
+- If the answer is already in Memory or Home Layout, answer without tools.
+- When stuck after a few lookups, ask the user one specific question.
 
-Helper entities:
-- Define input_number, input_boolean, input_text, input_select directly in configuration.yaml as YAML blocks. Never tell user to create them in UI.
-- After approved changes that add helpers or template sensors, call reload_config immediately. No restart needed.
+Automations (preferred path — never rewrite automations.yaml as a whole):
+- list_automations: one line per automation (id, alias, state, last run, file:lines).
+- get_automation: exact YAML of one automation.
+- upsert_automation: add/replace ONE automation; other automations are untouched. Keep id to replace, omit id to add.
+- remove_automation: only when the user asked to delete.
+- get_automation_traces: why an automation did / did not run (step results, errors).
 
-Guidelines:
-- NEVER suggest changes directly — always use propose_config_changes.
-- To delete automations/scripts/scenes, pass confirm_delete=true — only when user explicitly asks.
-- Read current config with search_config_files before proposing changes.
-- Briefly explain change in text, then call propose_config_changes immediately — do NOT reproduce full file content in text before calling tool.
-- Preserve existing code, comments and structure. Change only what's needed.
-- Validate changes against Home Assistant documentation. Warn about breaking changes.
-- Search terms are case-insensitive.
+Other config files:
+- outline_file + read_range: navigate any YAML file by line ranges.
+- search_config_files: text search across config (snippets; full_content only for small files).
+- patch_config_key / patch_config_block: targeted edits of mapping files (configuration.yaml etc.).
+- propose_config_changes: full new content of a file — use for new files or when the targeted tools cannot express the edit. Preserve every existing item, comment, and !secret/!include tag. Deleting automations/scripts/scenes needs confirm_delete=true and an explicit user request.
+- Scripts/scenes in a single scripts.yaml/scenes.yaml: read the item with outline_file + read_range, edit with patch_config_block or propose_config_changes.
+- File layout: match the user's existing layout (single file vs split files). Never move items between files unless asked.
+- Never reproduce file content in text — call the tool directly.
 
-VERBOSITY RULE (CRITICAL — violation wastes user money):
-- NEVER write step-by-step reasoning as response text. No "Wait...", "But wait...", "Hmm...", "Let me think...", "Actually...", "Let's check..." patterns. Think silently, then act.
-- Text before a tool call: ≤ 1 sentence (e.g. "Fetching Bubble-Card docs."). Then immediately call the tool.
-- Text in final responses: ≤ 3 sentences unless you are delivering YAML, a list, or the user asked for an explanation.
-- If you find yourself writing more than 2 sentences before calling a tool, STOP and call the tool instead.
+Entities:
+- search_entities: find entities by name/id/area words. Use it before writing YAML with entity_ids you have not seen.
+- get_entity_states: live states/attributes (use domain_filter or query; avoid full dumps).
+- NEVER invent entity_ids. If a write tool returns entity_warnings, fix the ids from the suggestions or ask.
+
+Diagnostics: get_ha_issues (Watchman/Spook/repairs), get_ha_error_log (core errors — check after changes), reload_config (after approved helper/template changes; no restart needed).
+
+Undo: list_changesets shows applied changes; restore_changeset stages the previous content for approval.
+
+Helpers: define input_number / input_boolean / input_text / input_select in YAML (configuration.yaml or the user's packages), never tell the user to create them in the UI.
+
+Dashboards, custom HACS cards, and Node-RED have detailed rules that load automatically when on-topic. Dashboard tools: list_dashboards, create_dashboard, delete_dashboard, get_lovelace_resources. Node-RED: get_nodered_flows, add_nodered_flow (new tab), edit_nodered_tab (existing tab, only that tab).
 
 Language:
-- Detect primary language from entity friendly_names, automation names, and notification text in the Home Layout section below.
-- Respond in that language. Generate all new HA content — automation names, descriptions, notifications, comments — in that language.
-- If user writes in different language than home config: follow user's language for replies, keep generated HA content in home config language.
+- Detect the home language from entity names and automation aliases in Home Layout.
+- Reply in the user's language. Write new HA content (aliases, descriptions, notifications) in the home language.
 
-Generation minimalism (write the LEAST config that works — fewer lines = fewer bugs, fewer tokens, easier upkeep):
-- Before generating, ask in order, stop at first that works: (1) Does this need to exist at all? (2) Can a native HA feature do it — sun/time/numeric_state/template trigger, an existing helper or built-in integration? (3) One simple HA automation? (4) Node-RED ONLY when genuinely needed (loops, complex multi-state, external I/O).
-- Prefer one rule over many; one threshold over per-case branches; one trigger over a hand-built state machine. Example: dusk lights need ONE sun-elevation trigger, not a month-by-month function.
-- No speculative options, helpers, or nodes "for later". If you take a deliberate shortcut, add a short comment naming its upgrade path.
-- Never trim validation, entity checks, safety conditions, or notifications the user relies on — minimal means no bloat, not unsafe.
+Generation minimalism (least config that works):
+- Ask in order, stop at the first yes: does it need to exist? native HA feature (sun/time/numeric_state/template trigger, existing helper)? one simple automation? Node-RED only for genuinely complex flows.
+- No speculative helpers or options. Never trim safety conditions, validation, or notifications the user relies on.
+- Validate against current HA syntax (triggers:/conditions:/actions:, trigger: state). Warn about breaking changes.
 
-Automation safety rules (CRITICAL):
-- Before proposing changes to any automation/script/scene file, ALWAYS read the file first with search_config_files.
-- This applies to: automations.yaml, scripts.yaml, scenes.yaml, AND any files inside automations/, scripts/, scenes/ directories (split-file setups like automations/heating.yaml, automations/lights.yaml, etc.)
-- Your proposed content for each file MUST include ALL existing automations/scripts/scenes in that file PLUS any new ones.
-- NEVER submit a partial list — removing existing automations is permanent data loss.
-- If you only want to add one automation, copy ALL existing ones from that file first, then append the new one at the end.
-- File layout: MATCH the user's existing convention — detect it first, do not impose one. Use search_config_files to see where their automations/scripts/scenes already live:
-  - If they keep everything in a single top-level file (automations.yaml / scripts.yaml / scenes.yaml), add new entries there — do NOT create a brand-new file under automations/ (or scripts/, scenes/).
-  - If they already use split files (e.g. automations/heating.yaml), add to the appropriate existing file and edit it in place — do NOT collapse the split files into one.
-- Do not switch the user from one layout to the other. When the existing layout is genuinely unclear, prefer the single top-level file (HA's default) or ask which file they want.
+Memory (save_memory / search_memory / delete_memory):
+- Save ONLY durable facts the user stated that HA cannot tell you: preferences, residents and their devices, unclear device purposes, routines, decisions, corrections.
+- NEVER save session actions, sensor readings, created automations, device specs, or anything in HA config/registry.
+- One short fact per memory. Correct with replaces=[id]; retire wrong ones with delete_memory.
+- Relevant memories are injected below as [kind #id]; HA state wins if they conflict. search_memory for anything not shown.
+- search_past_sessions when the user refers to earlier work.
 
-Entity ID rules (CRITICAL — prevents broken automations):
-- NEVER invent or guess entity IDs. Only use entity_ids you have seen in this conversation — either from get_entity_states results, from configuration files you read this turn, or from the Home Layout section.
-- If unsure which entity_id to use, call get_entity_states first and search for the entity by friendly_name or domain before writing any YAML.
-- When proposing YAML with entity_ids: double-check each one against what you actually received — do NOT substitute with ids that "sound right".
-- If propose_config_changes returns entity_warnings: the entity_ids listed were NOT found in the registry. For each: either (a) use a suggestion from the list to fix the entity_id and re-propose, or (b) if no suitable entity exists, remove or comment out that automation and inform the user. Do NOT leave broken entity_ids in the config.
-
-Memory:
-- Filename prefixes: preference_, identity_, device_, baseline_, pattern_, correction_
-
-SAVE only when ALL true: (1) user explicitly stated it, (2) durable across sessions, (3) NOT derivable from HA config or entity states:
-- User preferences ("always notify mobile_phone_a AND mobile_phone_b", "prefer 22°C at night")
-- Residents/occupants and their devices ("Krystian's phone = mobile_krystian")
-- Device purpose when name is genuinely unclear ("pompa = water pressure pump in basement")
-- Recurring routines stated by user ("we go to bed around 23:00")
-- Corrections to previously stored facts
-
-NEVER save (not even if unsure):
-- Session actions ("created automation X", "we edited file Y")
-- Current or recent sensor readings/states
-- Created automations or scripts (they're in config files)
-- Device specs, model names, or integration details
-- Anything derivable from HA config or entity list
-- Inferred facts user never explicitly stated
-
-Note: save_memory rejects obvious violations of the above (session-action echoes,
-live sensor readings, empty/too-short content) automatically — if rejected, don't
-retry with reworded phrasing of the same non-fact, just skip saving it.
-
-Anti-bloat rules (enforced by system, also your responsibility):
-- Max 25 files — merge related facts into one file
-- Max 800 chars/file — bullet points only, no prose, no articles (a/an/the), no filler words
-- Updating memory: overwrite whole file, never append stale info
-- Use `replaces` field when correcting previous memory to delete old file atomically
-- Call list_memory_stats periodically; proactively delete/merge stale or oversized files
-
-Critical memories (save_memory with critical=true):
-- Always injected into every session regardless of query.
-- Use only for facts without which the AI would behave incorrectly every session: home language (automations in Polish vs English), primary resident name/device mapping, device aliases that are meaningless without context.
-- Max 3-4 critical files — over-marking defeats the purpose; prefer specific files (preference_language.md) over generic ones.
-- Omit critical param to preserve a file's existing critical status. Pass critical=false to demote.
-
-Context injection:
-- Memory injected into this prompt at session start — NEVER reproduce or quote memory content in responses.
-- Call read_memories only for specific file not in injected context.
-- Home layout (areas → entities) injected below — use for location/entity questions without tool calls.
-- Call get_entity_states only for live state values or attributes not in layout.
-- Dashboard YAML: entity IDs from Home Layout are sufficient — DO NOT call get_entity_states just to get entity IDs when building dashboards. The layout already has them.
-- Call search_past_sessions when user references prior conversation or before tackling topic with likely prior history (automations, dashboards, routines).
-
-Parallel tool calls (CRITICAL — saves iterations):
-- When you need multiple independent pieces of data in the same step, request ALL of them in a SINGLE response as parallel tool calls — not sequential one-per-iteration calls.
-- Example: need lights + switches + climate states → call get_entity_states 3 times in ONE response with domain_filter='light', domain_filter='switch', domain_filter='climate'.
-- Example: need to read 2 config files → call search_config_files twice in ONE response.
-- Never chain calls you could batch. Every unnecessary iteration counts against a finite budget.
-
-Iteration budget awareness:
-- Complex tasks (dashboard builds, multi-area setups) have a limited iteration budget. Plan before calling tools.
-- After fetching docs (learn_hacs_component or fetch_url), do NOT re-fetch. Write memory files and proceed.
-- After gathering entities from topology or get_entity_states, do NOT call get_entity_states again for the same domain.
-- If you have enough data to write the YAML, write it immediately — don't gather "just one more thing."
-
-Safety & reversibility:
-- Every file change creates automatic timestamped backup before writing.
-- To undo: call list_backups to find backup, then restore_backup — always available and safe.
-- Prefer targeted edits over full-file rewrites to minimise diff size and revert risk.
-- Propose related changes together in one changeset for atomic approve/reject.
-
-Search discipline:
-- Before your first tool call, state in 1-2 sentences: what the user needs and which single tool call gets the most relevant information first. If the answer is already in Memory or Home Layout, answer directly without calling any tools.
-- If after 2 search_config_files calls you still cannot locate the relevant automation or entity, STOP searching. Ask the user one specific clarifying question (e.g. the exact automation name or entity_id) instead of searching further.
-
-Managing production HA system. Safety and clarity are paramount."""
+Production system: safety and clarity first."""
 
     # Topic fragments — injected into system_content only when relevant (see
     # _select_topic_fragments), instead of being part of the always-loaded
     # core prompt above. Text is unchanged from the prior always-on version.
+    _NAV_TOOLS = frozenset({
+        "outline_file", "read_range", "search_entities", "list_automations", "get_automation",
+        "upsert_automation", "remove_automation", "get_automation_traces",
+    })
+
+    @staticmethod
+    def _memory_tool_schemas() -> List[Dict[str, Any]]:
+        def fn(name, desc, props, required=()):
+            return {"type": "function", "function": {"name": name, "description": desc, "parameters": {
+                "type": "object", "properties": props, "required": list(required)}}}
+        return [
+            fn("save_memory",
+               "Remember ONE durable fact the user stated that HA cannot tell you (preference, resident/device "
+               "mapping, unclear device purpose, routine, decision). Never session actions, states, or config contents.",
+               {"kind": {"type": "string", "enum": ["preference", "fact", "decision", "procedure"],
+                         "description": "preference = how the user wants things; fact = household knowledge; "
+                                        "decision = agreed design choice; procedure = learned HACS card syntax."},
+                "text": {"type": "string", "description": "One short fact, max 800 chars, in the user's words."},
+                "key": {"type": "string", "description": "Optional stable topic key, e.g. pattern_bubble-card_syntax. "
+                                                         "Saving with the same key replaces the old record."},
+                "replaces": {"type": "array", "items": {"type": "integer"},
+                             "description": "Memory ids this corrects; they are marked superseded."}},
+               ("kind", "text")),
+            fn("search_memory",
+               "Search stored memories. Relevant ones are already injected; use this for anything not shown.",
+               {"query": {"type": "string", "description": "Words to match. Empty lists recent memories."},
+                "kind": {"type": "string", "enum": ["preference", "fact", "decision", "procedure"]},
+                "include_candidates": {"type": "boolean", "description": "Also return unreviewed candidates."}}),
+            fn("delete_memory", "Retire a wrong or outdated memory by id.",
+               {"id": {"type": "integer", "description": "Memory id (shown as #id)."}}, ("id",)),
+            fn("memory_doctor",
+               "Check memory health against live HA: retire records that cite missing entities, report "
+               "duplicates and unreviewed candidates. Use when the user asks to clean up memory.", {}),
+        ]
+
+    @staticmethod
+    def _nav_tool_schemas() -> List[Dict[str, Any]]:
+        def fn(name, description, properties=None, required=()):
+            return {"type": "function", "function": {
+                "name": name, "description": description,
+                "parameters": {"type": "object", "properties": properties or {}, "required": list(required)},
+            }}
+        auto_ref = {"automation": {"type": "string", "description": "Automation id, entity_id (automation.x), or exact alias."}}
+        return [
+            fn("outline_file",
+               "Map of a config file: top-level items with line ranges (files ≤60 lines come back whole). "
+               "Use before read_range instead of reading a big file.",
+               {"file_path": {"type": "string"},
+                "depth": {"type": "integer", "description": "2 = also list children of big blocks (e.g. template:, sensor:)."}},
+               ["file_path"]),
+            fn("read_range", "Numbered lines start_line..end_line (1-based, inclusive, max 400) of a config file.",
+               {"file_path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}},
+               ["file_path", "start_line", "end_line"]),
+            fn("search_entities",
+               "Find entities by words in entity_id / friendly name / area (all words must match). "
+               "Returns '\"name\"[entity_id]=state @area' lines. Use instead of get_entity_states dumps.",
+               {"query": {"type": "string"}, "domain": {"type": "string", "description": "e.g. light, sensor"},
+                "area": {"type": "string"}, "limit": {"type": "integer", "description": "Default 30, max 100."}}),
+            fn("list_automations",
+               "All automations, one line each: id | alias | state | last triggered | file:lines. Optional text filter.",
+               {"query": {"type": "string"}}),
+            fn("get_automation", "Exact YAML of ONE automation and the file/lines it lives in.", auto_ref, ["automation"]),
+            fn("upsert_automation",
+               "Add or replace ONE automation (staged for approval). Give only that automation's YAML (mapping). "
+               "Keep its id to replace it; omit id to add a new one. Other automations are untouched — never copy them. "
+               "File is chosen automatically (where it already lives, else the UI automations file).",
+               {"automation_yaml": {"type": "string"},
+                "file_path": {"type": "string", "description": "Only for NEW automations in a split-file setup."}},
+               ["automation_yaml"]),
+            fn("remove_automation", "Remove ONE automation (staged for approval). Only when the user asked.", auto_ref, ["automation"]),
+            fn("get_automation_traces",
+               "Recent runs of an automation and step-by-step results/errors of one run (latest by default). "
+               "Use to debug 'why did/didn't it run'.",
+               {**auto_ref, "run_id": {"type": "string"}}, ["automation"]),
+        ]
+
     _DASHBOARD_TOPIC_PROMPT = """Dashboard rules:
 - Call list_dashboards first to discover url_path values.
 - Default: lovelace.yaml. Custom: lovelace/{url_path}.yaml (e.g. lovelace/kitchen.yaml).
@@ -443,19 +533,19 @@ Slug: component name lowercased, spaces/special chars replaced with hyphens.
   Examples: "Bubble-Card" → bubble-card, "Mini Graph Card" → mini-graph-card.
 
 Before writing YAML for any custom card:
-1. Check memory for files named pattern_<SLUG>_syntax.md, pattern_<SLUG>_examples.md, etc.
-   (where SLUG is the derived slug for that component).
+1. search_memory(query="<SLUG>", kind="procedure") for keys pattern_<SLUG>_syntax, pattern_<SLUG>_examples, etc.
 2. If none found: tell user "I don't have docs for [component name] saved — want me to fetch them?"
    then call learn_hacs_component(name="[component name]").
-3. If learn_hacs_component returns status=cached: existing memory files are fresh, proceed.
+3. If learn_hacs_component returns status=cached: the pattern memories are fresh; read them with search_memory.
 4. If user says "refresh docs for [component]": call learn_hacs_component again ignoring cache.
 5. If user provides a GitHub URL for the component: pass it as github_url to learn_hacs_component.
 
 After a successful fetch, distill the returned readme, changelog, and examples into memory:
-- pattern_<SLUG>_syntax.md  — card types, required fields, type values, config keys
-- pattern_<SLUG>_examples.md — 2-3 minimal working YAML blocks
-- pattern_<SLUG>_changelog.md — breaking changes, removed fields, migration notes (skip if no changelog)
-Each file: ≤800 chars, bullet points only, caveman style (no articles/filler). critical=false.
+save_memory(kind="procedure", key=...) with keys:
+- pattern_<SLUG>_syntax  — card types, required fields, type values, config keys
+- pattern_<SLUG>_examples — 2-3 minimal working YAML blocks
+- pattern_<SLUG>_changelog — breaking changes, removed fields, migration notes (skip if no changelog)
+Each: ≤800 chars, bullet points only, no filler.
 
 fetch_url rules (CRITICAL — prevents infinite loops):
 - Call fetch_url at most 2 times per topic per turn (once for README, once for a second file if needed).
@@ -463,7 +553,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 - If you searched for a term (e.g. "pop-up") and the README doesn't contain it in the fetched portion: STOP fetching. Tell the user the term wasn't found in the documentation retrieved and offer to proceed with what is available."""
 
     _AUTOMATION_SUGGESTIONS_TOPIC_PROMPT = """Automation suggestions:
-- Call get_entity_states to see devices. Call search_config_files for existing automations (avoid duplicates).
+- Call list_automations for existing automations (avoid duplicates); search_entities / get_entity_states(domain_filter=...) for devices.
 - If Node-RED configured, call get_nodered_flows — do NOT suggest automations already in Node-RED.
 - New Node-RED tab: call get_nodered_flows first (check duplicates), generate valid JSON (array: tab node + nodes), call add_nodered_flow.
 - Modify existing tab: call get_nodered_flows for tab id + current nodes, build updated array (tab node + all nodes with changes applied), call edit_nodered_tab with tab_id. NEVER replace all flows — that operation is not available.
@@ -471,7 +561,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 - Node-RED JSON format: array with one {type:"tab", id, label} node + functional nodes, each {id, type, name, wires, x, y, ...}. Node types: inject, debug, function, change, switch, delay, http request, mqtt in/out, ha-api, ha-entity, ha-state-changed, ha-call-service, ha-events-all, ha-webhook.
 - Group suggestions by area/domain. Explain benefit of each.
 - When Node-RED flows available, note whether suggestion fits HA automations or Node-RED.
-- Offer to implement via propose_config_changes."""
+- Offer to implement via upsert_automation (one automation per call)."""
 
     # Keyword triggers (checked against the current user message) and tool
     # names (checked against tool calls already made this session) that turn
@@ -587,8 +677,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         """Execute a named tool and return its result dict.
 
         Args:
-            turn_state: Per-request mutable dict with keys like 'has_read'. When None,
-                        the read-before-write guard is skipped (used by consolidation).
+            turn_state: Optional per-request mutable dict (retry/loop counters).
         """
         if function_name == "search_config_files":
             try:
@@ -600,41 +689,21 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 error_msg = (
                     "ERROR: propose_config_changes requires a 'changes' parameter with a list of file changes. "
                     "Each change must have 'file_path' and 'new_content'. "
-                    "You MUST first read files with search_config_files, then provide all modified content. "
                     f"Received args: {function_args}"
                 )
                 logger.error(error_msg)
                 return {"success": False, "error": error_msg}
-            if turn_state is not None and not turn_state.get("has_read", False):
-                error_msg = (
-                    "ERROR: You must read the current file content before proposing changes. "
-                    "Call search_config_files (for YAML/Lovelace files) or get_nodered_flows (for Node-RED) first "
-                    "to get the current state of the files you want to modify. "
-                    "This ensures your changes preserve all existing content and structure."
-                )
-                logger.warning("propose_config_changes blocked: no read_config call this turn")
-                return {"success": False, "error": error_msg}
             return await self.tools.propose_config_changes(**function_args)
         elif function_name == "patch_config_key":
-            if turn_state is not None and not turn_state.get("has_read", False):
-                return {
-                    "success": False,
-                    "error": (
-                        "ERROR: You must read the current file content before patching. "
-                        "Call search_config_files first to see the exact key path."
-                    ),
-                }
             return await self.tools.patch_config_key(**function_args)
         elif function_name == "patch_config_block":
-            if turn_state is not None and not turn_state.get("has_read", False):
-                return {
-                    "success": False,
-                    "error": (
-                        "ERROR: You must read the current file content before patching. "
-                        "Call search_config_files first to confirm the anchor path exists."
-                    ),
-                }
             return await self.tools.patch_config_block(**function_args)
+        elif function_name in self._NAV_TOOLS:
+            return await getattr(self.tools, function_name)(**function_args)
+        elif function_name == "list_changesets":
+            return await self.tools.list_changesets(**function_args)
+        elif function_name == "restore_changeset":
+            return await self.tools.restore_changeset(**function_args)
         elif function_name == "list_dashboards":
             return await self.tools.list_dashboards()
         elif function_name == "create_dashboard":
@@ -647,14 +716,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             except asyncio.TimeoutError:
                 return {"success": False, "error": "Tool execution timed out after 60 seconds"}
         elif function_name == "add_nodered_flow":
-            if turn_state is not None and not turn_state.get("has_read", False):
-                return {
-                    "success": False,
-                    "error": (
-                        "ERROR: Call get_nodered_flows first to confirm the flow doesn't already exist "
-                        "and to understand the existing flow structure."
-                    ),
-                }
             # Normalize alternative param names Gemini sometimes uses
             import json as _json
             for alt in ("nodes", "flow_nodes", "new_nodes", "flow"):
@@ -666,14 +727,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 logger.debug("add_nodered_flow: serialized list flows_json to JSON string")
             return await self.tools.add_nodered_flow(**function_args)
         elif function_name == "edit_nodered_tab":
-            if turn_state is not None and not turn_state.get("has_read", False):
-                return {
-                    "success": False,
-                    "error": (
-                        "ERROR: Call get_nodered_flows first to get the tab_id and current node content "
-                        "before editing a tab."
-                    ),
-                }
             # Normalize alternative param names Gemini sometimes uses
             import json as _json
             for alt in ("new_nodes", "nodes", "updated_nodes", "flow_nodes", "new_flow", "flow", "flows"):
@@ -705,18 +758,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 return await asyncio.wait_for(self.tools.get_lovelace_resources(), timeout=30.0)
             except asyncio.TimeoutError:
                 return {"success": False, "error": "Tool execution timed out after 30 seconds"}
-        elif function_name == "read_memories":
-            return await self.tools.read_memories(**function_args)
-        elif function_name == "save_memory":
-            return await self.tools.save_memory(**function_args)
-        elif function_name == "delete_memory":
-            return await self.tools.delete_memory(**function_args)
-        elif function_name == "list_memory_stats":
-            return await self.tools.list_memory_stats()
-        elif function_name == "audit_memory_entities":
-            return await self.tools.audit_memory_entities()
-        elif function_name == "consolidate_memories":
-            return await self.tools.consolidate_memories()
+        elif function_name in ("save_memory", "search_memory", "delete_memory", "memory_doctor"):
+            return await getattr(self.tools, function_name)(**function_args)
         elif function_name == "search_past_sessions":
             return await self.tools.search_past_sessions(**function_args)
         elif function_name == "reload_config":
@@ -778,15 +821,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
             # Build messages list with prompt caching support
             # Inject datetime + memory context into system prompt
+            # Static parts first (core prompt, topology, topic fragments) so the
+            # provider's prefix cache survives; per-turn parts (time, memory) last.
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-            system_content = self.system_prompt + f"\n\nCurrent date/time: {now_str}"
-            if self.memory_manager:
-                try:
-                    memory_context = await self.memory_manager.get_context(query=user_message)
-                    if memory_context:
-                        system_content = system_content + "\n\n" + memory_context
-                except Exception as mem_err:
-                    logger.warning(f"Failed to load memory context: {mem_err}")
+            system_content = self.system_prompt
 
             # Inject home topology (areas → entities) — cached, fails silently
             topology = await self._build_home_topology()
@@ -799,12 +837,25 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             if topic_fragments:
                 system_content = system_content + "\n\n" + "\n\n".join(topic_fragments)
 
-            system_message = {
-                "role": "system",
-                "content": system_content
-            }
+            dynamic_content = f"Current date/time: {now_str}"
+            if self.memory_manager:
+                try:
+                    memory_context = self.memory_manager.recall(query=user_message)
+                    if memory_context:
+                        dynamic_content += "\n\n" + memory_context
+                except Exception as mem_err:
+                    logger.warning(f"Failed to load memory context: {mem_err}")
+
             if self.enable_cache_control:
-                system_message["cache_control"] = {"type": "ephemeral"}
+                # Breakpoint on the static block only: time/memory change every turn
+                # and would otherwise invalidate the cached prefix. OpenRouter honours
+                # block-level markers (Anthropic, Alibaba, Google, OpenAI GPT-5.6+).
+                system_message = {"role": "system", "content": [
+                    {"type": "text", "text": system_content, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": dynamic_content},
+                ]}
+            else:
+                system_message = {"role": "system", "content": system_content + "\n\n" + dynamic_content}
             messages = [system_message]
 
             # Track the starting point for new messages (after history)
@@ -812,8 +863,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             if conversation_history:
                 # Token diet: truncate tool payloads from turns older than the
                 # last completed one — they're re-billed every iteration otherwise.
-                from .history_diet import truncate_old_tool_content
-                conversation_history = truncate_old_tool_content(conversation_history)
+                from .history_diet import truncate_old_tool_content, drop_unpaired_tool_messages
+                conversation_history = truncate_old_tool_content(
+                    drop_unpaired_tool_messages(conversation_history)
+                )
                 # Add conversation history
                 # Mark the last message in history for caching if there's substantial history
                 for idx, msg in enumerate(conversation_history):
@@ -1039,7 +1092,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             "properties": {
                                 "search_pattern": {
                                     "type": "string",
-                                    "description": "Optional text to search for in file contents (case-insensitive). Only files containing this text will be returned. Omit to return all files."
+                                    "description": "Optional text to search for in file contents (case-insensitive). Only files containing this text will be returned. Omit to list all files (files over 60 lines come back as an outline with line ranges)."
                                 },
                                 "include_lovelace": {
                                     "type": "boolean",
@@ -1061,6 +1114,38 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 propose_tool,
                 patch_key_tool,
                 patch_block_tool,
+                *self._nav_tool_schemas(),
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "list_changesets",
+                        "description": (
+                            "List recently APPLIED changesets (newest first): id, time, files, and which "
+                            "automations/scripts each added/changed/removed. Use when the user wants to undo "
+                            "or review earlier changes."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"limit": {"type": "integer", "description": "Max entries (default 10)."}},
+                            "required": [],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "restore_changeset",
+                        "description": (
+                            "Undo an applied changeset: stages the files' previous content for user approval "
+                            "(same approval card and diff as any other change). Get the id from list_changesets."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"changeset_id": {"type": "string"}},
+                            "required": ["changeset_id"],
+                        },
+                    },
+                },
                 *dashboard_tools,
                 {
                     "type": "function",
@@ -1089,116 +1174,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         }
                     }
                 },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "read_memories",
-                        "description": "Read persistent memory files saved from previous sessions. Always call this at the start of a session when context about the user's setup might help. Returns all memory files or a specific one.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "filename": {
-                                    "type": "string",
-                                    "description": "Specific memory file to read (e.g. 'home_structure.md'). Omit to read all memory files."
-                                }
-                            },
-                            "required": []
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "save_memory",
-                        "description": "Save or update a persistent memory file. Use category prefixes: preference_, device_, identity_, baseline_, pattern_, correction_. Only save persistent facts, not current states or command echoes. Use 'replaces' when correcting a previous memory.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "filename": {
-                                    "type": "string",
-                                    "description": "Filename with category prefix (e.g. 'preference_lighting.md', 'device_nicknames.md', 'pattern_morning_routine.md'). Only letters, numbers, hyphens and underscores kept; .md forced."
-                                },
-                                "content": {
-                                    "type": "string",
-                                    "description": "Full markdown content to store. Concise factual bullet points preferred."
-                                },
-                                "replaces": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "Optional list of memory filenames this new entry supersedes (e.g. when the user corrects a preference). Those files are deleted atomically."
-                                },
-                                "critical": {
-                                    "type": "boolean",
-                                    "description": "Mark this file as critical — injected into every session regardless of query. Use sparingly for facts the AI must always know: home language, primary resident identity, device aliases that have no context without this memory. Omit to preserve the file's existing critical status. Pass false to demote a previously critical file."
-                                },
-                                "mem_type": {
-                                    "type": "string",
-                                    "description": "Optional category tag: device, preference, pattern, identity, dashboard, nodered, baseline. Used for relevance and to detect duplicate memories. Omit to preserve the file's existing type."
-                                }
-                            },
-                            "required": ["filename", "content"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "delete_memory",
-                        "description": "Delete a memory file that is no longer accurate or relevant.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "filename": {
-                                    "type": "string",
-                                    "description": "Name of the memory file to delete."
-                                }
-                            },
-                            "required": ["filename"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "list_memory_stats",
-                        "description": "Audit memory health: returns each file's name, size in chars, age in days, and a stale flag (true when age > 90 days). Call this periodically to identify files to prune, merge, or delete.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "audit_memory_entities",
-                        "description": "Validate entity_ids cited in memory files against the live HA registry. Flags entities that no longer exist and likely domain renames (e.g. memory says light.x but it is now switch.x). Call when the user reports stale memory data, or to verify memories after entities were renamed.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "consolidate_memories",
-                        "description": (
-                            "Audit all memory files and produce a consolidation plan. "
-                            "Call this when the user asks to clean up, review, or consolidate memories, "
-                            "or when list_memory_stats shows many stale/tiny files. "
-                            "Returns file contents for analysis — you then present a MERGE/DELETE/KEEP plan "
-                            "to the user before taking any action."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                        }
-                    }
-                },
+                *self._memory_tool_schemas(),
                 {
                     "type": "function",
                     "function": {
@@ -1439,42 +1415,14 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     },
                 ])
 
-            # Phase-gated tool sets (Unit 5 / P0-3):
-            # Expose only read tools on the first iteration (before any file has been read).
-            # Write tools (propose, patch, reload, Node-RED writes, dashboard edits, etc.)
-            # become available once the model has gathered context (has_tool_results=True).
-            _READ_TOOL_NAMES = {
-                "search_config_files", "get_entity_states",
-                "get_ha_issues", "get_ha_error_log", "get_lovelace_resources",
-                "list_dashboards", "search_past_sessions",
-                "read_memories", "list_memory_stats", "audit_memory_entities",
-            }
-            # Include get_nodered_flows in read phase only when NR is configured
-            if _has_nodered:
-                _READ_TOOL_NAMES.add("get_nodered_flows")
-            tools_read = [t for t in tools if t["function"]["name"] in _READ_TOOL_NAMES]
-            tools_all = tools
 
-            # Write-intent detection for plan-before-act (Unit 4 / P0-2).
-            _WRITE_INTENT_KEYWORDS = (
-                "create", "add", "fix", "change", "modify", "update", "edit", "make",
-                "automate", "repair", "delete", "remove", "build", "configure", "set",
-                "enable", "disable", "adjust", "rewrite", "improve", "turn on", "turn off",
-                # Polish
-                "stwórz", "dodaj", "zmień", "napraw", "zmodyfikuj", "zaktualizuj",
-                "edytuj", "zrób", "skonfiguruj", "usuń", "wyłącz", "włącz", "popraw",
-            )
-            _has_write_intent = any(kw in user_message.lower() for kw in _WRITE_INTENT_KEYWORDS)
+            _has_write_intent_flag = _has_write_intent(user_message)
 
-            # Complexity routing (Track 3c): keep simple, read-only Q&A turns on the
-            # cheaper suggestion model for the WHOLE turn instead of switching to the
-            # config model once tools return — the config model (e.g. Sonnet) is the
-            # bulk of spend and isn't needed to answer "what's the state of X".
-            # Only engages when the two models actually differ. Env-gated.
-            _routing_on = os.getenv('COMPLEXITY_ROUTING', 'on').strip().lower() not in ('off', '0', 'false', 'no')
+            # Complexity routing (opt-in, COMPLEXITY_ROUTING=on): keep simple,
+            # read-only Q&A turns on the cheaper research model for the whole turn.
             route_to_cheap = (
-                _routing_on
-                and not _has_write_intent
+                _complexity_routing_enabled()
+                and not _has_write_intent_flag
                 and len(user_message) < 240
                 and self.suggestion_client is not None
                 and self.suggestion_model != self.config_model
@@ -1500,7 +1448,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             self._tool_status_queue = asyncio.Queue()
 
             # Per-turn state (local — safe under concurrent WS connections)
-            turn_state = {"has_read": False, "retry_counts": {}, "seen_calls": {}, "tool_call_count": 0, "verbosity_warned": False, "verbosity_chars": 0, "pseudo_retry_used": False}
+            turn_state = {"retry_counts": {}, "seen_calls": {}, "pseudo_retry_used": False}
             self.tools.clear_turn_cache()
 
             # Pre-declare so outer except can access partial content on stream errors
@@ -1521,17 +1469,20 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 _use_config = has_tool_results and not route_to_cheap
                 active_model  = self.config_model  if _use_config else self.suggestion_model
                 active_client = self.config_client if _use_config else self.suggestion_client
-                logger.debug(f"[ITERATION {iteration}] Using {'config' if has_tool_results else 'suggestion'} model: {active_model}")
+                logger.info(f"[ITERATION {iteration}] Model: {active_model} ({'main' if _use_config else 'research'})")
+                yield {
+                    "event": "model",
+                    "data": json.dumps({
+                        "model": active_model,
+                        "role": "main" if _use_config else "research",
+                        "iteration": iteration,
+                    }),
+                }
 
                 # Strip excess cache_control blocks before each call (Anthropic limit: 4 total,
                 # we reserve 1 for system prompt so allow 3 in the messages list)
-                safe_messages = self._strip_excess_cache_control(messages) if self.enable_cache_control else messages
-
-                # Phase-gate: read-only tools on iter 1 (no tool results yet).
-                # After the model has read at least one file, unlock write tools.
-                active_tools = tools_read if not has_tool_results else tools_all
-                if not has_tool_results and iteration == 1:
-                    logger.debug(f"[PHASE-GATE] Iter 1: exposing {len(active_tools)} read tools (of {len(tools_all)} total)")
+                safe_messages = (self._blockify_cache_control(self._strip_excess_cache_control(messages))
+                                 if self.enable_cache_control else messages)
 
                 # Plan-before-act (P0-2): on the very first call, force Gemini-family
                 # models to emit a planning text response before calling any tools.
@@ -1543,7 +1494,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     iteration == 1
                     and not has_tool_results
                     and _is_text_first
-                    and _has_write_intent
+                    and _has_write_intent_flag
                 )
                 if _force_text_first:
                     logger.info("[PLAN] Tier B: tool_choice=none on iter 1 (text-first family + write intent)")
@@ -1559,7 +1510,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 if _force_text_first:
                     api_params["tool_choice"] = "none"
                 else:
-                    api_params["tools"] = active_tools
+                    api_params["tools"] = tools
                     api_params["tool_choice"] = "auto"
 
                 # Add usage tracking based on per-phase mode
@@ -1573,6 +1524,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 # and stripped on rejection below. This is what fixes the usage=0 logs.
                 if active_usage_tracking != 'disabled' and (_is_openrouter or active_usage_tracking == 'usage'):
                     api_params["extra_body"] = {"usage": {"include": True}}
+                # Sticky provider routing keeps the prompt cache warm across iterations.
+                if _is_openrouter and session_id:
+                    api_params.setdefault("extra_body", {})["session_id"] = str(session_id)[:256]
                 # If disabled, don't add any usage tracking parameters
 
                 # Add temperature if specified
@@ -1589,32 +1543,71 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
                 # Strip usage-tracking params if we already know this client rejects them
                 if self._client_usage_ok.get(client_slot) is False:
-                    api_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage', 'extra_body')}
+                    api_params = self._strip_usage_params(api_params)
 
-                try:
-                    stream = await active_client.chat.completions.create(**api_params)
-                    # Mark as accepted only if we haven't already confirmed it
-                    if self._client_usage_ok.get(client_slot) is None:
-                        self._client_usage_ok[client_slot] = True
-                except Exception as api_err:
-                    # Some providers (e.g. Anthropic/Haiku) reject stream_options or
-                    # usage params — retry without them to keep things working.
-                    err_str = str(api_err).lower()
-                    if 'stream_options' in err_str or 'usage' in err_str or 'extra' in err_str or 'unknown' in err_str:
-                        logger.warning(f"API rejected usage-tracking params, retrying without them: {api_err}")
-                        # Mark ONLY this slot — slots can use different models/endpoints
-                        # (suggestion vs config), so one provider's rejection must not
-                        # disable usage capture for the other (this was zeroing Sonnet's
-                        # usage whenever the cheap suggestion model rejected the param).
-                        self._client_usage_ok[client_slot] = False
-                        retry_params = {k: v for k, v in api_params.items() if k not in ('stream_options', 'usage', 'extra_body')}
-                        stream = await active_client.chat.completions.create(**retry_params)
-                    else:
+                async def _create_stream(params, slot=client_slot, client=active_client):
+                    try:
+                        created = await client.chat.completions.create(**params)
+                        if self._client_usage_ok.get(slot) is None:
+                            self._client_usage_ok[slot] = True
+                        return created
+                    except Exception as api_err:
+                        # Some providers (e.g. Anthropic/Haiku) reject stream_options or
+                        # usage params — retry without them to keep things working.
+                        err_str = str(api_err).lower()
+                        if 'stream_options' in err_str or 'usage' in err_str or 'extra' in err_str or 'unknown' in err_str:
+                            logger.warning(f"API rejected usage-tracking params, retrying without them: {api_err}")
+                            # Mark ONLY this slot — slots can use different models/endpoints.
+                            self._client_usage_ok[slot] = False
+                            retry_params = self._strip_usage_params(params)
+                            return await client.chat.completions.create(**retry_params)
                         raise
+
+                # Idle-timeout guard: a stalled provider used to freeze the run
+                # (7.5 min in create() on 2026-10-16 — the OpenAI client default is
+                # 600 s). Applies to the initial request and to every chunk gap.
+                # Heartbeats keep the UI informed while waiting.
+                _idle_timeout = float(os.getenv("STREAM_IDLE_TIMEOUT_S", "120"))
+
+                def _heartbeat(elapsed, phase):
+                    return {
+                        "event": "heartbeat",
+                        "data": json.dumps({
+                            "phase": phase,
+                            "elapsed": int(elapsed),
+                            "model": active_model,
+                            "iteration": iteration,
+                        }),
+                    }
+
+                def _stall_error():
+                    logger.warning(
+                        f"[STREAM] Idle timeout ({_idle_timeout}s) — provider stalled "
+                        f"(model={active_model}, iteration {iteration}), aborting run"
+                    )
+                    return {
+                        "event": "error",
+                        "data": json.dumps({
+                            "error": f"{active_model} stopped responding (no data for "
+                                     f"{int(_idle_timeout)}s). Please try again or pick another model."
+                        })
+                    }
+
+                stream = None
+                try:
+                    async for _kind, _val in _await_with_heartbeat(_create_stream(api_params), _idle_timeout):
+                        if _kind == "heartbeat":
+                            yield _heartbeat(_val, "waiting_model")
+                        else:
+                            stream = _val
+                except asyncio.TimeoutError:
+                    yield _stall_error()
+                    return
 
                 # Accumulate the streaming response
                 accumulated_content = ""
                 accumulated_tool_calls = []
+                reasoning_chunks = []
                 current_tool_call = None
                 tool_calls_announced = False
                 tool_calls_pending_announced = False
@@ -1624,31 +1617,20 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 cached_tokens = 0
                 call_cost = 0.0  # OpenRouter returns actual USD cost in usage.cost
 
-                # Idle-timeout guard: a stalled provider (slow/hung stream) used to
-                # freeze the run indefinitely (UI stuck on "thinking"). Abort the run
-                # if no chunk arrives within STREAM_IDLE_TIMEOUT_S seconds.
-                _idle_timeout = float(os.getenv("STREAM_IDLE_TIMEOUT_S", "120"))
                 _stream_iter = stream.__aiter__()
                 while True:
+                    _has_chunk, chunk = False, None
                     try:
-                        chunk = await asyncio.wait_for(
-                            _stream_iter.__anext__(), timeout=_idle_timeout
-                        )
-                    except StopAsyncIteration:
-                        break
+                        async for _kind, _val in _await_with_heartbeat(_next_chunk(_stream_iter), _idle_timeout):
+                            if _kind == "heartbeat":
+                                yield _heartbeat(_val, "streaming")
+                            else:
+                                _has_chunk, chunk = _val
                     except asyncio.TimeoutError:
-                        logger.warning(
-                            f"[STREAM] Idle timeout ({_idle_timeout}s) — provider stalled "
-                            f"mid-stream (iteration {iteration}), aborting run"
-                        )
-                        yield {
-                            "event": "error",
-                            "data": json.dumps({
-                                "error": f"The model stopped responding (no data for "
-                                         f"{int(_idle_timeout)}s). Please try again."
-                            })
-                        }
+                        yield _stall_error()
                         return
+                    if not _has_chunk:
+                        break
                     # Guard: some providers (e.g. Anthropic/Haiku) send a final
                     # usage-only chunk with an empty choices array.
                     if not chunk.choices:
@@ -1690,6 +1672,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         total_cached_tokens += cached_tokens
 
                     # Stream content tokens
+                    _rd = (getattr(delta, "model_extra", None) or {}).get("reasoning_details")
+                    if isinstance(_rd, list):
+                        reasoning_chunks.extend(_rd)
+
                     if delta.content:
                         accumulated_content += delta.content
                         logger.debug(f"[STREAM] Yielding token: {delta.content[:50]}")
@@ -1817,20 +1803,17 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 # We have tool calls - add assistant message to history
                 logger.info(f"[ITERATION {iteration}] Processing {len(accumulated_tool_calls)} tool call(s)")
 
-                # Verbosity guard: if LLM wrote a wall of "Wait..." reasoning before calling tools,
-                # flag it so the first tool result can inject a correction nudge.
-                _verbose_chars = len(accumulated_content)
-                if _verbose_chars > 1500:
-                    turn_state["verbosity_warned"] = True
-                    turn_state["verbosity_chars"] = _verbose_chars
-                    logger.warning(f"[VERBOSITY] {_verbose_chars} chars of reasoning text before tool calls — will warn in next tool result")
-
                 assistant_message = {
                     "role": "assistant",
                     "content": accumulated_content,
                     "tool_calls": accumulated_tool_calls
                 }
-                messages.append(assistant_message)
+                # reasoning_details go back to the provider within this turn only;
+                # new_messages is persisted, so it gets the plain message.
+                if reasoning_chunks:
+                    messages.append({**assistant_message, "reasoning_details": _merge_reasoning_details(reasoning_chunks)})
+                else:
+                    messages.append(assistant_message)
                 new_messages.append(assistant_message)
 
                 # Notify about ALL tool calls upfront before executing any (only if not already announced)
@@ -1910,10 +1893,24 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     else:
                         # Execute the tool via a task, yielding status events while waiting
                         tool_task = asyncio.create_task(self._dispatch_tool(function_name, function_args, turn_state))
-                        while not tool_task.done():
-                            while not self._tool_status_queue.empty():
-                                yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
-                            await asyncio.sleep(0.05)
+                        _tool_started = time.monotonic()
+                        _last_hb = _tool_started
+                        try:
+                            while not tool_task.done():
+                                while not self._tool_status_queue.empty():
+                                    yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
+                                await asyncio.sleep(0.05)
+                                if time.monotonic() - _last_hb >= HEARTBEAT_INTERVAL_S:
+                                    _last_hb = time.monotonic()
+                                    yield {"event": "heartbeat", "data": json.dumps({
+                                        "phase": "tool",
+                                        "tool": function_name,
+                                        "elapsed": int(_last_hb - _tool_started),
+                                        "iteration": iteration,
+                                    })}
+                        finally:
+                            if not tool_task.done():
+                                tool_task.cancel()
                         # Drain any remaining status events before announcing the result
                         while not self._tool_status_queue.empty():
                             yield {"event": "tool_status", "data": json.dumps(self._tool_status_queue.get_nowait())}
@@ -1923,21 +1920,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             result = {"success": False, "error": str(e)}
                     logger.info(f"[ITERATION {iteration}] Tool '{function_name}' done: success={result.get('success')}, blocked={result.get('blocked', False)}")
 
-                    # Update read-before-write guard (local per-turn state)
-                    if function_name in ("search_config_files", "get_nodered_flows") and result.get("success"):
-                        turn_state["has_read"] = True
-
-                    # After learn_hacs_component succeeds, inject a hard "write now" directive.
-                    # This is the most common trigger for post-doc research spirals.
-                    if function_name == "learn_hacs_component" and result.get("status") in ("ok", "cached"):
-                        tool_result_content = json.dumps(result)
-                        tool_result_content += (
-                            "\n\n[DOCS READY: learn_hacs_component succeeded. You now have all the documentation "
-                            "you need. Do NOT fetch more URLs, do NOT read more config files, do NOT search history. "
-                            "Your NEXT action must be propose_config_changes with the complete YAML. "
-                            "Use entity IDs from the Home Layout section already in your context.]"
-                        )
-                        logger.info("[DIRECTIVE] Injected post-learn_hacs write directive")
 
                     # Loop detection: track (tool, args) pairs and per-function call counts.
                     _call_key = (function_name, json.dumps(function_args, sort_keys=True))
@@ -1992,38 +1974,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             "or respond to the user explaining what you cannot find.]"
                         )
                         logger.warning(f"[LOOP] Hard-stop injected for '{function_name}' (exact, count={_call_count})")
-                    # Volume guard: too many calls to the same tool regardless of args (alternating-arg loops).
-                    _SEARCH_TOOLS   = {"search_config_files", "get_nodered_flows", "get_entity_states"}
                     _FETCH_TOOLS    = {"fetch_url", "learn_hacs_component"}
-                    _CONTEXT_TOOLS  = {"search_past_sessions", "read_memories", "list_memory_stats", "list_dashboards"}
-                    if _fn_total == 2 and function_name in _CONTEXT_TOOLS:
-                        tool_result_content += (
-                            f"\n\n[CONTEXT LIMIT: You have called '{function_name}' {_fn_total} times this turn. "
-                            "Do NOT call context-lookup tools again. You have enough background. "
-                            "Proceed to propose_config_changes or answer the user now.]"
-                        )
-                        logger.warning(f"[LOOP] Context volume limit for '{function_name}' (total={_fn_total})")
-                    elif _fn_total >= 3 and function_name in _CONTEXT_TOOLS:
-                        tool_result_content += (
-                            f"\n\n[HARD CONTEXT LIMIT: '{function_name}' called {_fn_total} times this turn. "
-                            "Further context lookups are BLOCKED. Call propose_config_changes now.]"
-                        )
-                        logger.warning(f"[LOOP] Hard context volume limit for '{function_name}' (total={_fn_total})")
-                    if _fn_total == 4 and function_name in _SEARCH_TOOLS:
-                        tool_result_content += (
-                            f"\n\n[SEARCH LIMIT: You have called '{function_name}' {_fn_total} times this turn. "
-                            "You have gathered enough information. Stop searching and proceed: "
-                            "call propose_config_changes or respond to the user now.]"
-                        )
-                        logger.warning(f"[LOOP] Volume limit reached for '{function_name}' (total={_fn_total})")
-                    elif _fn_total >= 5 and function_name in _SEARCH_TOOLS:
-                        tool_result_content += (
-                            f"\n\n[HARD SEARCH LIMIT: '{function_name}' called {_fn_total} times this turn. "
-                            "Further searches are BLOCKED for this turn. You MUST call propose_config_changes "
-                            "or respond to the user now. Do not call any search tool again.]"
-                        )
-                        logger.warning(f"[LOOP] Hard volume limit for '{function_name}' (total={_fn_total})")
-                    elif _fn_total == 3 and function_name in _FETCH_TOOLS:
+                    if _fn_total == 3 and function_name in _FETCH_TOOLS:
                         tool_result_content += (
                             f"\n\n[FETCH LIMIT: You have called '{function_name}' {_fn_total} times this turn. "
                             "Do NOT fetch more URLs. Use the content already retrieved — "
@@ -2037,52 +1989,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             "or respond to the user. Do not call fetch_url or learn_hacs_component again.]"
                         )
                         logger.warning(f"[LOOP] Hard fetch volume limit for '{function_name}' (total={_fn_total})")
-
-                    # Reflection nudge: escalating pressure after each checkpoint.
-                    turn_state["tool_call_count"] += 1
-                    _tc = turn_state["tool_call_count"]
-                    if _tc == 2:
-                        tool_result_content += (
-                            "\n\n[REFLECT: 2 tool calls made. Before calling another tool, "
-                            "state: (1) what you know, (2) what is still missing, "
-                            "(3) whether you can propose now. Only continue if missing info is specific and named.]"
-                        )
-                    elif _tc == 4:
-                        tool_result_content += (
-                            "\n\n[REFLECT: 4 tool calls made. You have enough context. "
-                            "Call propose_config_changes now or answer the user. "
-                            "If still blocked, ask ONE clarifying question — do not search more.]"
-                        )
-                    elif _tc == 6:
-                        tool_result_content += (
-                            "\n\n[WARNING: 6 tool calls this turn. Stop gathering. "
-                            "You MUST call propose_config_changes on the next action or explain to the user why you cannot. "
-                            "Any further searches waste the user's money and will be stopped.]"
-                        )
-                    elif _tc == 8:
-                        tool_result_content += (
-                            "\n\n[CRITICAL: 8 tool calls this turn. This is your last opportunity to gather information. "
-                            "The NEXT action must be propose_config_changes or a direct answer to the user. "
-                            "Do NOT call any read/search/fetch tool again.]"
-                        )
-                    elif _tc >= 10:
-                        tool_result_content += (
-                            f"\n\n[HARD STOP: {_tc} tool calls made this turn. "
-                            "You are BLOCKED from calling any tool except propose_config_changes, patch_config_key, or patch_config_block. "
-                            "Write the YAML now with what you have. Imperfect output is better than no output.]"
-                        )
-
-                    # Verbosity nudge: warn LLM on first tool result if it wrote a wall of reasoning text.
-                    if tool_idx == 0 and turn_state.get("verbosity_warned"):
-                        _vc = turn_state.get("verbosity_chars", 0)
-                        tool_result_content += (
-                            f"\n\n[VERBOSITY WARNING: You wrote {_vc} characters of 'Wait...' reasoning text "
-                            "before calling tools. This wastes the user's money. "
-                            "From now on: ≤ 1 sentence before each tool call. Think silently, then act. "
-                            "Do NOT narrate your reasoning process.]"
-                        )
-                        turn_state["verbosity_warned"] = False
-                        logger.warning(f"[VERBOSITY] Injected verbosity warning into tool result (chars={_vc})")
 
                     # Add tool result to messages with cache control on the last tool result
                     is_last_tool = (tool_idx == len(accumulated_tool_calls) - 1)
@@ -2214,6 +2120,33 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             return {}, str(e)
 
     @staticmethod
+    def _strip_usage_params(params: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop usage-tracking params but keep other extra_body keys (e.g. session_id)."""
+        out = {k: v for k, v in params.items() if k not in ('stream_options', 'usage', 'extra_body')}
+        rest = {k: v for k, v in (params.get('extra_body') or {}).items() if k != 'usage'}
+        if rest:
+            out['extra_body'] = rest
+        return out
+
+    @staticmethod
+    def _blockify_cache_control(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Move message-level cache_control onto a text content block (request copy only).
+
+        Providers behind OpenRouter read the marker from content blocks; a top-level
+        message key is ignored. Stored history keeps the simple string form.
+        """
+        out = []
+        for m in messages:
+            if "cache_control" not in m:
+                out.append(m)
+                continue
+            m2 = {k: v for k, v in m.items() if k != "cache_control"}
+            if isinstance(m2.get("content"), str) and m2["content"]:
+                m2["content"] = [{"type": "text", "text": m2["content"], "cache_control": m["cache_control"]}]
+            out.append(m2)
+        return out
+
+    @staticmethod
     def _strip_excess_cache_control(messages: List[Dict[str, Any]], max_blocks: int = 3) -> List[Dict[str, Any]]:
         """
         Anthropic allows at most 4 cache_control blocks total (system + tools + messages).
@@ -2330,13 +2263,13 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             "update", "person", "device_tracker"}
             area_buckets: Dict[str, List[str]] = {aid: [] for aid in areas}
             unassigned_count = 0
-            for eid, (state_val, fname) in entity_state.items():
+            for eid, (_state, fname) in entity_state.items():
                 if eid.split(".")[0] in SKIP_DOMAINS:
                     continue
                 aid = entity_area.get(eid)
                 if aid and aid in area_buckets:
                     label = fname if fname and fname != eid else eid
-                    area_buckets[aid].append(f"{label} [{state_val}]")
+                    area_buckets[aid].append(label)
                 else:
                     unassigned_count += 1
 
@@ -2500,11 +2433,16 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             choice = resp.choices[0] if resp.choices else None
             summary_text = ((choice.message.content if choice else None) or "").strip()
             if not summary_text:
-                logger.warning("Summarization returned empty content — keeping full history this turn")
-                return messages
+                logger.warning("Summarization returned empty content — using extractive fallback")
         except Exception as e:
-            logger.warning(f"Summarization API call failed: {e}")
-            return messages
+            logger.warning(f"Summarization API call failed: {e} — using extractive fallback")
+            summary_text = ""
+        if not summary_text:
+            # Keeping the full history would make every later turn pay for it again;
+            # fall back to the user's own earlier requests (cheap, deterministic).
+            asks = [m["content"].strip().splitlines()[0][:200] for m in to_summarize
+                    if m.get("role") == "user" and isinstance(m.get("content"), str) and m["content"].strip()]
+            summary_text = "Earlier user requests:\n" + "\n".join(f"- {a}" for a in asks[-8:])
 
         summary_msg = {
             "role": "system",
@@ -2541,7 +2479,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         try:
             import json
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-            memory_context = await self.memory_manager.get_context()
+            last_user = next((m["content"] for m in reversed(conversation_messages)
+                              if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+            memory_context = self.memory_manager.recall(query=last_user)
             system_content = (
                 "You are a memory consolidation assistant for a Home Assistant AI companion.\n"
                 "Your job: extract ONLY high-value, durable facts from the conversation — facts the AI\n"
@@ -2551,11 +2491,11 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 "  2. It is durable — remains true across many future sessions\n"
                 "  3. It cannot be derived from HA config/entity list\n"
                 "  4. Confidence ≥ 0.9 — when in doubt, save NOTHING\n\n"
-                "Good examples to save:\n"
-                "  - preference_notifications.md: 'always notify mobile_krystian AND mobile_marta'\n"
-                "  - identity_residents.md: 'Krystian and Marta live here; Krystian = primary user'\n"
-                "  - device_purpose.md: 'pompa = water pressure pump; cwu = hot water boiler'\n"
-                "  - preference_language.md: 'respond in Polish; HA content in Polish'\n\n"
+                "Good examples to save (kind: text):\n"
+                "  - preference: 'always notify mobile_krystian AND mobile_marta'\n"
+                "  - fact: 'Krystian and Marta live here; Krystian = primary user'\n"
+                "  - fact: 'pompa = water pressure pump; cwu = hot water boiler'\n"
+                "  - preference: 'respond in Polish; HA content in Polish'\n\n"
                 "NEVER save (automatic disqualifiers):\n"
                 "  - What was done this session ('created automation X', 'edited file Y', 'we configured Z')\n"
                 "  - Any automation, script, or flow that was created (it is already in config files)\n"
@@ -2564,8 +2504,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 "  - Anything the AI can find by searching config files or entity states\n"
                 "  - Inferred or assumed facts the user never said out loud\n\n"
                 "If nothing from the conversation qualifies: call NO tools at all.\n"
-                "If existing memory is wrong or stale: overwrite with save_memory (use 'replaces' field).\n"
-                "Max 800 chars per file (bullet points only). Max 25 files — merge before creating new.\n"
+                "If an existing memory (shown as #id) is wrong: save the correction with replaces=[id].\n"
+                "One short fact per save. Saves become candidates the user reviews.\n"
                 f"Current date/time: {now_str}"
             )
             if memory_context:
@@ -2596,61 +2536,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             messages = [{"role": "system", "content": system_content}] + slim_history
 
             # Memory-only tool list (hardcoded — self.tools is the AgentTools instance, not iterable)
-            memory_tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "read_memories",
-                        "description": "Read persistent memory files saved from previous sessions.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "filename": {"type": "string", "description": "Specific memory file to read. Omit to read all."}
-                            },
-                            "required": []
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "save_memory",
-                        "description": "Save or update a persistent memory file. Use category prefixes: preference_, device_, identity_, baseline_, pattern_, correction_, ecosystem_. Only save persistent facts.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "filename": {"type": "string", "description": "Filename with category prefix (e.g. 'preference_lighting.md'). Only letters, numbers, hyphens and underscores kept; .md forced."},
-                                "content": {"type": "string", "description": "Full markdown content to store. Concise factual bullet points preferred."},
-                                "replaces": {"type": "array", "items": {"type": "string"}, "description": "Optional list of memory filenames this entry supersedes."},
-                                "critical": {"type": "boolean", "description": "Mark as critical (always injected). Omit to preserve existing status. Pass false to demote."}
-                            },
-                            "required": ["filename", "content"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "delete_memory",
-                        "description": "Delete a memory file that is no longer accurate or relevant.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "filename": {"type": "string", "description": "Name of the memory file to delete."}
-                            },
-                            "required": ["filename"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "list_memory_stats",
-                        "description": "Audit memory health: returns each file's name, size, age in days, and stale flag.",
-                        "parameters": {"type": "object", "properties": {}, "required": []}
-                    }
-                },
-            ]
+            memory_tools = [t for t in self._memory_tool_schemas()
+                            if t["function"]["name"] in ("save_memory", "search_memory", "delete_memory")]
 
             # Non-streaming, single pass, no retry loop.
             # Use suggestion model (cheaper) for background consolidation work.
@@ -2665,7 +2552,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 max_tokens=1024,
             )
 
-            _CONSOLIDATION_TOOLS = {"read_memories", "save_memory", "delete_memory", "list_memory_stats"}
+            _CONSOLIDATION_TOOLS = {"save_memory", "search_memory", "delete_memory"}
             choice = response.choices[0]
             if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
                 for tc in choice.message.tool_calls:
@@ -2674,6 +2561,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         logger.warning(f"[memory consolidation] Ignoring unexpected tool call: {fn}")
                         continue
                     args = json.loads(tc.function.arguments or "{}")
+                    if fn == "save_memory":
+                        # Background extraction is unconfirmed: never inject until the user approves it.
+                        args["status"] = "candidate"
                     result = await self._dispatch_tool(fn, args)
                     logger.info(f"[memory consolidation] {fn}({list(args.keys())}) → success={result.get('success')}")
         except Exception as e:
@@ -2698,7 +2588,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             changeset_id=changeset_id,
             file_changes=changeset_data['file_changes'],
             created_at=now.isoformat(),
-            expires_at=(now + timedelta(hours=_ttl_hours)).isoformat()
+            expires_at=(now + timedelta(hours=_ttl_hours)).isoformat(),
+            restored_from=changeset_data.get('restored_from'),
         )
 
         self.pending_changesets[changeset_id] = changeset
@@ -2763,6 +2654,30 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             applied_files = []
             failed_files = []
 
+            # Refuse to apply over a file that changed after the proposal —
+            # the user approved a diff against content that no longer exists.
+            conflicts = []
+            for file_change in changeset.file_changes:
+                base_hash = file_change.get('base_hash')
+                if not base_hash:
+                    continue
+                current = await self.config_manager.read_file_raw(file_change['file_path'], allow_missing=True)
+                if content_hash(current) != base_hash:
+                    conflicts.append(file_change['file_path'])
+            if conflicts:
+                del self.pending_changesets[change_id]
+                logger.warning(f"Approval refused: {conflicts} changed since changeset {change_id} was proposed")
+                return {
+                    "success": False,
+                    "applied": False,
+                    "conflict": True,
+                    "failed_files": [{"file_path": p, "error": "changed since proposal"} for p in conflicts],
+                    "message": (
+                        f"Not applied: {', '.join(conflicts)} changed after this proposal was made. "
+                        "Re-read the file and propose the change again."
+                    ),
+                }
+
             # Step 1: Write all files first (without validation)
             for file_change in changeset.file_changes:
                 file_path = file_change['file_path']
@@ -2792,6 +2707,12 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     continue
 
                 try:
+                    # Recheck right before writing: earlier items may have awaited network I/O.
+                    if file_change.get('base_hash'):
+                        current = await self.config_manager.read_file_raw(file_path, allow_missing=True)
+                        if content_hash(current) != file_change['base_hash']:
+                            failed_files.append({"file_path": file_path, "error": "changed since proposal"})
+                            continue
                     await self.config_manager.write_file_raw(
                         file_path=file_path,
                         content=new_content,
@@ -2831,6 +2752,17 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             # Remove changeset from pending
             del self.pending_changesets[change_id]
 
+            # Keep the "before" content of every written file so this changeset
+            # can be restored later (restore_changeset).
+            if applied_files and getattr(self, "changeset_history", None):
+                try:
+                    self.changeset_history.record(
+                        change_id, changeset.file_changes, applied_files,
+                        restored_from=changeset.restored_from,
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not record changeset {change_id} history: {e}")
+
             # Reload Home Assistant configuration after successful changes (only if validation passed)
             reload_success = False
             reload_error = None
@@ -2838,12 +2770,18 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 try:
                     from ..ha.ha_websocket import reload_homeassistant_config
 
+                    from ..ha.layout import detect_layout, reload_domains
+
                     supervisor_token = os.getenv('SUPERVISOR_TOKEN')
                     if supervisor_token:
                         ws_url = "ws://supervisor/core/websocket"
-                        await reload_homeassistant_config(ws_url, supervisor_token)
+                        try:
+                            domains = reload_domains(detect_layout(self.config_manager.config_dir), applied_files)
+                        except Exception:
+                            domains = None
+                        await reload_homeassistant_config(ws_url, supervisor_token, domains)
                         reload_success = True
-                        logger.info("Home Assistant configuration reloaded successfully")
+                        logger.info(f"Home Assistant reloaded ({', '.join(domains) if domains else 'reload_all'})")
                     else:
                         logger.warning("SUPERVISOR_TOKEN not available, skipping config reload")
                 except Exception as e:
@@ -3048,9 +2986,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             if 'memory' in active_types and self.memory_manager:
                 try:
                     await _emit("Loading memory context…")
-                    memory_context = await self.memory_manager.get_context()
+                    memory_context = self.memory_manager.recall(query=extra_prompt or "")
                     if memory_context:
-                        context_sections.append(f"## Home context from memory\n{memory_context}")
+                        context_sections.append(memory_context)
                         context_summary.append({"type": "memory", "chars": len(memory_context)})
                         await _emit(f"✓ Memory: {len(memory_context)} chars")
                     else:

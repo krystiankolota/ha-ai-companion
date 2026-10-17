@@ -32,8 +32,8 @@ def make_tools(memory_dir=None):
     tools.conversation_manager = None
 
     if memory_dir is not None:
-        from src.memory.manager import MemoryManager
-        tools.memory_manager = MemoryManager(memory_dir=str(memory_dir))
+        from src.memory.store import MemoryStore
+        tools.memory_manager = MemoryStore(memory_dir=str(memory_dir))
     else:
         tools.memory_manager = None
 
@@ -237,10 +237,7 @@ class TestLearnHacsSlug:
 class TestLearnHacsFreshness:
     async def test_cached_if_files_young(self, tmp_path):
         tools = make_tools(memory_dir=tmp_path)
-        # Write a fresh pattern file
-        f = tmp_path / "pattern_bubble-card_syntax.md"
-        f.write_text("some syntax")
-        # mtime is current (just created) — should be cached
+        tools.memory_manager.add("procedure", "some syntax", key="pattern_bubble-card_syntax")
 
         result = await tools.learn_hacs_component(name="Bubble-Card")
         assert result["status"] == "cached"
@@ -250,11 +247,8 @@ class TestLearnHacsFreshness:
 
     async def test_not_cached_if_files_old(self, tmp_path):
         tools = make_tools(memory_dir=tmp_path)
-        f = tmp_path / "pattern_bubble-card_syntax.md"
-        f.write_text("old syntax")
-        # Backdate mtime to 40 days ago
-        old_ts = time.time() - 40 * 86400
-        os.utime(f, (old_ts, old_ts))
+        r = tools.memory_manager.add("procedure", "old syntax", key="pattern_bubble-card_syntax")
+        tools.memory_manager._exec("UPDATE memories SET updated='2020-01-01T00:00:00+00:00' WHERE id=?", (r["id"],))
 
         # Mock fetch_url to prevent real HTTP calls
         async def _fake_fetch(url, max_chars=4000):

@@ -4,97 +4,44 @@ import { generateId } from '../lib/utils'
 import { getChangeset } from '../lib/api'
 import { toolLabel, makeArgsSummary, makeResultSummary } from '../lib/toolLabels'
 
-// Extract original file contents from search_config_files / get_nodered_flows tool calls in conversation history
-function extractOriginalContents(history, fileChanges) {
-  const originalContents = {}
-  const filePathsNeeded = fileChanges.map(fc => fc.file_path)
-
-  // Last get_nodered_flows result — used to populate original for nodered/ paths
-  let lastNoderedFlows = null
-
-  for (const msg of history) {
-    if (msg.role === 'assistant' && msg.tool_calls) {
-      for (const toolCall of msg.tool_calls) {
-        const toolResponse = history.find(
-          m => m.role === 'tool' && m.tool_call_id === toolCall.id
-        )
-        if (!toolResponse) continue
-
-        if (toolCall.function.name === 'search_config_files') {
-          try {
-            const searchResult = JSON.parse(toolResponse.content)
-            if (searchResult.success && searchResult.files) {
-              for (const file of searchResult.files) {
-                if (filePathsNeeded.includes(file.path)) {
-                  originalContents[file.path] = file.content
-                }
-              }
-            }
-          } catch (e) {
-            console.error('Error parsing search results:', e)
-          }
-        }
-
-        if (toolCall.function.name === 'get_nodered_flows') {
-          try {
-            const result = JSON.parse(toolResponse.content)
-            if (result.success && result.flows) {
-              lastNoderedFlows = result.flows
-            }
-          } catch (e) { /* ignore */ }
-        }
-      }
-    }
-  }
-
-  // Populate original content for nodered/ virtual paths from the last get_nodered_flows result
-  if (lastNoderedFlows) {
-    for (const fp of filePathsNeeded) {
-      if (originalContents[fp]) continue
-      if (fp === 'nodered/flows.json') {
-        originalContents[fp] = JSON.stringify(lastNoderedFlows, null, 2)
-      } else if (fp.startsWith('nodered/flow/')) {
-        const tabId = fp.replace('nodered/flow/', '').replace('.json', '')
-        const tab = lastNoderedFlows.find(n => n.type === 'tab' && n.id === tabId)
-        const nodes = lastNoderedFlows.filter(n => n.z === tabId)
-        if (tab) {
-          originalContents[fp] = JSON.stringify([tab, ...nodes], null, 2)
-        }
-      }
-    }
-  }
-
-  return originalContents
-}
-
-// Marker for a run that may still be executing server-side. Survives the HA
-// panel iframe being destroyed (tab switch) so the next mount can resume.
-const ACTIVE_RUN_KEY = 'ha_ai_active_run'
+// Per-session markers for runs that may still be executing server-side.
+// Survives the HA panel iframe being destroyed (tab switch) and session
+// switches, so returning to a session resumes from the last processed event.
+const RUN_MARKERS_KEY = 'ha_ai_run_markers'
 const ACTIVE_RUN_MAX_AGE_MS = 15 * 60 * 1000
 
-function readRunMarker() {
+function readMarkers() {
   try {
-    const raw = localStorage.getItem(ACTIVE_RUN_KEY)
-    if (!raw) return null
-    const marker = JSON.parse(raw)
-    if (!marker.sessionId || Date.now() - (marker.ts || 0) > ACTIVE_RUN_MAX_AGE_MS) {
-      localStorage.removeItem(ACTIVE_RUN_KEY)
-      return null
+    const all = JSON.parse(localStorage.getItem(RUN_MARKERS_KEY) || '{}')
+    const now = Date.now()
+    for (const [sid, m] of Object.entries(all)) {
+      if (!m || now - (m.ts || 0) > ACTIVE_RUN_MAX_AGE_MS) delete all[sid]
     }
-    return marker
+    return all
   } catch {
-    return null
+    return {}
   }
+}
+
+function readRunMarker(sessionId) {
+  return sessionId ? readMarkers()[sessionId] || null : null
 }
 
 function writeRunMarker(sessionId, lastSeq) {
   try {
-    localStorage.setItem(ACTIVE_RUN_KEY, JSON.stringify({ sessionId, lastSeq, ts: Date.now() }))
+    const all = readMarkers()
+    all[sessionId] = { lastSeq, ts: Date.now() }
+    localStorage.setItem(RUN_MARKERS_KEY, JSON.stringify(all))
   } catch { /* storage full/blocked — resume degrades gracefully */ }
 }
 
-function clearRunMarker() {
-  try { localStorage.removeItem(ACTIVE_RUN_KEY) } catch {}
+function clearRunMarker(sessionId) {
+  if (!sessionId) return
+  try {
+    const all = readMarkers()
+    delete all[sessionId]
+    localStorage.setItem(RUN_MARKERS_KEY, JSON.stringify(all))
+  } catch {}
 }
 
 export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSessionId) {
@@ -109,6 +56,7 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
   const handleMessageRef = useRef(null) // forward ref to break circular dependency
   const lastSeqRef = useRef(-1)          // highest event seq seen for the active run
   const activeRunRef = useRef(null)      // session_id of the in-flight run, or null
+  const resumeGenRef = useRef(0)         // bumped to invalidate an in-flight resumeSession()
   const [isConnected, setIsConnected] = useState(false)
 
   const addLoadingIndicator = useCallback((status = '') => {
@@ -242,12 +190,14 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
     try {
       if (eventType === 'resumed') {
         console.log('Run resumed:', data)
-        if (!loadingIndicatorIdRef.current) addLoadingIndicator('Resumed — AI is working…')
+        // The replay may already have delivered `complete` (pump runs before
+        // this ack) — only show "working" if the run is still active.
+        if (activeRunRef.current && !loadingIndicatorIdRef.current) addLoadingIndicator('Resumed — AI is working…')
         return
       }
       if (eventType === 'resume_failed') {
         console.warn('Resume failed:', data)
-        clearRunMarker()
+        clearRunMarker(activeRunRef.current)
         activeRunRef.current = null
         lastSeqRef.current = -1
         removeLoadingIndicator()
@@ -388,6 +338,12 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
 
         dispatch({ type: Actions.SET_LOADING, payload: `${toolLabel(data.function)}…` })
 
+      } else if (eventType === 'model') {
+        const shortModel = (data.model || '').split('/').pop()
+        const label = `Thinking · ${shortModel}${data.iteration > 1 ? ` · step ${data.iteration}` : ''}…`
+        if (!loadingIndicatorIdRef.current) addLoadingIndicator(label)
+        else dispatch({ type: Actions.SET_LOADING, payload: label })
+
       } else if (eventType === 'tool_status') {
         dispatch({ type: Actions.SET_LOADING, payload: data.message })
 
@@ -421,9 +377,8 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
         }
 
         // Handle all changeset-returning tools — show approval card
-        const CHANGESET_TOOLS_FULL_DIFF = ['propose_config_changes']
-        const CHANGESET_TOOLS_FETCH_DIFF = ['patch_config_key', 'patch_config_block', 'add_nodered_flow', 'edit_nodered_tab']
-        const isChangesetTool = [...CHANGESET_TOOLS_FULL_DIFF, ...CHANGESET_TOOLS_FETCH_DIFF].includes(data.function)
+        const CHANGESET_TOOLS = ['propose_config_changes', 'patch_config_key', 'patch_config_block', 'add_nodered_flow', 'edit_nodered_tab', 'restore_changeset', 'upsert_automation', 'remove_automation']
+        const isChangesetTool = CHANGESET_TOOLS.includes(data.function)
 
         if (isChangesetTool && data.result.success && data.result.changeset_id) {
           const changesetData = {
@@ -434,58 +389,34 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
             diff_stats: data.result.diff_stats || [],
           }
 
-          if (CHANGESET_TOOLS_FULL_DIFF.includes(data.function)) {
-            // propose_config_changes: extract original contents from history, dispatch immediately
-            const history = getConversationHistory()
-            const args = data.arguments || toolCallArgumentsRef.current[data.tool_call_id]
-            if (args && args.changes) {
-              changesetData.file_changes_detail = args.changes
-              changesetData.original_contents = extractOriginalContents(history, args.changes)
-            } else {
-              console.warn('propose_config_changes: no arguments found, approval card will have limited info')
+          // The server computes each file's diff from the exact content the
+          // proposal was built on; fetch it after showing the card.
+          const msgId = generateId()
+          changesetData._msgId = msgId
+          dispatch({
+            type: Actions.ADD_DISPLAY_MESSAGE,
+            payload: { id: msgId, type: 'approval', changeset: changesetData },
+          })
+          getChangeset(data.result.changeset_id).then(cs => {
+            if (cs && cs.file_changes) {
+              dispatch({
+                type: Actions.UPDATE_DISPLAY_MESSAGE,
+                payload: {
+                  id: msgId,
+                  updates: { changeset: { ...changesetData, file_changes_detail: cs.file_changes } },
+                },
+              })
             }
-            dispatch({
-              type: Actions.ADD_DISPLAY_MESSAGE,
-              payload: { type: 'approval', changeset: changesetData },
-            })
-          } else {
-            // Patch/NR tools: fetch new_content from server to build diff.
-            // Pre-generate the message id so we can update it after the async fetch.
-            const msgId = generateId()
-            changesetData._msgId = msgId
-            dispatch({
-              type: Actions.ADD_DISPLAY_MESSAGE,
-              payload: { id: msgId, type: 'approval', changeset: changesetData },
-            })
-            getChangeset(data.result.changeset_id).then(cs => {
-              if (cs && cs.file_changes) {
-                const history = getConversationHistory()
-                const fileChanges = cs.file_changes
-                dispatch({
-                  type: Actions.UPDATE_DISPLAY_MESSAGE,
-                  payload: {
-                    id: msgId,
-                    updates: {
-                      changeset: {
-                        ...changesetData,
-                        file_changes_detail: fileChanges,
-                        original_contents: extractOriginalContents(history, fileChanges),
-                      },
-                    },
-                  },
-                })
-              }
-            }).catch(err => console.warn('Failed to fetch changeset for diff:', err))
-          }
+          }).catch(err => console.warn('Failed to fetch changeset for diff:', err))
         }
 
         // Save notification for save_memory
-        if (data.function === 'save_memory' && data.result.success) {
+        if (data.function === 'save_memory' && data.result.success && !data.result.duplicate) {
           dispatch({
             type: Actions.ADD_DISPLAY_MESSAGE,
             payload: {
               type: 'save_notification',
-              filename: data.result.filename || '',
+              filename: data.result.id ? `#${data.result.id}` : '',
             },
           })
         }
@@ -523,33 +454,85 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
 
         removeLoadingIndicator()
         breadcrumbsMsgIdRef.current = null  // turn is over — next tool_call starts fresh
+        clearRunMarker(activeRunRef.current)
         activeRunRef.current = null
         lastSeqRef.current = -1
-        clearRunMarker()
         dispatch({ type: Actions.SET_SENDING, payload: false })
 
         if (typeof onAutoSave === 'function') {
           onAutoSave()
         }
 
+      } else if (eventType === 'heartbeat') {
+        if (loadingIndicatorIdRef.current) {
+          const shortModel = (data.model || '').split('/').pop()
+          const secs = `${Math.round(data.elapsed || 0)}s`
+          const label = data.phase === 'tool'
+            ? `${toolLabel(data.tool)} · ${secs}`
+            : data.phase === 'waiting_model'
+              ? `Waiting for ${shortModel} · ${secs}`
+              : `${shortModel} is thinking · ${secs}`
+          dispatch({ type: Actions.SET_LOADING, payload: label })
+        }
+
       } else if (eventType === 'error') {
+        if (data.code === 'run_active') {
+          // This session already has a run (another tab/device, or an earlier
+          // message). Attach to it live instead of leaving the UI stuck.
+          const sid = typeof getSessionId === 'function' ? getSessionId() : null
+          dispatch({
+            type: Actions.ADD_DISPLAY_MESSAGE,
+            payload: { type: 'system', content: '⏳ The AI is still working on an earlier message here. Showing its progress — press Stop to interrupt.' },
+          })
+          if (sid) {
+            const gen = resumeGenRef.current
+            fetch(`api/runs/${sid}`).then(r => r.json()).then(st => {
+              if (gen !== resumeGenRef.current || getSessionId() !== sid) return
+              if (st.status !== 'running') {
+                removeLoadingIndicator()
+                dispatch({ type: Actions.SET_SENDING, payload: false })
+                return
+              }
+              activeRunRef.current = sid
+              lastSeqRef.current = st.last_seq
+              writeRunMarker(sid, st.last_seq)
+              wsRef.current?.send(JSON.stringify({ type: 'resume', session_id: sid, last_seq: st.last_seq }))
+            }).catch(() => {
+              removeLoadingIndicator()
+              dispatch({ type: Actions.SET_SENDING, payload: false })
+            })
+          }
+          return
+        }
+        if (streamingIdRef.current) {
+          dispatch({ type: Actions.COMPLETE_STREAMING })
+          streamingIdRef.current = null
+        }
         dispatch({
           type: Actions.ADD_DISPLAY_MESSAGE,
-          payload: { type: 'system', content: `❌ Error: ${data.error}` },
+          payload: {
+            type: 'system',
+            content: data.code === 'stopped' ? '⏹ Stopped.' : `❌ Error: ${data.error}`,
+          },
         })
         removeLoadingIndicator()
+        breadcrumbsMsgIdRef.current = null
+        clearRunMarker(activeRunRef.current)
         activeRunRef.current = null
         lastSeqRef.current = -1
-        clearRunMarker()
         dispatch({ type: Actions.SET_SENDING, payload: false })
+        if (typeof onAutoSave === 'function') {
+          onAutoSave()
+        }
       }
     } catch (e) {
       console.error('Error handling WebSocket message:', e)
     }
-  }, [dispatch, removeLoadingIndicator, addLoadingIndicator, getConversationHistory, onAutoSave])
+  }, [dispatch, removeLoadingIndicator, addLoadingIndicator, getConversationHistory, onAutoSave, getSessionId])
 
   const sendMessage = useCallback(async (text) => {
     if (!text || !text.trim()) return
+    resumeGenRef.current++
 
     // Add user message to display
     dispatch({
@@ -607,8 +590,8 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
     } catch (error) {
       console.error('WebSocket send error:', error)
       removeLoadingIndicator()
+      clearRunMarker(activeRunRef.current)
       activeRunRef.current = null
-      clearRunMarker()
       dispatch({
         type: Actions.ADD_DISPLAY_MESSAGE,
         payload: { type: 'system', content: `❌ Error: ${error.message}` },
@@ -617,38 +600,75 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
     }
   }, [dispatch, connect, addLoadingIndicator, removeLoadingIndicator, getConversationHistory, getSessionId])
 
-  // Resume a run that was in flight when the page (HA panel iframe) was destroyed.
-  // Call once on mount, after the last session has been restored.
-  const tryResume = useCallback((currentSessionId) => {
-    const marker = readRunMarker()
-    if (!marker) return false
-    if (currentSessionId && marker.sessionId !== currentSessionId) {
-      // Restored a different session than the one with the active run — skip
-      clearRunMarker()
+  const stopRun = useCallback(() => {
+    const sid = activeRunRef.current || (typeof getSessionId === 'function' ? getSessionId() : null)
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      // No socket to carry the stop — at least unblock the UI.
+      removeLoadingIndicator()
+      dispatch({ type: Actions.SET_SENDING, payload: false })
+      return
+    }
+    dispatch({ type: Actions.SET_LOADING, payload: 'Stopping…' })
+    try {
+      ws.send(JSON.stringify({ type: 'stop', session_id: sid }))
+    } catch (e) {
+      console.error('Stop send failed:', e)
+    }
+  }, [dispatch, getSessionId, removeLoadingIndicator])
+
+  // Re-attach to a session's run after mount (HA panel iframe was destroyed)
+  // or after switching back to it. The marker's lastSeq matches what was saved
+  // into the session before leaving, so replay continues without duplicates.
+  // Without a marker (other device), attach live from the current seq.
+  const resumeSession = useCallback(async (sessionId) => {
+    if (!sessionId) return false
+    const gen = ++resumeGenRef.current
+    const marker = readRunMarker(sessionId)
+    let st = null
+    try {
+      st = await (await fetch(`api/runs/${sessionId}`)).json()
+    } catch { /* offline — fall back to the marker */ }
+    // The user switched sessions, reset, or sent a message while we waited.
+    if (gen !== resumeGenRef.current) return false
+    if (typeof getSessionId === 'function' && getSessionId() !== sessionId) return false
+
+    let fromSeq
+    if (st && st.status === 'running') {
+      fromSeq = marker ? marker.lastSeq : st.last_seq
+    } else if (marker && (!st || (st.status !== 'none' && st.last_seq > marker.lastSeq))) {
+      // Finished while away. The backend persister saves the final answer into
+      // the session; replay only when the loaded history doesn't have it yet.
+      const hist = getConversationHistory() || []
+      const last = hist[hist.length - 1]
+      if (last && last.role === 'assistant' && last.content && !last.tool_calls) {
+        clearRunMarker(sessionId)
+        return false
+      }
+      fromSeq = marker.lastSeq
+    } else {
+      clearRunMarker(sessionId)
       return false
     }
-    activeRunRef.current = marker.sessionId
-    lastSeqRef.current = typeof marker.lastSeq === 'number' ? marker.lastSeq : -1
+
+    activeRunRef.current = sessionId
+    lastSeqRef.current = typeof fromSeq === 'number' ? fromSeq : -1
     dispatch({ type: Actions.SET_SENDING, payload: true })
-    addLoadingIndicator('Resuming — AI was still working…')
+    if (!loadingIndicatorIdRef.current) addLoadingIndicator('Reconnecting — AI was working on this conversation…')
     const ws = connect()
     if (ws && ws.readyState === WebSocket.OPEN) {
-      // Socket was already open before the marker refs were set — onopen
-      // won't fire again, send the resume directly.
+      // Already open — onopen won't fire again, send the resume directly.
       try {
-        ws.send(JSON.stringify({
-          type: 'resume',
-          session_id: activeRunRef.current,
-          last_seq: lastSeqRef.current,
-        }))
+        ws.send(JSON.stringify({ type: 'resume', session_id: sessionId, last_seq: lastSeqRef.current }))
       } catch (e) {
         console.error('Resume send failed:', e)
       }
     }
     return true
-  }, [dispatch, addLoadingIndicator, connect])
+  }, [dispatch, addLoadingIndicator, connect, getConversationHistory, getSessionId])
 
   const resetWS = useCallback(() => {
+    resumeGenRef.current++
     if (wsRef.current) {
       wsRef.current.onclose = null
       wsRef.current.onerror = null
@@ -662,9 +682,10 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
     }
     removeLoadingIndicator()
     streamingIdRef.current = null
+    breadcrumbsMsgIdRef.current = null
     toolCallArgumentsRef.current = {}
-    // Detach from the run view — the run itself keeps executing server-side
-    // and its result lands in the session file via the backend persister.
+    // Detach from the run view — the run keeps executing server-side; its
+    // per-session marker stays so resumeSession() can re-attach later.
     activeRunRef.current = null
     lastSeqRef.current = -1
     dispatch({ type: Actions.SET_SENDING, payload: false })
@@ -675,5 +696,5 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
   connectRef.current = connect
   handleMessageRef.current = handleMessage
 
-  return { sendMessage, resetWS, isConnected, connect, tryResume }
+  return { sendMessage, stopRun, resetWS, isConnected, connect, resumeSession }
 }

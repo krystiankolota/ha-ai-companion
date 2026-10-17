@@ -185,3 +185,68 @@ async def test_stream_exception_publishes_error_event():
     assert replay[-1]["event"] == "error"
     assert "provider exploded" in replay[-1]["data"]["error"]
     assert finished["status"] == "error"
+
+
+# --- stop / status (2026-10-17) -------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_publishes_stopped_and_frees_key():
+    reg = RunRegistry()
+    gate = asyncio.Event()
+    statuses = {}
+
+    async def on_finish(status, events):
+        statuses["status"] = status
+
+    await reg.start("s1", make_stream([msg("token", content="a"), msg("token", content="b"), msg("complete")], gate), on_finish)
+    replay, queue, _ = await reg.subscribe("s1", -1)
+    await asyncio.sleep(0.05)  # let the run reach the gate
+    assert (await reg.status("s1"))["status"] == "running"
+
+    assert await reg.cancel("s1") is True
+    received = list(replay)
+    while True:
+        item = await asyncio.wait_for(queue.get(), timeout=2)
+        if item is None:
+            break
+        received.append(item)
+    assert received[-1]["event"] == "error"
+    assert received[-1]["data"]["code"] == "stopped"
+    await asyncio.sleep(0.05)
+    assert statuses["status"] == "cancelled"
+    st = await reg.status("s1")
+    assert st["status"] == "cancelled"
+    ok, _ = await reg.start("s1", make_stream([msg("complete")]))
+    assert ok
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_status_unknown_key():
+    reg = RunRegistry()
+    assert await reg.cancel("nope") is False
+    assert await reg.status("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_status_reports_last_seq_after_finish():
+    reg = RunRegistry()
+    await reg.start("s1", make_stream([msg("token", content="a"), msg("complete")]))
+    await asyncio.sleep(0.05)
+    st = await reg.status("s1")
+    assert st == {"status": "done", "last_seq": 1}
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_first_step_still_terminates():
+    reg = RunRegistry()
+    await reg.start("s1", make_stream([msg("complete")]))
+    _, queue, _ = await reg.subscribe("s1", -1)
+    assert await reg.cancel("s1") is True
+    items = []
+    while True:
+        item = await asyncio.wait_for(queue.get(), timeout=2)
+        if item is None:
+            break
+        items.append(item)
+    assert items[-1]["data"]["code"] == "stopped"
+    assert (await reg.status("s1"))["status"] == "cancelled"

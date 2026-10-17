@@ -199,7 +199,7 @@ No layers (simplest)? Only **Main** matters. Both layers set (best cost control)
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `enable_cache_control` | Boolean | `false` | Enable Anthropic prompt caching — only for Anthropic Claude models |
+| `enable_cache_control` | Boolean | `false` | Force prompt caching on. It is on automatically for OpenRouter and Claude models |
 | `usage_tracking` | List | `stream_options` | Token tracking: `stream_options` (OpenAI/Gemini), `usage` (Anthropic/OpenRouter), `disabled` (Ollama) |
 | `max_iterations` | Integer | `0` (=25) | Max tool-call rounds per turn before the agent stops. Lower it to cap cost on runaway turns. |
 
@@ -210,6 +210,7 @@ No layers (simplest)? Only **Main** matters. Both layers set (best cost control)
 | `nodered_url` | String | `""` | Node-RED base URL (e.g. `http://homeassistant:1880`). When set, the AI reads existing flows before suggesting automations. |
 | `nodered_token` | String | `""` | Node-RED API token — only needed if Node-RED authentication is enabled |
 | `nodered_flows_file` | String | `""` | Path to a Node-RED flows JSON export relative to `/config`, used as fallback when the live API is unreachable |
+| `artificial_analysis_api_key` | String | `""` | Optional free key from artificialanalysis.ai. Adds quality scores to the model advisor in the Usage tab |
 
 **Cost Display (optional)**
 
@@ -493,29 +494,29 @@ temperature: "1.5"     # More creative
 
 **Note:** Not all models support custom temperature settings. Check your provider's documentation.
 
-### Prompt Caching (Anthropic Claude Only)
+### Prompt Caching
 
-The `enable_cache_control` option enables prompt caching for Anthropic Claude models, which can significantly reduce costs and improve response times for repeated conversations.
+Prompt caching makes repeated calls cheaper. The agent sends the same long system prompt on every step of a task, so most of it can be read from the cache.
 
 **How it works:**
-- The system prompt is marked as cacheable
-- Claude caches the prompt for 5 minutes
-- Subsequent requests within 5 minutes reuse the cached prompt
-- Reduces input token costs by ~90% for cached content
+- The fixed part of the system prompt (rules, home layout, topic notes) is marked as cacheable.
+- The part that changes each turn (date/time and memory) comes after the marker, so it does not break the cache.
+- On OpenRouter, the add-on also sends a `session_id`. This keeps your requests on the same provider, so the cache stays warm.
 
-**Configuration:**
-```yaml
-enable_cache_control: true   # Enable for Anthropic Claude models
-enable_cache_control: false  # Disable for all other providers (default)
-```
+**When it is on:**
+- Automatically when you use OpenRouter or a Claude model. Set the `DISABLE_CACHE_AUTO=1` environment variable to turn the automatic mode off.
+- When you set `enable_cache_control: true`.
 
-**⚠️ Important:** Only set to `true` when using **Anthropic Claude models** (claude-3-5-sonnet, claude-4-sonnet, etc.). This feature will cause errors or be ignored by other providers like OpenAI, Google, or OpenRouter with non-Anthropic models.
+On OpenRouter, a test showed about 91% lower cost for a repeated GPT-6 Luna call and about 95% for Claude Sonnet 5.5. Leave this off for direct (non-OpenRouter) OpenAI or Gemini endpoints.
 
-**When to enable:**
-- ✅ Using direct Anthropic API with Claude models
-- ✅ Using OpenRouter with Anthropic Claude models
-- ❌ Using OpenAI, Google Gemini, or other providers
-- ❌ Using OpenRouter with non-Anthropic models
+### Model advisor (Usage tab)
+
+The **Usage** tab has a **Model advisor** panel. It:
+- checks your configured models against the live OpenRouter catalog, and warns if a model id is wrong or has no tool support;
+- estimates the cost per session for each model from your own last 30 days of usage;
+- ranks models for **Reasoning**, **Research**, and **Budget** use, if you add `artificial_analysis_api_key` (a free key from artificialanalysis.ai). Without the key it shows no rankings, because it does not guess quality.
+
+Data is cached for 24 hours. If a refresh fails, the last good copy is shown with its date.
 
 ### Token Usage Tracking
 

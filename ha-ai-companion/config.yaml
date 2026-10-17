@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "1.18.8"
+version: "1.19.0"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -72,6 +72,7 @@ options:
   nodered_url: ""
   nodered_token: ""
   nodered_flows_file: ""
+  artificial_analysis_api_key: ""
   # ── Advanced ──
   system_prompt_file: ""
 
@@ -98,4 +99,5 @@ schema:
   nodered_url: str?
   nodered_token: str?
   nodered_flows_file: str?
+  artificial_analysis_api_key: password?
   system_prompt_file: str?

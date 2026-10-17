@@ -70,7 +70,7 @@ configuration:
   enable_cache_control:
     name: Enable Prompt Caching
     description: >-
-      Enable Anthropic prompt caching to reduce costs and improve response times.
+      Force prompt caching on. It is already on automatically for OpenRouter and Claude models.
       Only set to true when using Anthropic Claude models directly. Leave off for all other providers.
   usage_tracking:
     name: Token Usage Tracking
@@ -92,6 +92,11 @@ configuration:
   nodered_token:
     name: Node-RED API Token (optional)
     description: Node-RED API token. Only needed if Node-RED authentication is enabled.
+  artificial_analysis_api_key:
+    name: Artificial Analysis API Key (optional)
+    description: >-
+      Free key from artificialanalysis.ai. Adds quality scores so the Usage tab
+      can rank OpenRouter models by score and price.
   nodered_flows_file:
     name: Node-RED Flows File (optional)
     description: >-

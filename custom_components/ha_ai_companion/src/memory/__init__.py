@@ -1,4 +1,4 @@
-"""Memory management for AI Configuration Agent."""
-from .manager import MemoryManager
+"""Persistent agent memory (SQLite)."""
+from .store import MemoryStore
 
-__all__ = ["MemoryManager"]
+__all__ = ["MemoryStore"]

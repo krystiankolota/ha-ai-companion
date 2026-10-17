@@ -29,6 +29,7 @@ export SUGGESTION_PROMPT=$(bashio::config 'suggestion_prompt' ${SUGGESTION_PROMP
 export NODERED_URL=$(bashio::config 'nodered_url' ${NODERED_URL:-})
 export NODERED_TOKEN=$(bashio::config 'nodered_token' ${NODERED_TOKEN:-})
 export NODERED_FLOWS_FILE=$(bashio::config 'nodered_flows_file' ${NODERED_FLOWS_FILE:-})
+export ARTIFICIAL_ANALYSIS_API_KEY=$(bashio::config 'artificial_analysis_api_key' ${ARTIFICIAL_ANALYSIS_API_KEY:-})
 
 # Home Assistant configuration
 export HA_CONFIG_DIR="/homeassistant"

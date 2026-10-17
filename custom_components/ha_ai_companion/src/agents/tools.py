@@ -12,6 +12,8 @@ import re
 import time
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from ..config import ConfigurationManager, ConfigurationError
+from .diffing import content_hash, describe_change, is_disk_file
+from .nav_tools import NavigationToolsMixin
 from ..ha.ha_websocket import (
     get_lovelace_config_as_yaml,
     get_repairs_ws,
@@ -29,7 +31,7 @@ from .card_schemas import (
 )
 
 if TYPE_CHECKING:
-    from ..memory.manager import MemoryManager
+    from ..memory.store import MemoryStore
     from ..conversations.manager import ConversationManager
 
 try:
@@ -105,6 +107,13 @@ _EMBED_MAX_TOTAL = 80   # hard cap on total entities returned (prevents unavaila
 # Entity/device registry fields exposed to the LLM — keep minimal to reduce token cost
 _ENTITY_SLIM_FIELDS = ("entity_id", "name", "original_name", "platform", "area_id", "device_id")
 _DEVICE_SLIM_FIELDS = ("id", "name", "manufacturer", "model", "area_id")
+
+
+def _nodered_tab_snapshot(cur: dict) -> str:
+    """Serialize a GET /flow/{id} response as the flat array PUT /flow/{id} accepts."""
+    import json
+    tab_meta = {k: v for k, v in cur.items() if k not in ("nodes", "configs")}
+    return json.dumps([{"type": "tab", **tab_meta}, *cur.get("nodes", []), *cur.get("configs", [])])
 
 
 def _compact_states(states: list) -> str:
@@ -188,7 +197,7 @@ class EntityEmbeddingCache:
         return cache_dir / ("entity_embeddings.npz" if _HAS_NUMPY else "entity_embeddings.json")
 
 
-class AgentTools:
+class AgentTools(NavigationToolsMixin):
     """
     Tool functions for AI agents to interact with Home Assistant configuration.
 
@@ -204,7 +213,7 @@ class AgentTools:
         config_manager: ConfigurationManager,
         workflow: Optional['ValidationWorkflow'] = None,
         agent_system: Optional[Any] = None,
-        memory_manager: Optional['MemoryManager'] = None,
+        memory_manager: Optional['MemoryStore'] = None,
         conversation_manager: Optional['ConversationManager'] = None,
     ):
         """
@@ -214,7 +223,7 @@ class AgentTools:
             config_manager: ConfigurationManager instance for file operations
             workflow: Optional ValidationWorkflow for approval management
             agent_system: Optional AgentSystem for changeset storage
-            memory_manager: Optional MemoryManager for persistent memories
+            memory_manager: Optional MemoryStore for persistent memories
             conversation_manager: Optional ConversationManager for session search
         """
         self.config_manager = config_manager
@@ -739,12 +748,19 @@ class AgentTools:
                                 entry["truncated"] = True
                             files.append(entry)
                     else:
-                        # No search pattern OR file path pattern - include all matched files
-                        files.append({
-                            "path": relative_path,
-                            "content": content,
-                            "matches": 1 if is_file_path_pattern else None
-                        })
+                        # No search pattern OR file path pattern - include all matched files.
+                        # Big files come back as an outline (line ranges) unless full_content.
+                        entry = {"path": relative_path, "content": content,
+                                 "matches": 1 if is_file_path_pattern else None}
+                        if not full_content and content.count("\n") + 1 > 60:
+                            from ..ha.yaml_blocks import outline
+                            try:
+                                entry["outline"] = outline(content)
+                                entry["content"] = None
+                                entry["hint"] = "Big file: use read_range(file_path, start, end) or full_content=true."
+                            except Exception:
+                                pass
+                        files.append(entry)
 
                 except Exception as e:
                     logger.warning(f"Could not read {relative_path}: {e}")
@@ -1195,37 +1211,12 @@ class AgentTools:
 
             changeset_id = str(uuid.uuid4())[:8]
             now = datetime.now()
-            expires_at = (now + timedelta(hours=1)).isoformat()
+            expires_at = (now + timedelta(hours=int(os.getenv("CHANGESET_TTL_HOURS", "24")))).isoformat()
 
-            # Prepare file changes for storage (only file_path and new_content)
-            stored_changes = [
-                {"file_path": fc["file_path"], "new_content": fc["new_content"]}
-                for fc in file_changes
-            ]
-
-            # Store changeset in agent_system if available
-            if self.agent_system:
-                changeset_id = self.agent_system.store_changeset({
-                    "changeset_id": changeset_id,
-                    "file_changes": stored_changes
-                })
-
-            # Compute per-file diff stats for UI display
-            diff_stats = []
-            for fc in file_changes:
-                old_lines = fc["current_content"].splitlines()
-                new_lines = fc["new_content"].splitlines()
-                old_set = set(old_lines)
-                new_set = set(new_lines)
-                added = sum(1 for l in new_lines if l not in old_set)
-                removed = sum(1 for l in old_lines if l not in new_set)
-                is_new_file = not fc["current_content"].strip()
-                diff_stats.append({
-                    "file_path": fc["file_path"],
-                    "added": added,
-                    "removed": removed,
-                    "is_new_file": is_new_file,
-                })
+            changeset_id, diff_stats = self._store_changeset_with_diffs(
+                changeset_id,
+                [(fc["file_path"], fc["current_content"], fc["new_content"]) for fc in file_changes],
+            )
 
             # Collect all entity warnings across files
             all_entity_warnings = []
@@ -1265,6 +1256,106 @@ class AgentTools:
     # Surgical config patching tools
     # ------------------------------------------------------------------
 
+    def _store_changeset_with_diffs(self, changeset_id: str, entries: List[tuple],
+                                    restored_from: Optional[str] = None) -> tuple:
+        """Store (file_path, original, new) entries; return (changeset_id, diff_stats).
+
+        The original is kept so the UI diff and the apply-time conflict check use
+        the exact content this proposal was built on.
+        """
+        stored, stats = [], []
+        for file_path, original, new_content in entries:
+            info = describe_change(file_path, original, new_content)
+            stored.append({
+                "file_path": file_path,
+                "new_content": new_content,
+                "original_content": original or "",
+                "base_hash": content_hash(original) if is_disk_file(file_path) else None,
+            })
+            stat = {k: info[k] for k in ("file_path", "added", "removed", "is_new_file")}
+            if info["items"]:
+                stat["items"] = info["items"]
+            stats.append(stat)
+        if self.agent_system:
+            changeset_id = self.agent_system.store_changeset({
+                "changeset_id": changeset_id,
+                "file_changes": stored,
+                "restored_from": restored_from,
+            })
+        return changeset_id, stats
+
+    def _history(self):
+        return getattr(self.agent_system, "changeset_history", None) if self.agent_system else None
+
+    async def list_changesets(self, limit: int = 10) -> Dict[str, Any]:
+        """Recently applied changesets (newest first) with per-file item summaries."""
+        history = self._history()
+        if not history:
+            return {"success": False, "error": "Changeset history is not available"}
+        return {"success": True, "changesets": history.list(max(1, min(int(limit or 10), 50)))}
+
+    async def _current_content_for_restore(self, file_path: str) -> Optional[str]:
+        if file_path == "lovelace.yaml" or file_path.startswith("lovelace/"):
+            url_path = None if file_path == "lovelace.yaml" else (file_path[len("lovelace/"):].removesuffix(".yaml") or None)
+            return await self._get_lovelace_config(url_path) or ""
+        if file_path.startswith("nodered/flow/"):
+            tab_id = file_path[len("nodered/flow/"):].removesuffix(".json")
+            res = await self._nodered_api_request("GET", f"/flow/{tab_id}")
+            if res.get("status") != 200 or not isinstance(res.get("json"), dict):
+                return None
+            return _nodered_tab_snapshot(res["json"])
+        return await self.config_manager.read_file_raw(file_path, allow_missing=True) or ""
+
+    async def restore_changeset(self, changeset_id: str) -> Dict[str, Any]:
+        """Propose putting files back to how they were before an applied changeset.
+
+        Goes through the normal approval flow; the user sees the diff first.
+        """
+        import uuid
+        from datetime import datetime, timedelta
+
+        history = self._history()
+        if not history:
+            return {"success": False, "error": "Changeset history is not available"}
+        rec = history.get(changeset_id or "")
+        if not rec:
+            return {"success": False, "error": f"Changeset {changeset_id!r} not found. Call list_changesets for valid ids."}
+
+        entries, skipped, warnings = [], [], []
+        for f in rec["files"]:
+            path = f["file_path"]
+            if not f.get("restorable"):
+                skipped.append({"file_path": path, "reason": "file or flow was created by this changeset — remove it manually"})
+                continue
+            current = await self._current_content_for_restore(path)
+            if current is None:
+                skipped.append({"file_path": path, "reason": "current content could not be read"})
+                continue
+            if is_disk_file(path) and content_hash(current) != f.get("after_hash"):
+                warnings.append(f"{path} changed after changeset {changeset_id} was applied — restoring also undoes those later edits.")
+            entries.append((path, current, f["before"]))
+
+        if not entries:
+            return {"success": False, "error": "Nothing to restore", "skipped": skipped}
+
+        new_id, diff_stats = self._store_changeset_with_diffs(
+            str(uuid.uuid4())[:8], entries, restored_from=changeset_id
+        )
+        result = {
+            "success": True,
+            "changeset_id": new_id,
+            "files": [e[0] for e in entries],
+            "total_files": len(entries),
+            "expires_at": (datetime.now() + timedelta(hours=int(os.getenv("CHANGESET_TTL_HOURS", "24")))).isoformat(),
+            "diff_stats": diff_stats,
+            "message": f"Restore of changeset {changeset_id} staged for approval.",
+        }
+        if skipped:
+            result["skipped"] = skipped
+        if warnings:
+            result["warnings"] = warnings
+        return result
+
     @staticmethod
     def _parse_yaml_path(key_path: str) -> List:
         """Parse dot-notation key path into navigation segments.
@@ -1296,7 +1387,35 @@ class AgentTools:
         return segments
 
     @staticmethod
-    def _navigate_yaml(data, segments):
+    def _yaml_norm(v) -> str:
+        return " ".join(str(v).strip().strip("'\"").split()).casefold()
+
+    _LIST_ROOT_ALIASES = frozenset({"automation", "automations", "scene", "scenes"})
+
+    @classmethod
+    def _yaml_segments_for(cls, data, segments):
+        """Drop a leading 'automations'/'scenes' key when the file root is already a list
+        (included files such as automations/heating.yaml). Any other leading key is kept
+        so a malformed path fails instead of resolving somewhere destructive."""
+        if (isinstance(data, list) and len(segments) > 1 and isinstance(segments[0], str)
+                and segments[0].casefold() in cls._LIST_ROOT_ALIASES
+                and not isinstance(segments[1], str)):
+            return segments[1:]
+        return segments
+
+    @classmethod
+    def _yaml_select(cls, items, field, value) -> List[int]:
+        """Indices matching field=value: a unique exact match wins, else all tolerant matches."""
+        exact = [i for i, it in enumerate(items)
+                 if isinstance(it, dict) and field in it and str(it[field]) == str(value).strip()]
+        if len(exact) == 1:
+            return exact
+        want = cls._yaml_norm(value)
+        return [i for i, it in enumerate(items)
+                if isinstance(it, dict) and field in it and cls._yaml_norm(it[field]) == want]
+
+    @classmethod
+    def _navigate_yaml(cls, data, segments):
         """Navigate ruamel.yaml data by path segments.
 
         Returns:
@@ -1307,7 +1426,7 @@ class AgentTools:
         parent = None
         last_key = None
 
-        for seg in segments:
+        for seg in cls._yaml_segments_for(data, segments):
             parent = current
             if isinstance(seg, int):
                 if not isinstance(current, list) or seg >= len(current):
@@ -1318,15 +1437,10 @@ class AgentTools:
                 # field=value selector for list items
                 if not isinstance(current, list):
                     return None, None, False
-                field, value = seg['field'], seg['value']
-                idx = next(
-                    (i for i, item in enumerate(current)
-                     if isinstance(item, dict) and str(item.get(field, '')) == value),
-                    None,
-                )
-                if idx is None:
+                matches = cls._yaml_select(current, seg['field'], seg['value'])
+                if len(matches) != 1:
                     return None, None, False
-                last_key = idx
+                idx = last_key = matches[0]
                 current = current[idx]
             else:
                 if not isinstance(current, dict) or seg not in current:
@@ -1335,6 +1449,38 @@ class AgentTools:
                 current = current[seg]
 
         return parent, last_key, True
+
+    @classmethod
+    def _yaml_path_hint(cls, data, segments) -> str:
+        """Describe where navigation failed and what valid choices exist there."""
+        import difflib
+        current, walked = data, []
+        for seg in cls._yaml_segments_for(data, segments):
+            parent, key, ok = cls._navigate_yaml(current, [seg])
+            if not ok:
+                at = ".".join(map(str, walked)) or "file root"
+                if isinstance(current, list):
+                    field = seg['field'] if isinstance(seg, dict) else 'alias'
+                    if isinstance(seg, dict):
+                        dup = cls._yaml_select(current, field, seg['value'])
+                        if len(dup) > 1:
+                            return (f"[{field}={seg['value']}] under {at} matches {len(dup)} items "
+                                    f"(indices {dup}). Use [index] or [id=...].")
+                    names = [str(i.get(field)) for i in current if isinstance(i, dict) and i.get(field) is not None]
+                    want = str(seg['value']) if isinstance(seg, dict) else str(seg)
+                    close = difflib.get_close_matches(want, names, n=3, cutoff=0.5)
+                    hint = f"{at} is a list of {len(current)} item(s)"
+                    if close:
+                        hint += f"; closest {field} values: {close}"
+                    elif names:
+                        hint += f"; {field} values: {names[:15]}"
+                    return hint + ". Use [index] or [field=exact value]."
+                if isinstance(current, dict):
+                    return f"keys under {at}: {[str(k) for k in current.keys()][:25]}."
+                return f"{at} is a scalar, it has no children."
+            current = parent[key]
+            walked.append(seg if not isinstance(seg, dict) else f"[{seg['field']}={seg['value']}]")
+        return ""
 
     async def patch_config_key(
         self,
@@ -1386,8 +1532,8 @@ class AgentTools:
                 return {
                     "success": False,
                     "error": (
-                        f"Key path {key_path!r} not found in {file_path}. "
-                        "Call search_config_files to read the file and verify the exact path."
+                        f"Key path {key_path!r} not found in {file_path}: "
+                        f"{self._yaml_path_hint(data, segments)}"
                     ),
                 }
 
@@ -1398,22 +1544,9 @@ class AgentTools:
             new_content = buf.getvalue()
 
             changeset_id = str(uuid.uuid4())[:8]
-            stored_changes = [{"file_path": file_path, "new_content": new_content}]
-            if self.agent_system:
-                changeset_id = self.agent_system.store_changeset({
-                    "changeset_id": changeset_id,
-                    "file_changes": stored_changes,
-                })
-
-            old_lines = current_content.splitlines()
-            new_lines = new_content.splitlines()
-            old_set, new_set = set(old_lines), set(new_lines)
-            diff_stats = [{
-                "file_path": file_path,
-                "added": sum(1 for l in new_lines if l not in old_set),
-                "removed": sum(1 for l in old_lines if l not in new_set),
-                "is_new_file": False,
-            }]
+            changeset_id, diff_stats = self._store_changeset_with_diffs(
+                changeset_id, [(file_path, current_content, new_content)]
+            )
 
             now = datetime.now()
             return {
@@ -1421,7 +1554,7 @@ class AgentTools:
                 "changeset_id": changeset_id,
                 "files": [file_path],
                 "total_files": 1,
-                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "expires_at": (now + timedelta(hours=int(os.getenv("CHANGESET_TTL_HOURS", "24")))).isoformat(),
                 "diff_stats": diff_stats,
                 "message": (
                     f"Patched {key_path!r} in {file_path}."
@@ -1491,8 +1624,8 @@ class AgentTools:
                 return {
                     "success": False,
                     "error": (
-                        f"Anchor {anchor!r} not found in {file_path}. "
-                        "Call search_config_files to read the file and verify the exact path."
+                        f"Anchor {anchor!r} not found in {file_path}: "
+                        f"{self._yaml_path_hint(data, segments)}"
                     ),
                 }
 
@@ -1503,22 +1636,9 @@ class AgentTools:
             new_content = buf.getvalue()
 
             changeset_id = str(uuid.uuid4())[:8]
-            stored_changes = [{"file_path": file_path, "new_content": new_content}]
-            if self.agent_system:
-                changeset_id = self.agent_system.store_changeset({
-                    "changeset_id": changeset_id,
-                    "file_changes": stored_changes,
-                })
-
-            old_lines = current_content.splitlines()
-            new_lines = new_content.splitlines()
-            old_set, new_set = set(old_lines), set(new_lines)
-            diff_stats = [{
-                "file_path": file_path,
-                "added": sum(1 for l in new_lines if l not in old_set),
-                "removed": sum(1 for l in old_lines if l not in new_set),
-                "is_new_file": False,
-            }]
+            changeset_id, diff_stats = self._store_changeset_with_diffs(
+                changeset_id, [(file_path, current_content, new_content)]
+            )
 
             now = datetime.now()
             return {
@@ -1526,7 +1646,7 @@ class AgentTools:
                 "changeset_id": changeset_id,
                 "files": [file_path],
                 "total_files": 1,
-                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "expires_at": (now + timedelta(hours=int(os.getenv("CHANGESET_TTL_HOURS", "24")))).isoformat(),
                 "diff_stats": diff_stats,
                 "message": (
                     f"Replaced block at {anchor!r} in {file_path}."
@@ -1544,284 +1664,75 @@ class AgentTools:
     # Memory tools
     # ------------------------------------------------------------------
 
-    async def read_memories(
-        self,
-        filename: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Read agent memory files that persist across sessions.
-
-        Args:
-            filename: Specific memory file to read (e.g. 'home_structure.md').
-                      If omitted, all memory files are returned.
-
-        Returns:
-            Dict with:
-                - success: bool
-                - files: Dict[str, str]  {filename: content}
-                - count: int
-                - error: Optional[str]
-        """
-        if not self.memory_manager:
-            return {"success": False, "error": "Memory manager not available", "files": {}, "count": 0}
-
-        try:
-            if filename:
-                content = await self.memory_manager.read_file(filename)
-                if content is None:
-                    return {"success": True, "files": {}, "count": 0, "note": f"No memory file named '{filename}'"}
-                return {"success": True, "files": {filename: content}, "count": 1}
-            else:
-                all_files = await self.memory_manager.get_all_files()
-                return {"success": True, "files": all_files, "count": len(all_files)}
-        except Exception as e:
-            logger.error(f"read_memories error: {e}")
-            return {"success": False, "error": str(e), "files": {}, "count": 0}
+    @staticmethod
+    def _memory_view(r: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: r[k] for k in ("id", "kind", "key", "text", "status", "updated") if r.get(k) is not None}
 
     async def save_memory(
         self,
-        filename: str,
-        content: str,
-        replaces: Optional[List[str]] = None,
-        critical: Optional[bool] = None,
-        mem_type: Optional[str] = None,
+        kind: str,
+        text: str,
+        key: Optional[str] = None,
+        replaces: Optional[List[int]] = None,
+        status: str = "active",
     ) -> Dict[str, Any]:
-        """
-        Save or update a persistent memory file.
-
-        Use this to remember facts about the user's Home Assistant setup that
-        will be useful in future sessions.
-
-        Memory categories (use in filename, e.g. 'preference_temperature.md'):
-        - preference: User-stated preferences ("I prefer 22°C in living room")
-        - identity: Personal info, names, aliases
-        - device: Device nicknames, groupings, locations
-        - baseline: Normal sensor readings for this home
-        - pattern: Recurring routines or schedules
-        - correction: Overrides/corrections to previously stored facts
-
-        What NOT to save:
-        - Current device states or live sensor readings
-        - Actions just performed (command echoes)
-        - One-time commands vs. stated preferences
-        - Device specs or capabilities (brightness range, color modes)
-        - System-prompt content or inferred facts
-        - Time-sensitive data (current weather, occupancy right now)
-
-        Args:
-            filename: Filename for the memory (e.g. 'preference_lighting.md').
-                      Only alphanumerics, hyphens and underscores are kept;
-                      the .md extension is forced.
-            content: Markdown content to store. Keep concise and factual.
-            replaces: Optional list of memory filenames that this new/corrected
-                      memory supersedes. Those files will be deleted atomically
-                      when this file is saved (use for corrections/updates).
-
-        Returns:
-            Dict with success bool, the sanitised filename used, and list of
-            deleted filenames.
-        """
+        """Store one durable fact the agent cannot read from HA (preference, fact, decision, procedure)."""
         if not self.memory_manager:
-            return {"success": False, "error": "Memory manager not available"}
-
-        low_value_reason = _low_value_memory_reason(content)
-        if low_value_reason:
-            return {"success": False, "error": f"rejected: {low_value_reason}. "
-                     "Only save durable, user-stated facts that aren't derivable from HA config/state."}
-
+            return {"success": False, "error": "Memory not available"}
+        reason = _low_value_memory_reason(text)
+        if reason:
+            return {"success": False, "error": f"rejected: {reason}. Only save durable, user-stated facts "
+                                               "that HA config/state cannot tell you."}
         try:
-            # Delete superseded files first
-            deleted = []
-            if replaces:
-                for old_file in replaces:
-                    if await self.memory_manager.delete_file(old_file):
-                        deleted.append(old_file)
-                        logger.info(f"save_memory: deleted superseded file '{old_file}'")
-
-            ok = await self.memory_manager.write_file(filename, content, critical=critical, mem_type=mem_type)
-            from pathlib import Path
-            import re
-            safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', Path(filename).stem).strip('_') or 'memory'
-            safe_name = f"{safe_name}.md"
-            if not ok:
-                limit = self.memory_manager.MAX_FILE_CHARS
-                actual = len(content.strip())
-                if actual > limit:
-                    return {"success": False, "filename": safe_name, "deleted": deleted,
-                            "error": f"content too long: {actual} chars exceeds limit {limit}. Shorten the content and retry."}
-                return {"success": False, "filename": safe_name, "deleted": deleted,
-                        "error": "write failed (I/O error or file count limit reached)"}
-            result = {"success": True, "filename": safe_name, "deleted": deleted}
-            # Dedup hint: if this isn't replacing anything, flag overlapping files
-            # so the agent updates an existing memory instead of forking duplicates.
-            if not replaces:
-                similar = await self.memory_manager.find_similar(safe_name, content, mem_type=mem_type)
-                similar = [s for s in similar if s["filename"] != safe_name]
-                if similar:
-                    result["similar_existing"] = similar
-                    result["hint"] = ("Memories with overlapping content already exist. If this duplicates one, "
-                                      "re-save with replaces=[...] to merge instead of keeping both.")
-            return result
-        except Exception as e:
-            logger.error(f"save_memory error: {e}")
+            r = self.memory_manager.add(kind, text, key=key, replaces=replaces, status=status,
+                                        source="agent" if status == "active" else "extraction")
+        except ValueError as e:
             return {"success": False, "error": str(e)}
+        if r.get("duplicate_of"):
+            note = ("The user rejected this memory before; do not save it again."
+                    if r["status"] == "rejected" else "Already stored.")
+            return {"success": True, "id": r["id"], "duplicate": True, "note": note}
+        out = {"success": True, "id": r["id"], "superseded": r["superseded"]}
+        if r["similar"]:
+            out["similar_existing"] = r["similar"]
+            out["hint"] = "Overlapping memories exist. If this replaces one, save again with replaces=[id] and delete the duplicate."
+        return out
 
-    async def delete_memory(
-        self,
-        filename: str
-    ) -> Dict[str, Any]:
-        """
-        Delete a persistent memory file that is no longer relevant.
-
-        Args:
-            filename: Name of the memory file to delete.
-
-        Returns:
-            Dict with success bool.
-        """
+    async def search_memory(self, query: str = "", kind: Optional[str] = None,
+                            include_candidates: bool = False) -> Dict[str, Any]:
+        """Search stored memories (active by default)."""
         if not self.memory_manager:
-            return {"success": False, "error": "Memory manager not available"}
+            return {"success": False, "error": "Memory not available"}
+        statuses = ("active", "candidate") if include_candidates else ("active",)
+        rows = self.memory_manager.search(query, kind=kind, statuses=statuses, limit=20)
+        return {"success": True, "count": len(rows), "memories": [self._memory_view(r) for r in rows]}
 
-        try:
-            deleted = await self.memory_manager.delete_file(filename)
-            return {"success": deleted, "deleted": deleted}
-        except Exception as e:
-            logger.error(f"delete_memory error: {e}")
-            return {"success": False, "error": str(e)}
-
-    async def list_memory_stats(self) -> Dict[str, Any]:
-        """
-        Return audit stats for all memory files: name, size, age in days.
-
-        Use this periodically to review memory health — identify stale files
-        (age_days > 90), oversized files, or files that could be merged.
-        A file is flagged as stale when it hasn't been updated in 90+ days.
-
-        Returns:
-            Dict with files list (filename, chars, age_days, stale flag),
-            total count, and enforced limits.
-        """
+    async def delete_memory(self, id: int) -> Dict[str, Any]:
+        """Retire a wrong or outdated memory (kept as rejected so it is not re-saved)."""
         if not self.memory_manager:
-            return {"success": False, "error": "Memory manager not available"}
+            return {"success": False, "error": "Memory not available"}
+        ok = self.memory_manager.update(int(id), status="rejected")
+        return {"success": ok, **({} if ok else {"error": f"No memory #{id}"})}
 
-        try:
-            stats = await self.memory_manager.get_stats()
-            return {"success": True, **stats}
-        except Exception as e:
-            logger.error(f"list_memory_stats error: {e}")
-            return {"success": False, "error": str(e)}
-
-    async def audit_memory_entities(self) -> Dict[str, Any]:
-        """
-        Validate entity_ids referenced in memory files against the live HA registry.
-
-        Catches stale memories: entity_ids that no longer exist, and likely
-        renames where the object_id still exists under a different domain
-        (e.g. memory says `light.kinkiety_garaz` but the entity is now
-        `switch.kinkiety_garaz`). Use to find memories that need correcting.
-
-        Returns:
-            Dict with per-file issues: unknown entity_ids and suggested renames.
-        """
+    async def memory_doctor(self) -> Dict[str, Any]:
+        """Check memory health against live HA: stale entity refs, duplicates, broken links."""
         if not self.memory_manager:
-            return {"success": False, "error": "Memory manager not available"}
-
+            return {"success": False, "error": "Memory not available"}
+        states, registry = [], []
         try:
-            mem_entities = await self.memory_manager.get_memory_entities()
-            if not mem_entities:
-                return {"success": True, "issues": [], "note": "No entity references found in memories."}
-
-            entities = await self._get_all_entities()
-            valid_ids = {e["entity_id"] for e in entities}
-            # Map object_id -> set of full entity_ids (to detect domain renames)
-            by_object: Dict[str, set] = {}
-            for eid in valid_ids:
-                if "." in eid:
-                    by_object.setdefault(eid.split(".", 1)[1], set()).add(eid)
-
-            issues = []
-            for fname, refs in mem_entities.items():
-                unknown, renames = [], []
-                for ref in refs:
-                    if ref in valid_ids:
-                        continue
-                    obj = ref.split(".", 1)[1] if "." in ref else ref
-                    candidates = sorted(by_object.get(obj, set()))
-                    if candidates:
-                        renames.append({"memory_ref": ref, "likely_now": candidates})
-                    else:
-                        unknown.append(ref)
-                if unknown or renames:
-                    issues.append({"filename": fname, "unknown": unknown, "renames": renames})
-
-            return {
-                "success": True,
-                "issues": issues,
-                "files_checked": len(mem_entities),
-                "note": "Correct flagged memories with save_memory (use replaces=[file] to update in place)." if issues
-                        else "All entity references in memories are valid.",
-            }
+            # States cover entities without a registry entry; registry covers disabled ones.
+            states = [s["entity_id"] for s in await self._all_states() if s.get("entity_id")]
+            registry = [e["entity_id"] for e in await self._get_all_entities() if e.get("entity_id")]
         except Exception as e:
-            logger.error(f"audit_memory_entities error: {e}")
-            return {"success": False, "error": str(e)}
-
-    async def consolidate_memories(self) -> Dict[str, Any]:
-        """
-        Audit all memory files and propose a consolidation plan.
-
-        Reads every memory file, identifies: duplicates, near-empty files,
-        contradictions between files, and stale facts. Returns a plain-text
-        consolidation plan for the user to review. The plan is NOT applied
-        automatically — the user confirms and you apply it using save_memory
-        and delete_memory.
-
-        Returns:
-            Dict with success bool and 'plan' string describing proposed actions.
-        """
-        if not self.memory_manager:
-            return {"success": False, "error": "Memory manager not available"}
-
-        try:
-            all_files = await self.memory_manager.get_all_files()
-            if not all_files:
-                return {"success": True, "plan": "No memory files to consolidate.", "file_count": 0}
-
-            stats = await self.memory_manager.get_stats()
-            stale_names = {f["filename"] for f in stats.get("files", []) if f.get("stale")}
-            tiny_names  = {f["filename"] for f in stats.get("files", []) if f.get("chars", 999) < 50}
-
-            # Build a summary for the LLM to analyse
-            summary_parts = [
-                "Review these memory files and produce a consolidation plan.\n",
-                "For each action propose: MERGE (list files to combine + suggested new filename), "
-                "DELETE (with reason), or KEEP.\n\n",
-            ]
-            for name, content in all_files.items():
-                flags = []
-                if name in stale_names:
-                    flags.append("STALE")
-                if name in tiny_names:
-                    flags.append("TINY")
-                flag_str = f" [{', '.join(flags)}]" if flags else ""
-                summary_parts.append(f"=== {name}{flag_str} ===\n{content}\n\n")
-
-            return {
-                "success": True,
-                "files_reviewed": len(all_files),
-                "stale_count": len(stale_names),
-                "tiny_count": len(tiny_names),
-                "memory_content_for_analysis": "".join(summary_parts),
-                "instruction": (
-                    "Analyse the memory_content_for_analysis above. "
-                    "Produce a numbered consolidation plan listing each proposed action "
-                    "(MERGE/DELETE/KEEP) with clear reasoning. "
-                    "Present the plan to the user as readable text before taking any action. "
-                    "Only call save_memory/delete_memory after the user says to proceed."
-                ),
-            }
-        except Exception as e:
-            logger.error(f"consolidate_memories error: {e}")
-            return {"success": False, "error": str(e)}
+            logger.warning(f"memory_doctor: entity list unavailable: {e}")
+        # A partial inventory would retire valid memories, so the stale check needs both sources.
+        valid = set(states) | set(registry) if states and registry else None
+        issues = self.memory_manager.doctor(valid_entity_ids=valid, apply=True)
+        note = ("Stale records were retired. Re-save corrected facts with save_memory if still true."
+                if issues["stale"] else "Memory is healthy.")
+        if valid is None:
+            note = "Entity check skipped: HA states or entity registry unavailable. " + note
+        return {"success": True, **issues, "note": note}
 
     async def search_past_sessions(self, query: str, limit: int = 3) -> Dict[str, Any]:
         """
@@ -1930,7 +1841,7 @@ class AgentTools:
 
         Resolves the repo via HACS default store (integration + plugin stores).
         Returns README, CHANGELOG, and example YAML/MD files for the companion
-        to distill into pattern_<slug>_*.md memory files.
+        to distill into procedure memories keyed pattern_<slug>_<topic>.
 
         Args:
             name: Component display name (e.g. 'Bubble-Card', 'Mushroom').
@@ -1955,24 +1866,21 @@ class AgentTools:
         # Step 1 — freshness check
         if self.memory_manager:
             try:
-                files = await self.memory_manager.list_files()
-                pattern_files = [f for f in files if f.startswith(f"pattern_{slug}_")]
-                if pattern_files:
-                    import time as _time
-                    mtimes = []
-                    for fname in pattern_files:
-                        fpath = self.memory_manager.memory_dir / fname
-                        if fpath.exists():
-                            mtimes.append(fpath.stat().st_mtime)
-                    if mtimes:
-                        age_days = (_time.time() - min(mtimes)) / 86400.0
-                        if age_days < 30:
-                            return {
-                                "status": "cached",
-                                "slug": slug,
-                                "files": pattern_files,
-                                "age_days": round(age_days, 1),
-                            }
+                from datetime import datetime
+                prefix = f"pattern_{slug}_"
+                recs = [r for r in self.memory_manager.list(status="active", kind="procedure")
+                        if (r.get("key") or "").startswith(prefix)]
+                if recs:
+                    oldest = min(datetime.fromisoformat(r["updated"]) for r in recs)
+                    age_days = (datetime.now(oldest.tzinfo) - oldest).total_seconds() / 86400.0
+                    if age_days < 30:
+                        return {
+                            "status": "cached",
+                            "slug": slug,
+                            "files": sorted(r["key"] for r in recs),
+                            "age_days": round(age_days, 1),
+                            "note": "Patterns are in memory; use search_memory(query=slug) to read them.",
+                        }
             except Exception as e:
                 logger.warning(f"learn_hacs_component freshness check error: {e}")
 
@@ -2337,12 +2245,9 @@ class AgentTools:
             return {"success": False, "error": "flows_json must be a JSON array"}
 
         changeset_id = str(uuid.uuid4())[:8]
-        stored_changes = [{"file_path": "nodered/new_flow.json", "new_content": flows_json}]
-        if self.agent_system:
-            changeset_id = self.agent_system.store_changeset({
-                "changeset_id": changeset_id,
-                "file_changes": stored_changes,
-            })
+        changeset_id, diff_stats = self._store_changeset_with_diffs(
+            changeset_id, [("nodered/new_flow.json", "", flows_json)]
+        )
 
         now = datetime.now()
         return {
@@ -2350,8 +2255,8 @@ class AgentTools:
             "changeset_id": changeset_id,
             "files": ["nodered/new_flow.json"],
             "total_files": 1,
-            "expires_at": (now + timedelta(hours=1)).isoformat(),
-            "diff_stats": [{"file_path": "nodered/new_flow.json", "added": len(nodes), "removed": 0, "is_new_file": True}],
+            "expires_at": (now + timedelta(hours=int(os.getenv("CHANGESET_TTL_HOURS", "24")))).isoformat(),
+            "diff_stats": diff_stats,
             "message": (
                 f"New Node-RED flow staged for approval ({len(nodes)} nodes)."
                 + (f" {description}" if description else "")
@@ -2428,12 +2333,12 @@ class AgentTools:
 
         file_path = f"nodered/flow/{tab_id}.json"
         changeset_id = str(uuid.uuid4())[:8]
-        stored_changes = [{"file_path": file_path, "new_content": flows_json}]
-        if self.agent_system:
-            changeset_id = self.agent_system.store_changeset({
-                "changeset_id": changeset_id,
-                "file_changes": stored_changes,
-            })
+        original_json = ""
+        if check.get("status") == 200 and isinstance(check.get("json"), dict):
+            original_json = _nodered_tab_snapshot(check["json"])
+        changeset_id, diff_stats = self._store_changeset_with_diffs(
+            changeset_id, [(file_path, original_json, flows_json)]
+        )
 
         now = datetime.now()
         return {
@@ -2441,8 +2346,8 @@ class AgentTools:
             "changeset_id": changeset_id,
             "files": [file_path],
             "total_files": 1,
-            "expires_at": (now + timedelta(hours=1)).isoformat(),
-            "diff_stats": [{"file_path": file_path, "added": len(nodes), "removed": 0, "is_new_file": False}],
+            "expires_at": (now + timedelta(hours=int(os.getenv("CHANGESET_TTL_HOURS", "24")))).isoformat(),
+            "diff_stats": diff_stats,
             "message": (
                 f"Node-RED tab '{tab_id}' update staged for approval ({len(nodes)} nodes)."
                 + (f" {description}" if description else "")
@@ -2511,11 +2416,13 @@ class AgentTools:
             cur = current.get("json") if (
                 current.get("status") == 200 and isinstance(current.get("json"), dict)
             ) else {}
+            node_ids = {n.get("id") for n in nodes}
             payload = {
                 "id": effective_tab_id,
                 "label": ((tab.get("label") if tab else "") or cur.get("label", "")),
                 "nodes": nodes,
-                "configs": cur.get("configs", []),
+                # Config nodes sent in the array (e.g. a restored snapshot) win over current ones.
+                "configs": [c for c in cur.get("configs", []) if c.get("id") not in node_ids],
             }
             for key in ("disabled", "info", "env"):
                 if tab and key in tab:
@@ -2891,8 +2798,24 @@ class AgentTools:
                             "semantic_search": True,
                             "query": query,
                         }
-                # Embedding failed — log and fall through to full dump
-                logger.warning("Semantic entity search failed, falling back to full entity dump")
+                # Embedding unavailable — lexical match instead of a full dump (988+ entities).
+                terms = query.lower().split()
+                scored = []
+                for e in states_list:
+                    text = f"{e.get('entity_id')} {e.get('friendly_name') or ''} {e.get('area') or ''}".lower()
+                    hits = sum(1 for t in terms if t in text)
+                    if hits:
+                        scored.append((-hits, e.get("entity_id") or "", e))
+                scored.sort(key=lambda r: (r[0], r[1]))
+                filtered = [e for _, _, e in scored[:_EMBED_MAX_TOTAL]]
+                logger.warning(f"Semantic entity search failed; lexical fallback returned {len(filtered)}/{total}")
+                return {
+                    "success": True,
+                    "states": _compact_states(filtered),
+                    "count": len(filtered),
+                    "total_entities": total,
+                    "query": query,
+                }
 
             return {
                 "success": True,

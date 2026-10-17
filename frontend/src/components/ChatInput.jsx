@@ -2,7 +2,7 @@ import { useRef, useCallback, useEffect } from 'react'
 import { useAppContext } from '../store/AppContext'
 import { Actions } from '../store/reducer'
 
-export default function ChatInput({ onSend }) {
+export default function ChatInput({ onSend, onStop }) {
   const { state, dispatch } = useAppContext()
   const { isSending, chatPrefill } = state
   const textareaRef = useRef(null)
@@ -48,27 +48,28 @@ export default function ChatInput({ onSend }) {
         <textarea
           ref={textareaRef}
           className="flex-1 resize-none bg-surface-800 border border-surface-700 text-gray-100 placeholder-gray-500 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition-colors min-h-[48px] max-h-[200px]"
-          placeholder={isSending ? 'AI is thinking…' : 'Ask about your Home Assistant…'}
+          placeholder={isSending ? 'AI is working… (Stop to interrupt)' : 'Ask about your Home Assistant…'}
           rows={1}
           disabled={isSending}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
         />
-        <button
-          onClick={handleSend}
-          disabled={isSending}
-          className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 disabled:bg-surface-700 disabled:text-gray-500 text-white rounded-xl px-5 py-3 text-sm font-medium transition-colors"
-        >
-          {isSending ? (
-            <span className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-            </span>
-          ) : (
-            'Send'
-          )}
-        </button>
+        {isSending ? (
+          <button
+            onClick={onStop}
+            title="Stop the AI"
+            className="flex-shrink-0 bg-red-700 hover:bg-red-600 text-white rounded-xl px-5 py-3 text-sm font-medium transition-colors"
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl px-5 py-3 text-sm font-medium transition-colors"
+          >
+            Send
+          </button>
+        )}
       </div>
     </div>
   )

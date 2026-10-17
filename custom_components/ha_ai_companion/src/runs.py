@@ -143,6 +143,38 @@ class RunRegistry:
             run = self._runs.get(key)
             return bool(run and run["status"] == "running")
 
+    async def status(self, key: str) -> Optional[Dict[str, Any]]:
+        """{status, last_seq} for a known run, or None (unknown/expired)."""
+        async with self._lock:
+            self._evict_expired_locked()
+            run = self._runs.get(key)
+            if not run:
+                return None
+            return {"status": run["status"], "last_seq": run["next_seq"] - 1}
+
+    async def cancel(self, key: str) -> bool:
+        """Stop a running run. Subscribers get a terminal `error` (code=stopped)."""
+        async with self._lock:
+            run = self._runs.get(key)
+            if not run or run["status"] != "running" or not run["task"]:
+                return False
+            task = run["task"]
+        await self._publish(run, {"event": "error", "data": {"error": "Stopped by user", "code": "stopped"}})
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        # A task cancelled before its first step never runs _consume's finally.
+        async with self._lock:
+            if run["status"] == "running":
+                run["status"] = "cancelled"
+                run["completed_at"] = time.monotonic()
+                for q in run["subscribers"]:
+                    q.put_nowait(None)
+                run["subscribers"] = []
+        return True
+
     def _evict_expired_locked(self):
         now = time.monotonic()
         expired = [

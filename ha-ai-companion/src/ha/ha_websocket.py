@@ -774,13 +774,10 @@ async def get_lovelace_resources_ws(url: str, token: str) -> List[Dict[str, Any]
         await ws_client.close()
 
 
-async def reload_homeassistant_config(url: str, token: str) -> None:
+async def reload_homeassistant_config(url: str, token: str, domains: Optional[List[str]] = None) -> None:
     """
-    Helper function to reload Home Assistant configuration.
-
-    Args:
-        url: WebSocket URL
-        token: Access token
+    Reload Home Assistant configuration: `<domain>.reload` for each given domain
+    (fast, only those items), else `homeassistant.reload_all`.
 
     Raises:
         Exception: If reload fails
@@ -788,6 +785,11 @@ async def reload_homeassistant_config(url: str, token: str) -> None:
     ws_client = HomeAssistantWebSocket(url, token)
     try:
         await ws_client.connect()
-        await ws_client.reload_config()
+        if domains:
+            for d in domains:
+                await ws_client.call("call_service", domain=d, service="reload",
+                                     return_response=False, service_data={})
+        else:
+            await ws_client.reload_config()
     finally:
         await ws_client.close()

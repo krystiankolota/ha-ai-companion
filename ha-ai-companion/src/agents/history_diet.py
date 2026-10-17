@@ -80,3 +80,36 @@ def truncate_old_tool_content(history: List[Dict[str, Any]]) -> List[Dict[str, A
         else:
             result.append(msg)
     return result
+
+
+def drop_unpaired_tool_messages(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Remove tool_calls without a tool result and tool results without a call.
+    Strict providers reject unpaired messages (HTTP 400); stopped or
+    interrupted runs leave them behind. Input is not mutated.
+    """
+    if not history:
+        return history
+    call_ids = {
+        tc.get("id")
+        for m in history if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or []) if isinstance(tc, dict)
+    }
+    result_ids = {m.get("tool_call_id") for m in history if m.get("role") == "tool"}
+    out = []
+    for msg in history:
+        role = msg.get("role")
+        if role == "tool":
+            if msg.get("tool_call_id") in call_ids:
+                out.append(msg)
+        elif role == "assistant" and msg.get("tool_calls"):
+            kept = [tc for tc in msg["tool_calls"] if isinstance(tc, dict) and tc.get("id") in result_ids]
+            if len(kept) == len(msg["tool_calls"]):
+                out.append(msg)
+            elif kept:
+                out.append({**msg, "tool_calls": kept})
+            elif msg.get("content"):
+                out.append({k: v for k, v in msg.items() if k != "tool_calls"})
+        else:
+            out.append(msg)
+    return out

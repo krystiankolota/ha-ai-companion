@@ -14,12 +14,13 @@ import json as json_lib
 
 from .config import ConfigurationManager
 from .agents import AgentSystem
-from .memory import MemoryManager
+from .agents.diffing import describe_change
+from .memory import MemoryStore
 from .conversations import ConversationManager
 from .tasks import TaskManager
 from .runs import RunRegistry
 
-version = "1.18.8"
+version = "1.19.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -36,7 +37,7 @@ config_manager: Optional[ConfigurationManager] = None
 agent_system: Optional[AgentSystem] = None
 
 # Memory manager instance
-memory_manager: Optional[MemoryManager] = None
+memory_manager: Optional[MemoryStore] = None
 
 # Conversation session manager
 conversation_manager: Optional[ConversationManager] = None
@@ -111,7 +112,7 @@ async def lifespan(_: FastAPI):
     # Initialize memory manager
     try:
         memory_dir = os.getenv('MEMORY_DIR', os.path.join(os.getenv('HA_CONFIG_DIR', '/config'), '.ai_agent_memories'))
-        memory_manager = MemoryManager(memory_dir=memory_dir)
+        memory_manager = MemoryStore(memory_dir=memory_dir)
         logger.info(f"Memory manager initialized at {memory_dir}")
     except Exception as e:
         logger.error(f"Failed to initialize memory manager: {e}", exc_info=True)
@@ -176,10 +177,25 @@ async def lifespan(_: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize task manager: {e}", exc_info=True)
 
+    async def _memory_doctor_daily():
+        await asyncio.sleep(300)  # let HA connections settle first
+        while True:
+            try:
+                if agent_system and memory_manager:
+                    r = await agent_system.tools.memory_doctor()
+                    logger.info("Memory doctor: %d stale, %d duplicate pair(s), %d candidate(s)",
+                                len(r.get("stale", [])), len(r.get("duplicates", [])), r.get("candidates", 0))
+            except Exception as e:
+                logger.warning(f"Memory doctor failed: {e}")
+            await asyncio.sleep(86400)
+
+    doctor_task = asyncio.create_task(_memory_doctor_daily())
+
     yield
 
     # Shutdown
     logger.info("=== HA AI Companion Shutting Down ===")
+    doctor_task.cancel()
     if task_manager:
         await task_manager.stop()
 
@@ -343,6 +359,13 @@ async def chat_websocket(websocket: WebSocket):
                     continue
                 await attach(session_id, -1)
 
+            elif msg_type == "stop":
+                session_id = data.get("session_id")
+                if not session_id or not await run_registry.cancel(session_id):
+                    # Nothing running server-side (finished or add-on restarted):
+                    # still send a terminal event so the UI never stays "busy".
+                    await send_safe({"event": "error", "data": {"error": "No active run", "code": "stopped"}})
+
             elif msg_type == "resume":
                 session_id = data.get("session_id")
                 last_seq = data.get("last_seq", -1)
@@ -396,7 +419,7 @@ def _make_run_persister(session_id: Optional[str], user_message: str):
     async def persist(status: str, events: list):
         try:
             assistant_parts = [
-                e["data"].get("content", "")
+                ((e["data"].get("message") or {}).get("content") or "")
                 for e in events
                 if e.get("event") == "message_complete" and isinstance(e.get("data"), dict)
             ]
@@ -411,15 +434,21 @@ def _make_run_persister(session_id: Optional[str], user_message: str):
                 return m.get("content") if isinstance(m.get("content"), str) else None
 
             # Frontend may have saved the user message already (debounced PUT/sendBeacon).
-            # Find it near the tail; if an assistant reply follows it, the frontend
+            # Find the latest user turn; if an assistant reply follows it, the frontend
             # persisted the full exchange and this fallback has nothing to do.
-            last_user_idx = None
-            for i in range(len(messages) - 1, max(-1, len(messages) - 6), -1):
-                if messages[i].get("role") == "user" and _content(messages[i]) == user_message:
-                    last_user_idx = i
-                    break
+            last_user_idx = next(
+                (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
+                None,
+            )
+            if last_user_idx is not None and _content(messages[last_user_idx]) != user_message:
+                last_user_idx = None
             if last_user_idx is not None:
-                if any(m.get("role") == "assistant" for m in messages[last_user_idx + 1:]):
+                # Only a final text answer counts: the frontend autosaves
+                # intermediate tool_calls messages mid-run.
+                if any(
+                    m.get("role") == "assistant" and _content(m) and not m.get("tool_calls")
+                    for m in messages[last_user_idx + 1:]
+                ):
                     return
             else:
                 messages.append({"role": "user", "content": user_message})
@@ -476,11 +505,11 @@ async def approve_changes(request: ApprovalRequest):
 
 @app.get("/api/changeset/{changeset_id}")
 async def get_changeset(changeset_id: str):
-    """Return the file_changes (file_path + new_content) for a pending changeset.
+    """Return a pending changeset with server-computed diffs.
 
-    Used by the frontend DiffModal to show diffs for surgical patch tools
-    (patch_config_key, patch_config_block, add_nodered_flow, edit_nodered_tab)
-    where new_content is computed server-side and not in the tool args.
+    Each file carries a unified diff built from the exact content the proposal
+    was based on, plus an added/changed/removed item summary for YAML lists.
+    The frontend only renders it — it never reconstructs the "before" side.
     """
     if not agent_system:
         raise HTTPException(status_code=503, detail="Agent system not initialized")
@@ -489,8 +518,34 @@ async def get_changeset(changeset_id: str):
         raise HTTPException(status_code=404, detail="Changeset not found or expired")
     return {
         "changeset_id": changeset_id,
-        "file_changes": changeset.file_changes,
+        "file_changes": [
+            {
+                **describe_change(fc["file_path"], fc.get("original_content", ""), fc["new_content"]),
+                "new_content": fc["new_content"],
+            }
+            for fc in changeset.file_changes
+        ],
     }
+
+
+@app.get("/api/changesets")
+async def list_applied_changesets(limit: int = 20):
+    """Recently applied changesets (restorable via the restore_changeset tool)."""
+    history = getattr(agent_system, "changeset_history", None) if agent_system else None
+    if not history:
+        raise HTTPException(status_code=503, detail="Changeset history not available")
+    return {"changesets": history.list(max(1, min(limit, 100)))}
+
+
+@app.post("/api/changesets/{changeset_id}/restore")
+async def restore_applied_changeset(changeset_id: str):
+    """Stage a restore of an applied changeset; the result goes through normal approval."""
+    if not agent_system:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    result = await agent_system.tools.restore_changeset(changeset_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Restore failed"))
+    return result
 
 
 # --- Scheduled task endpoints ---
@@ -534,6 +589,13 @@ async def run_scheduled_task(task_id: str):
 
 
 # --- Session persistence endpoints ---
+
+@app.get("/api/runs/{session_id}")
+async def run_status(session_id: str):
+    """Agent run state for a session: running/done/error/cancelled, or none."""
+    st = await run_registry.status(session_id)
+    return st or {"status": "none", "last_seq": -1}
+
 
 @app.get("/api/sessions")
 async def list_sessions():
@@ -608,13 +670,12 @@ async def clear_all_sessions():
         if conv_text:
             prompt = (
                 "Review these Home Assistant conversation sessions and extract facts worth saving as persistent agent memories.\n\n"
-                "Save ONLY genuinely useful home-specific facts:\n"
-                "- Home structure, rooms, areas, specific devices\n"
-                "- User preferences for how they want things done\n"
-                "- Important entities or automations they mentioned\n"
-                "- Context about their HA setup\n\n"
-                "Skip: one-off tasks, generic HA questions, info derivable from HA itself.\n\n"
-                'Return JSON: {"memories": [{"filename": "topic.md", "content": "# Topic\\n- fact"}]}\n'
+                "Save ONLY durable facts the user stated that HA itself cannot tell:\n"
+                "- How the user wants things done (preference)\n"
+                "- Residents, their devices, unclear device purposes, routines (fact)\n"
+                "- Agreed design choices (decision)\n\n"
+                "Skip: one-off tasks, what was done in a session, states, anything in HA config/registry.\n\n"
+                'Return JSON: {"memories": [{"kind": "preference|fact|decision", "text": "one short fact"}]}\n'
                 'If nothing worth saving: {"memories": []}\n\n'
                 f"Conversations:\n{conv_text}"
             )
@@ -648,12 +709,15 @@ async def clear_all_sessions():
                     logger.warning("Memory extraction failed during clear-all (sessions will still be deleted): %s", e)
 
             for mem in data.get("memories", []):
-                fn = mem.get("filename", "")
-                content = mem.get("content", "")
-                if fn and content and memory_manager:
-                    ok = await memory_manager.write_file(fn, content)
-                    if ok:
-                        memories_saved.append(fn)
+                kind, text = mem.get("kind", "fact"), (mem.get("text") or "").strip()
+                if text and memory_manager:
+                    try:
+                        r = memory_manager.add(kind if kind in ("preference", "fact", "decision") else "fact",
+                                               text, status="candidate", source="session-extract")
+                        if not r.get("duplicate_of"):
+                            memories_saved.append(text[:80])
+                    except ValueError:
+                        pass
 
     deleted = 0
     for meta in sessions:
@@ -903,76 +967,86 @@ async def get_usage(days: int = 30):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/memory")
-async def list_memory_files():
-    """Return list of memory files with metadata."""
-    if not memory_manager:
-        return {"files": []}
+_model_advisor = None
+
+
+@app.get("/api/models/advice")
+async def get_model_advice(refresh: bool = False):
+    """Data-backed model suggestions: OpenRouter catalog + optional AA scores + own usage mix."""
+    global _model_advisor
+    from src.usage.advisor import ModelAdvisor
+    um = getattr(agent_system, "usage_manager", None) if agent_system else None
+    if _model_advisor is None:
+        cache_dir = str(um.usage_dir) if um else os.path.join(os.getenv("MEMORY_DIR", "/config/.ai_agent_memories"), "..", ".ai_agent_usage")
+        _model_advisor = ModelAdvisor(cache_dir)
+    _model_advisor.aa_api_key = os.getenv("ARTIFICIAL_ANALYSIS_API_KEY") or None
+    configured, or_roles = {}, set()
+    if agent_system:
+        configured = {"main": agent_system.model, "research": agent_system.suggestion_model, "reasoning": agent_system.config_model}
+        clients = {"main": "client", "research": "suggestion_client", "reasoning": "config_client"}
+        for role, attr in clients.items():
+            if "openrouter.ai" in str(getattr(getattr(agent_system, attr, None), "base_url", "")):
+                or_roles.add(role)
     try:
-        files = []
-        for name in await memory_manager.list_files():
-            path = memory_manager.memory_dir / name
-            try:
-                stat = path.stat()
-                content = path.read_text(encoding="utf-8")
-                updated = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
-                files.append({"name": name, "updated": updated, "chars": len(content)})
-            except Exception:
-                files.append({"name": name, "updated": None, "chars": 0})
-        return {"files": files}
+        usage = um.aggregate(days=30) if um else None
+        return await _model_advisor.advise(configured, usage, or_roles, force=refresh)
     except Exception as e:
+        logger.error(f"Model advice failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/memory/{filename}")
-async def get_memory_file(filename: str):
-    """Return content of a memory file."""
+def _memory_or_503() -> MemoryStore:
     if not memory_manager:
-        raise HTTPException(status_code=503, detail="Memory manager not initialized")
-    content = await memory_manager.read_file(filename)
-    if content is None:
-        raise HTTPException(status_code=404, detail="Memory file not found")
-    return {"name": filename, "content": content}
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    return memory_manager
 
 
-@app.put("/api/memory/{filename}")
-async def update_memory_file(filename: str, request: Request):
-    """Update an existing memory file."""
+@app.get("/api/memory")
+async def list_memories(status: Optional[str] = None):
+    """Return memory records (all statuses unless filtered) and per-status counts."""
     if not memory_manager:
-        raise HTTPException(status_code=503, detail="Memory manager not initialized")
-    body = await request.json()
-    content = body.get("content", "")
-    ok = await memory_manager.write_file(filename, content)
-    if not ok:
-        raise HTTPException(status_code=400, detail=f"Write failed — content may exceed {memory_manager.MAX_FILE_CHARS} chars")
-    return {"success": True}
+        return {"memories": [], "counts": {}}
+    return {"memories": memory_manager.list(status=status), "counts": memory_manager.counts()}
 
 
 @app.post("/api/memory")
-async def create_memory_file(request: Request):
-    """Create a new memory file."""
-    if not memory_manager:
-        raise HTTPException(status_code=503, detail="Memory manager not initialized")
+async def create_memory(request: Request):
+    """Create an active memory written by the user."""
+    store = _memory_or_503()
     body = await request.json()
-    filename = body.get("filename", "").strip()
-    content = body.get("content", "")
-    if not filename:
-        raise HTTPException(status_code=400, detail="filename is required")
-    ok = await memory_manager.write_file(filename, content)
+    try:
+        r = store.add(body.get("kind", "fact"), body.get("text", ""), key=body.get("key") or None, source="user")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, **r}
+
+
+@app.put("/api/memory/{mem_id}")
+async def update_memory(mem_id: int, request: Request):
+    """Edit text/kind or change status (approve candidate = status 'active')."""
+    store = _memory_or_503()
+    body = await request.json()
+    try:
+        ok = store.update(mem_id, text=body.get("text"), kind=body.get("kind"), status=body.get("status"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not ok:
-        raise HTTPException(status_code=400, detail=f"Write failed — content may exceed {memory_manager.MAX_FILE_CHARS} chars or filename is invalid")
-    # Return sanitised filename (manager strips unsafe chars and forces .md)
-    from pathlib import Path
-    sanitised = Path(memory_manager._path(filename)).name
-    return {"success": True, "filename": sanitised}
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"success": True, "memory": store.get(mem_id)}
 
 
-@app.delete("/api/memory/{filename}")
-async def delete_memory_file(filename: str):
-    """Delete a memory file."""
-    if not memory_manager:
-        raise HTTPException(status_code=503, detail="Memory manager not initialized")
-    deleted = await memory_manager.delete_file(filename)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Memory file not found")
+@app.delete("/api/memory/{mem_id}")
+async def delete_memory(mem_id: int):
+    """Hard-delete a memory record."""
+    if not _memory_or_503().delete(mem_id):
+        raise HTTPException(status_code=404, detail="Memory not found")
     return {"success": True}
+
+
+@app.post("/api/memory/doctor")
+async def run_memory_doctor():
+    """Check memory against live HA entities; retires stale records."""
+    _memory_or_503()
+    if not agent_system:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    return await agent_system.tools.memory_doctor()

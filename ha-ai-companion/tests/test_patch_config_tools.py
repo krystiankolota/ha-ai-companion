@@ -134,6 +134,38 @@ class TestNavigateYaml:
         )
         assert found is False
 
+    def test_root_list_tolerates_leading_key(self):
+        data = [{"alias": "Ogrzewanie - Długi czas"}, {"alias": "B"}]
+        parent, key, found = AgentTools._navigate_yaml(
+            data, AgentTools._parse_yaml_path("automations[alias=ogrzewanie -  długi CZAS]")
+        )
+        assert found is True and key == 0
+
+    def test_hint_lists_close_aliases(self):
+        data = [{"alias": "Morning light"}, {"alias": "Evening light"}]
+        hint = AgentTools._yaml_path_hint(data, AgentTools._parse_yaml_path("automations[alias=Mornin lights]"))
+        assert "Morning light" in hint and "file root" in hint
+
+    def test_hint_lists_keys(self):
+        data = [{"alias": "A", "action": []}]
+        hint = AgentTools._yaml_path_hint(data, AgentTools._parse_yaml_path("[alias=A].variables.msg"))
+        assert "action" in hint and "[alias=A]" in hint
+
+    def test_exact_alias_beats_case_variant(self):
+        data = [{"alias": "Morning light"}, {"alias": "morning light"}]
+        _, key, found = AgentTools._navigate_yaml(data, AgentTools._parse_yaml_path("[alias=morning light]"))
+        assert found is True and key == 1
+
+    def test_ambiguous_tolerant_match_fails_with_hint(self):
+        data = [{"alias": "Morning light"}, {"alias": "MORNING LIGHT"}]
+        path = AgentTools._parse_yaml_path("[alias=morning  light]")
+        assert AgentTools._navigate_yaml(data, path)[2] is False
+        assert "matches 2 items" in AgentTools._yaml_path_hint(data, path)
+
+    def test_unknown_leading_key_on_root_list_fails(self):
+        data = [{"alias": "A", "action": [{"service": "light.turn_on"}]}]
+        assert AgentTools._navigate_yaml(data, AgentTools._parse_yaml_path("action[0]"))[2] is False
+
 
 # ---------------------------------------------------------------------------
 # patch_config_key

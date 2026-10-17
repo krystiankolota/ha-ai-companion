@@ -1,21 +1,13 @@
 import { useEffect, useRef } from 'react'
 import { useAppContext } from '../store/AppContext'
 import { Actions } from '../store/reducer'
-import * as Diff from 'diff'
 import { Diff2HtmlUI } from 'diff2html/lib/ui/js/diff2html-ui-base'
 
-function tryPrettyJson(str) {
-  if (!str) return str
-  const trimmed = str.trim()
-  if (trimmed[0] !== '{' && trimmed[0] !== '[') return str
-  try { return JSON.stringify(JSON.parse(trimmed), null, 2) } catch { return str }
-}
-
-function buildUnifiedDiff(filePath, oldContent, newContent) {
-  const old_ = tryPrettyJson(oldContent || '')
-  const new_ = tryPrettyJson(newContent || '')
-  return Diff.createPatch(filePath, old_, new_, '', '')
-}
+const ITEM_GROUPS = [
+  ['added', 'Added', 'text-green-400'],
+  ['changed', 'Changed', 'text-amber-300'],
+  ['removed', 'Removed', 'text-red-400'],
+]
 
 export default function DiffModal() {
   const { state, dispatch } = useAppContext()
@@ -23,26 +15,14 @@ export default function DiffModal() {
   const diffContainerRef = useRef(null)
 
   const close = () => dispatch({ type: Actions.SET_ACTIVE_DIFF, payload: null })
+  const changes = activeDiffChangeset?.file_changes_detail || []
 
   useEffect(() => {
     if (!activeDiffChangeset || !diffContainerRef.current) return
-
-    const { file_changes_detail, original_contents, files } = activeDiffChangeset
-
-    let combinedDiff = ''
-
-    if (file_changes_detail && file_changes_detail.length > 0) {
-      for (const change of file_changes_detail) {
-        const originalContent = original_contents?.[change.file_path] || ''
-        combinedDiff += buildUnifiedDiff(change.file_path, originalContent, change.new_content)
-      }
-    } else if (files && files.length > 0) {
-      // No detail available — just show file list as a placeholder diff
-      for (const f of files) {
-        combinedDiff += buildUnifiedDiff(f, '', '(new content pending)')
-      }
-    }
-
+    diffContainerRef.current.innerHTML = ''
+    // Diffs are computed server-side from the exact content the proposal was
+    // built on — the UI only renders them.
+    const combinedDiff = changes.map(c => c.diff || '').join('')
     if (combinedDiff) {
       const diff2htmlUi = new Diff2HtmlUI(diffContainerRef.current, combinedDiff, {
         drawFileList: true,
@@ -53,9 +33,12 @@ export default function DiffModal() {
       })
       diff2htmlUi.draw()
     }
-  }, [activeDiffChangeset])
+  }, [activeDiffChangeset]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!activeDiffChangeset) return null
+
+  const loaded = changes.length > 0
+  const noTextChange = loaded && changes.every(c => !c.diff)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
@@ -79,6 +62,18 @@ export default function DiffModal() {
 
         {/* Diff content */}
         <div className="flex-1 overflow-auto p-4">
+          {changes.filter(c => c.items).map(c => (
+            <div key={c.file_path} className="mb-3 text-sm">
+              <div className="text-gray-400 text-xs mb-1">{c.file_path}</div>
+              {ITEM_GROUPS.map(([key, label, color]) => (c.items[key] || []).length > 0 && (
+                <div key={key} className={color}>
+                  {label}: {c.items[key].join(', ')}
+                </div>
+              ))}
+            </div>
+          ))}
+          {!loaded && <p className="text-sm text-gray-400">Diff not available — the changeset was applied, rejected, or has expired.</p>}
+          {noTextChange && <p className="text-sm text-gray-400">No text changes.</p>}
           <div ref={diffContainerRef} className="text-sm" />
         </div>
 

@@ -17,6 +17,10 @@ const TABS = [
     icon: 'M4 7c0-1.1 3.58-2 8-2s8 .9 8 2-3.58 2-8 2-8-.9-8-2zM4 7v10c0 1.1 3.58 2 8 2s8-.9 8-2V7',
   },
   {
+    id: 'changes', label: 'Changes',
+    icon: 'M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2',
+  },
+  {
     id: 'usage', label: 'Usage',
     icon: 'M4 19V5M4 19h16M8 19v-6M12 19V9M16 19v-9',
   },

@@ -1,8 +1,21 @@
 import { useState, useCallback, useEffect } from 'react'
-import { getMemoryFiles, getMemoryFile, deleteMemoryFile, updateMemoryFile, createMemoryFile } from '../lib/api'
+import { getMemories, createMemory, updateMemory, deleteMemory, runMemoryDoctor } from '../lib/api'
 
 const MAX_CHARS = 800
-const FILENAME_RE = /^[a-z0-9_-]+\.md$/
+const KINDS = ['preference', 'fact', 'decision', 'procedure']
+const VIEWS = [
+  { id: 'active', label: 'Active', statuses: ['active'] },
+  { id: 'review', label: 'To review', statuses: ['candidate'] },
+  { id: 'retired', label: 'Retired', statuses: ['superseded', 'stale', 'rejected'] },
+]
+const KIND_STYLE = {
+  preference: 'bg-indigo-900/40 text-indigo-300',
+  fact: 'bg-emerald-900/40 text-emerald-300',
+  decision: 'bg-amber-900/40 text-amber-300',
+  procedure: 'bg-surface-800 text-gray-400',
+}
+const BTN = 'text-xs px-2 py-1 rounded transition-colors disabled:opacity-50'
+const BTN_GREY = `${BTN} bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300`
 
 function formatDate(iso) {
   if (!iso) return '—'
@@ -11,26 +24,35 @@ function formatDate(iso) {
   } catch { return iso }
 }
 
+function CharCount({ value }) {
+  return (
+    <span className={`absolute bottom-2 right-3 text-[10px] ${value.length > MAX_CHARS * 0.9 ? 'text-amber-400' : 'text-gray-600'}`}>
+      {value.length}/{MAX_CHARS}
+    </span>
+  )
+}
+
 export default function MemoryTab() {
-  const [files, setFiles] = useState(null)
+  const [memories, setMemories] = useState(null)
+  const [counts, setCounts] = useState({})
+  const [view, setView] = useState('active')
   const [loading, setLoading] = useState(false)
-  const [expanded, setExpanded] = useState({})   // { name: string content }
-  const [editing, setEditing] = useState({})      // { name: draft string }
-  const [saving, setSaving] = useState({})
-  const [deleting, setDeleting] = useState({})
+  const [busy, setBusy] = useState({})
+  const [editing, setEditing] = useState({})   // { id: draft }
   const [creating, setCreating] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newContent, setNewContent] = useState('')
-  const [createSaving, setCreateSaving] = useState(false)
-  const [createError, setCreateError] = useState('')
+  const [newKind, setNewKind] = useState('preference')
+  const [newText, setNewText] = useState('')
+  const [error, setError] = useState('')
+  const [doctor, setDoctor] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await getMemoryFiles()
-      setFiles(data.files || [])
+      const data = await getMemories()
+      setMemories(data.memories || [])
+      setCounts(data.counts || {})
     } catch {
-      setFiles([])
+      setMemories([])
     } finally {
       setLoading(false)
     }
@@ -38,241 +60,182 @@ export default function MemoryTab() {
 
   useEffect(() => { load() }, [load])
 
-  const handleExpand = async (name) => {
-    if (expanded[name] !== undefined) {
-      setExpanded(prev => { const n = { ...prev }; delete n[name]; return n })
-      setEditing(prev => { const n = { ...prev }; delete n[name]; return n })
-      return
-    }
+  const act = async (id, fn) => {
+    setBusy(prev => ({ ...prev, [id]: true }))
+    setError('')
     try {
-      const data = await getMemoryFile(name)
-      setExpanded(prev => ({ ...prev, [name]: data.content }))
-    } catch {
-      setExpanded(prev => ({ ...prev, [name]: '(failed to load)' }))
-    }
-  }
-
-  const handleStartEdit = (name) => {
-    setEditing(prev => ({ ...prev, [name]: expanded[name] || '' }))
-  }
-
-  const handleCancelEdit = (name) => {
-    setEditing(prev => { const n = { ...prev }; delete n[name]; return n })
-  }
-
-  const handleSaveEdit = async (name) => {
-    setSaving(prev => ({ ...prev, [name]: true }))
-    try {
-      await updateMemoryFile(name, editing[name])
-      setExpanded(prev => ({ ...prev, [name]: editing[name] }))
-      setEditing(prev => { const n = { ...prev }; delete n[name]; return n })
+      await fn()
       await load()
     } catch (e) {
-      alert(`Save failed: ${e.message}`)
+      setError(e.message)
     } finally {
-      setSaving(prev => { const n = { ...prev }; delete n[name]; return n })
+      setBusy(prev => { const n = { ...prev }; delete n[id]; return n })
     }
   }
 
-  const handleDelete = async (name) => {
-    if (!window.confirm(`Delete memory file "${name}"?`)) return
-    setDeleting(prev => ({ ...prev, [name]: true }))
-    try {
-      await deleteMemoryFile(name)
-      setFiles(prev => prev.filter(f => f.name !== name))
-      setExpanded(prev => { const n = { ...prev }; delete n[name]; return n })
-      setEditing(prev => { const n = { ...prev }; delete n[name]; return n })
-    } catch (e) {
-      alert(`Failed to delete: ${e.message}`)
-    } finally {
-      setDeleting(prev => { const n = { ...prev }; delete n[name]; return n })
-    }
+  const setStatus = (id, status) => act(id, () => updateMemory(id, { status }))
+
+  const saveEdit = (id) => act(id, async () => {
+    await updateMemory(id, { text: editing[id] })
+    setEditing(prev => { const n = { ...prev }; delete n[id]; return n })
+  })
+
+  const remove = (id) => {
+    if (!window.confirm(`Delete memory #${id} permanently?`)) return
+    act(id, () => deleteMemory(id))
   }
 
-  const handleCreate = async () => {
-    setCreateError('')
-    const name = newName.trim()
-    if (!name) { setCreateError('Filename is required'); return }
-    const withExt = name.endsWith('.md') ? name : `${name}.md`
-    if (!FILENAME_RE.test(withExt)) {
-      setCreateError('Use only lowercase letters, numbers, hyphens, underscores (e.g. device_nicknames.md)')
-      return
-    }
-    if (newContent.trim().length > MAX_CHARS) {
-      setCreateError(`Content exceeds ${MAX_CHARS} char limit`)
-      return
-    }
-    setCreateSaving(true)
-    try {
-      const result = await createMemoryFile(withExt, newContent)
-      setCreating(false)
-      setNewName('')
-      setNewContent('')
-      await load()
-      // Auto-expand the new file
-      const data = await getMemoryFile(result.filename)
-      setExpanded(prev => ({ ...prev, [result.filename]: data.content }))
-    } catch (e) {
-      setCreateError(e.message)
-    } finally {
-      setCreateSaving(false)
-    }
-  }
+  const handleCreate = () => act('new', async () => {
+    if (!newText.trim()) throw new Error('Text is required')
+    await createMemory(newKind, newText.trim())
+    setCreating(false)
+    setNewText('')
+  })
+
+  const handleDoctor = () => act('doctor', async () => setDoctor(await runMemoryDoctor()))
+
+  const current = VIEWS.find(v => v.id === view)
+  const shown = (memories || []).filter(m => current.statuses.includes(m.status))
+  const countFor = v => v.statuses.reduce((n, s) => n + (counts[s] || 0), 0)
 
   return (
     <div className="flex flex-col h-full overflow-y-auto px-4 py-4 max-w-3xl mx-auto w-full">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-3">
         <div>
           <h2 className="text-sm font-semibold text-gray-100">AI Memory</h2>
           <p className="text-xs text-gray-500 mt-0.5">
-            What the AI remembers about your home across sessions — stored in <span className="font-mono">.ai_agent_memories/</span>
+            Facts the AI cannot read from Home Assistant. Only active memories are used in chats.
           </p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={() => { setCreating(true); setCreateError('') }}
-            className="text-xs px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg transition-colors"
-          >
+          <button onClick={() => { setCreating(true); setError('') }}
+            className="text-xs px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg transition-colors">
             + New
           </button>
-          <button
-            onClick={load}
-            disabled={loading}
+          <button onClick={handleDoctor} disabled={busy.doctor}
             className="text-xs px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300 rounded-lg transition-colors disabled:opacity-50"
-          >
+            title="Retire memories that mention entities no longer in Home Assistant">
+            {busy.doctor ? 'Checking…' : 'Check health'}
+          </button>
+          <button onClick={load} disabled={loading}
+            className="text-xs px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300 rounded-lg transition-colors disabled:opacity-50">
             {loading ? 'Loading…' : 'Refresh'}
           </button>
         </div>
       </div>
 
-      {/* New file form */}
+      <div className="flex gap-1 mb-3" role="tablist">
+        {VIEWS.map(v => (
+          <button key={v.id} role="tab" aria-selected={view === v.id} onClick={() => setView(v.id)}
+            className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${view === v.id ? 'bg-surface-700 text-gray-100' : 'text-gray-500 hover:text-gray-300'}`}>
+            {v.label} <span className="text-gray-500">{countFor(v)}</span>
+          </button>
+        ))}
+      </div>
+
+      {doctor && (
+        <div className="bg-surface-900 border border-surface-700 rounded-xl px-4 py-3 mb-3 text-xs text-gray-300 flex justify-between gap-3">
+          <span>
+            {doctor.success === false ? `Health check failed: ${doctor.error}` :
+              `${doctor.stale?.length || 0} retired as stale · ${doctor.unverified?.length || 0} unverified · ${doctor.duplicates?.length || 0} possible duplicate pair(s) · ${doctor.candidates || 0} to review${doctor.note?.startsWith('Entity check skipped') ? ' · entity check skipped (HA lists unavailable)' : ''}`}
+          </span>
+          <button onClick={() => setDoctor(null)} className="text-gray-500 hover:text-gray-300" aria-label="Dismiss">✕</button>
+        </div>
+      )}
+
+      {error && <div className="text-xs text-red-400 mb-3">{error}</div>}
+
       {creating && (
         <div className="bg-surface-900 border border-indigo-600 rounded-xl p-4 mb-4 space-y-3">
-          <div className="text-xs font-medium text-gray-200">New memory file</div>
-          <input
-            type="text"
-            placeholder="filename.md (e.g. device_nicknames.md)"
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            className="w-full bg-surface-800 border border-surface-700 text-gray-200 placeholder-gray-600 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-indigo-500 transition-colors"
-          />
-          <div className="relative">
-            <textarea
-              placeholder="Memory content (bullet points preferred)…"
-              rows={5}
-              value={newContent}
-              onChange={e => setNewContent(e.target.value)}
-              maxLength={MAX_CHARS}
-              className="w-full bg-surface-800 border border-surface-700 text-gray-200 placeholder-gray-600 rounded-lg px-3 py-2 text-xs font-mono resize-none focus:outline-none focus:border-indigo-500 transition-colors"
-            />
-            <span className={`absolute bottom-2 right-3 text-[10px] ${newContent.length > MAX_CHARS * 0.9 ? 'text-amber-400' : 'text-gray-600'}`}>
-              {newContent.length}/{MAX_CHARS}
-            </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-gray-200">New memory</span>
+            <select value={newKind} onChange={e => setNewKind(e.target.value)} aria-label="Kind"
+              className="bg-surface-800 border border-surface-700 text-gray-200 rounded-lg px-2 py-1 text-xs">
+              {KINDS.map(k => <option key={k} value={k}>{k}</option>)}
+            </select>
           </div>
-          {createError && <div className="text-xs text-red-400">{createError}</div>}
+          <div className="relative">
+            <textarea rows={3} value={newText} maxLength={MAX_CHARS} onChange={e => setNewText(e.target.value)}
+              placeholder="One short fact, e.g. 'Always notify both phones for security alerts'"
+              className="w-full bg-surface-800 border border-surface-700 text-gray-200 placeholder-gray-600 rounded-lg px-3 py-2 text-xs resize-none focus:outline-none focus:border-indigo-500 transition-colors" />
+            <CharCount value={newText} />
+          </div>
           <div className="flex gap-2">
-            <button
-              onClick={handleCreate}
-              disabled={createSaving}
-              className="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-lg transition-colors"
-            >
-              {createSaving ? 'Saving…' : 'Save'}
+            <button onClick={handleCreate} disabled={busy.new}
+              className="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-lg transition-colors">
+              {busy.new ? 'Saving…' : 'Save'}
             </button>
-            <button
-              onClick={() => { setCreating(false); setNewName(''); setNewContent(''); setCreateError('') }}
-              className="text-xs px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300 rounded-lg transition-colors"
-            >
-              Cancel
-            </button>
+            <button onClick={() => { setCreating(false); setNewText('') }} className={BTN_GREY}>Cancel</button>
           </div>
         </div>
       )}
 
-      {files === null && <p className="text-xs text-gray-500 italic">Loading…</p>}
-
-      {files !== null && files.length === 0 && !creating && (
-        <p className="text-sm text-gray-500 italic">No memory files yet. The AI will start saving memories as you chat.</p>
+      {memories === null && <p className="text-xs text-gray-500 italic">Loading…</p>}
+      {memories !== null && shown.length === 0 && (
+        <p className="text-sm text-gray-500 italic">
+          {view === 'review' ? 'Nothing to review.' : view === 'retired' ? 'No retired memories.' :
+            'No active memories yet. Tell the AI a preference, or approve items in "To review".'}
+        </p>
       )}
 
-      {files && files.length > 0 && (
-        <div className="space-y-2">
-          {files.map(f => {
-            const isEditing = editing[f.name] !== undefined
-            const draft = editing[f.name] ?? ''
-            return (
-              <div key={f.name} className="bg-surface-900 border border-surface-700 rounded-xl overflow-hidden">
-                <div className="flex items-center gap-3 px-4 py-3">
-                  <button
-                    className="flex items-center gap-2 flex-1 text-left min-w-0"
-                    onClick={() => handleExpand(f.name)}
-                  >
-                    <span className={`text-[10px] text-gray-500 transition-transform flex-shrink-0 ${expanded[f.name] !== undefined ? 'rotate-90' : ''}`}>▶</span>
-                    <span className="font-mono text-sm text-gray-200 truncate">{f.name}</span>
-                  </button>
-                  <span className="text-xs text-gray-600 flex-shrink-0">{f.chars} chars</span>
-                  <span className="text-xs text-gray-600 flex-shrink-0 hidden sm:block">{formatDate(f.updated)}</span>
-                  <button
-                    onClick={() => handleDelete(f.name)}
-                    disabled={deleting[f.name]}
-                    className="text-xs px-2 py-1 text-red-500 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors flex-shrink-0 disabled:opacity-50"
-                    title="Delete"
-                  >
-                    {deleting[f.name] ? '…' : 'Delete'}
-                  </button>
+      <div className="space-y-2">
+        {shown.map(m => {
+          const draft = editing[m.id]
+          const isEditing = draft !== undefined
+          return (
+            <div key={m.id} className="bg-surface-900 border border-surface-700 rounded-xl px-4 py-3 space-y-2">
+              <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                <span className={`px-1.5 py-0.5 rounded ${KIND_STYLE[m.kind] || ''}`}>{m.kind}</span>
+                <span className="font-mono">#{m.id}</span>
+                {m.key && <span className="font-mono truncate">{m.key}</span>}
+                {view === 'retired' && <span className="italic">{m.status}</span>}
+                <span className="ml-auto hidden sm:block">{formatDate(m.updated)}</span>
+              </div>
+              {isEditing ? (
+                <div className="relative">
+                  <textarea rows={4} value={draft} maxLength={MAX_CHARS}
+                    onChange={e => setEditing(prev => ({ ...prev, [m.id]: e.target.value }))}
+                    className="w-full bg-surface-800 border border-surface-700 text-gray-200 rounded-lg px-3 py-2 text-xs resize-y focus:outline-none focus:border-indigo-500 transition-colors" />
+                  <CharCount value={draft} />
                 </div>
-
-                {expanded[f.name] !== undefined && (
-                  <div className="border-t border-surface-700 px-4 py-3 space-y-2">
-                    {isEditing ? (
-                      <>
-                        <div className="relative">
-                          <textarea
-                            rows={8}
-                            value={draft}
-                            onChange={e => setEditing(prev => ({ ...prev, [f.name]: e.target.value }))}
-                            maxLength={MAX_CHARS}
-                            className="w-full bg-surface-800 border border-surface-700 text-gray-200 rounded-lg px-3 py-2 text-xs font-mono resize-y focus:outline-none focus:border-indigo-500 transition-colors"
-                          />
-                          <span className={`absolute bottom-2 right-3 text-[10px] ${draft.length > MAX_CHARS * 0.9 ? 'text-amber-400' : 'text-gray-600'}`}>
-                            {draft.length}/{MAX_CHARS}
-                          </span>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleSaveEdit(f.name)}
-                            disabled={saving[f.name]}
-                            className="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-lg transition-colors"
-                          >
-                            {saving[f.name] ? 'Saving…' : 'Save'}
-                          </button>
-                          <button
-                            onClick={() => handleCancelEdit(f.name)}
-                            className="text-xs px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300 rounded-lg transition-colors"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words">
-                          {expanded[f.name]}
-                        </pre>
-                        <button
-                          onClick={() => handleStartEdit(f.name)}
-                          className="text-xs px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300 rounded-lg transition-colors"
-                        >
-                          Edit
-                        </button>
-                      </>
+              ) : (
+                <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{m.text}</p>
+              )}
+              <div className="flex gap-2">
+                {isEditing ? (
+                  <>
+                    <button onClick={() => saveEdit(m.id)} disabled={busy[m.id]}
+                      className={`${BTN} bg-emerald-700 hover:bg-emerald-600 text-white`}>Save</button>
+                    <button onClick={() => setEditing(prev => { const n = { ...prev }; delete n[m.id]; return n })}
+                      className={BTN_GREY}>Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    {m.status === 'candidate' && (
+                      <button onClick={() => setStatus(m.id, 'active')} disabled={busy[m.id]}
+                        className={`${BTN} bg-emerald-700 hover:bg-emerald-600 text-white`}>Approve</button>
                     )}
-                  </div>
+                    {view === 'retired' && (
+                      <button onClick={() => setStatus(m.id, 'active')} disabled={busy[m.id]} className={BTN_GREY}>Restore</button>
+                    )}
+                    <button onClick={() => setEditing(prev => ({ ...prev, [m.id]: m.text }))} className={BTN_GREY}>Edit</button>
+                    {view !== 'retired' && (
+                      <button onClick={() => setStatus(m.id, 'rejected')} disabled={busy[m.id]}
+                        className={`${BTN} text-red-500 hover:text-red-400 hover:bg-red-900/20`}>
+                        {m.status === 'candidate' ? 'Reject' : 'Retire'}
+                      </button>
+                    )}
+                    {view === 'retired' && (
+                      <button onClick={() => remove(m.id)} disabled={busy[m.id]}
+                        className={`${BTN} text-red-500 hover:text-red-400 hover:bg-red-900/20`}>Delete</button>
+                    )}
+                  </>
                 )}
               </div>
-            )
-          })}
-        </div>
-      )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

@@ -92,6 +92,16 @@
   border-color: theme('colors.surface.700') !important;
   color: theme('colors.gray.600') !important;
   position: relative !important;
+  /* diff2html makes this an absolute inline-block; as a relative element the
+     table column grew to fit the @@ row and left a wide gap before the code. */
+  display: table-cell !important;
+  width: 7.5em !important;
+  min-width: 7.5em;
+  white-space: nowrap;
+}
+.d2h-code-line {
+  padding: 0 0.75em !important;
+  width: auto !important;
 }
 .d2h-diff-table .d2h-del {
   background-color: rgba(239, 68, 68, 0.18) !important;

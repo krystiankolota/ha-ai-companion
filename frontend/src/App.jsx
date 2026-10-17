@@ -11,6 +11,7 @@ import ChatTab from './components/ChatTab'
 import SuggestionsTab from './components/SuggestionsTab'
 import MemoryTab from './components/MemoryTab'
 import UsageTab from './components/UsageTab'
+import ChangesTab from './components/ChangesTab'
 import BottomNav from './components/BottomNav'
 import Footer from './components/Footer'
 import DiffModal from './components/DiffModal'
@@ -58,7 +59,7 @@ function AppInner() {
 
   const { loadSessions, deleteSession, switchSession, newChat } = useSessions()
 
-  const { sendMessage, resetWS, connect, tryResume } = useWebSocket(
+  const { sendMessage, stopRun, resetWS, connect, resumeSession } = useWebSocket(
     dispatch,
     getConversationHistory,
     debouncedAutoSave,
@@ -70,7 +71,7 @@ function AppInner() {
     loadSessions().then(() => {
       // A run may still be executing server-side from before this mount
       // (tab switch destroys the HA panel iframe) — resume its stream.
-      tryResume(stateRef.current.currentSessionId)
+      resumeSession(stateRef.current.currentSessionId)
     })
     connect()
 
@@ -114,9 +115,14 @@ function AppInner() {
     return () => window.removeEventListener('beforeunload', handler)
   }, [])
 
-  const handleSwitchSession = useCallback((sessionId) => {
-    switchSession(sessionId, resetWS)
-  }, [switchSession, resetWS])
+  const handleSwitchSession = useCallback(async (sessionId) => {
+    if (sessionId === stateRef.current.currentSessionId) return
+    // Flush what we have so the per-session run marker (lastSeq) matches the
+    // saved history; resumeSession then replays only the missing events.
+    await autoSaveFn()
+    await switchSession(sessionId, resetWS)
+    if (stateRef.current.currentSessionId === sessionId) resumeSession(sessionId)
+  }, [switchSession, resetWS, resumeSession, autoSaveFn])
 
   // Implement-from-suggestions: always start a fresh session, never inject into
   // the active one. NEW_CHAT mints a new sessionId + clears history; the send is
@@ -188,10 +194,11 @@ function AppInner() {
       <div className="flex-1 flex flex-col min-w-0">
         <Header />
         <main className="flex-1 overflow-hidden">
-          {state.activeTab === 'chat' && <ChatTab onSend={sendMessage} />}
+          {state.activeTab === 'chat' && <ChatTab onSend={sendMessage} onStop={stopRun} />}
           {state.activeTab === 'suggestions' && <SuggestionsTab onImplement={implementSuggestion} />}
           {state.activeTab === 'memory' && <MemoryTab />}
           {state.activeTab === 'usage' && <UsageTab />}
+          {state.activeTab === 'changes' && <ChangesTab />}
         </main>
         <Footer />
         <BottomNav />

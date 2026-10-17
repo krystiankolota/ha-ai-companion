@@ -32,6 +32,7 @@ from .const import (
     CONF_REASONING_MODEL,
     CONF_REASONING_API_URL,
     CONF_REASONING_API_KEY,
+    CONF_AA_API_KEY,
     CONF_RESEARCH_USAGE_TRACKING,
     CONF_REASONING_USAGE_TRACKING,
     CONF_INPUT_PRICE_PER_1M,
@@ -132,6 +133,11 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
         os.environ["NODERED_FLOWS_FILE"] = config.get(CONF_NODERED_FLOWS_FILE)
     elif "NODERED_FLOWS_FILE" in os.environ:
         del os.environ["NODERED_FLOWS_FILE"]
+
+    if config.get(CONF_AA_API_KEY):
+        os.environ["ARTIFICIAL_ANALYSIS_API_KEY"] = config.get(CONF_AA_API_KEY)
+    elif "ARTIFICIAL_ANALYSIS_API_KEY" in os.environ:
+        del os.environ["ARTIFICIAL_ANALYSIS_API_KEY"]
 
     if config.get(CONF_SUGGESTION_PROMPT):
         os.environ["SUGGESTION_PROMPT"] = config.get(CONF_SUGGESTION_PROMPT)

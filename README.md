@@ -14,7 +14,8 @@ An AI-powered Home Assistant companion that helps you manage configuration, auto
 - **Tool breadcrumbs** — each agent turn shows a live step-by-step view of every tool call (pending → running → done/error) with expandable args/result panels
 - **Tool call error recovery** — failed tool calls are automatically retried up to 2 times with the error fed back to the LLM so it can self-correct
 - **Suggest automations** — based on live entity states; live progress stream shows what data is being sent
-- **Memory tab** — browse, inspect and delete the AI's persistent memory files; `consolidate_memories` tool reviews all files and produces a merge plan before taking action
+- **Memory tab** — review, approve, edit and retire what the AI remembers (preferences and facts Home Assistant cannot tell it). Auto-extracted facts wait in **To review**; **Check health** retires memories that mention removed entities
+- **Changes tab** — every applied changeset keeps a backup; **Restore** stages a revert you review as a normal diff before it is written
 - **Persistent memory** — remembers your preferences and home layout across sessions
 - **Node-RED integration** — reads your existing flows to avoid duplicate automations
 - **Conversation history** — sessions saved and accessible across page reloads, with a mobile-friendly slide-in sidebar
@@ -246,10 +247,13 @@ The AI remembers facts across sessions using categorised memory files:
 The Suggestions tab fetches live entity states and existing automations/Node-RED flows before asking the AI, so it never duplicates what you already have. You can select which data sources to include (entity states, automations, scenes, scripts, Node-RED, memory). Progress streams in real time — after generation a collapsible "Prompt sent to AI" panel shows the exact system prompt, model used, and a preview of every context section with its size. Each card includes a type badge (new / improvement) and a copyable YAML block.
 
 ### Memory tab
-The **Memory** tab (next to Chat and Suggestions) lists all AI memory files stored in `.ai_agent_memories/`. You can expand any file to read its content and delete stale or incorrect entries without having to SSH into the server.
+The **Memory** tab shows what the AI remembers, stored in `.ai_agent_memories/memory.db`. The AI keeps only facts it cannot read from Home Assistant: your preferences, who uses which device, unclear device names, and agreed decisions. Only **Active** memories go into chats, and only the ones that match your message (preferences always). Facts found automatically after a chat wait in **To review** until you approve them. **Check health** (also runs daily) retires memories that mention entities that no longer exist. Old markdown memory files are imported once into **To review** and moved to `archive_v1/`.
+
+### Changes tab
+The **Changes** tab lists applied changesets (stored in `.ai_agent_changesets/`). **Restore** builds a new changeset that puts the files back as they were before that change. Nothing is written until you approve it. The AI can do the same with the `restore_changeset` tool.
 
 ### Conversation sessions
-All conversations are saved automatically. Use the sidebar to switch between past sessions or start a new one. "Clear all conversations" extracts memorable facts to memory before deleting.
+All conversations are saved automatically. Use the sidebar to switch between past sessions or start a new one. "Clear all conversations" extracts memorable facts into **To review** before deleting.
 
 ---
 

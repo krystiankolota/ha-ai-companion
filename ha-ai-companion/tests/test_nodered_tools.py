@@ -202,3 +202,19 @@ class TestDeployUpdateTab:
         put = next(c for c in tools.api_calls if c[0] == "PUT")
         assert put[2]["label"] == "Kinkiety Garaż"
         assert put[2]["configs"] == []
+
+    @pytest.mark.asyncio
+    async def test_config_nodes_in_payload_win_over_current(self, monkeypatch):
+        # Restore snapshots flatten configs into the array; the old version must not be overridden.
+        monkeypatch.setenv("NODERED_URL", "http://nr:1880")
+        tools = make_tools({
+            ("GET", f"/flow/{TAB_ID}"): {"status": 200, "json": CURRENT_FLOW},
+            ("PUT", f"/flow/{TAB_ID}"): {"status": 200, "json": {}, "text": ""},
+        })
+        old_cfg = {"id": "cfg1", "type": "some-config", "z": TAB_ID, "broker": "old"}
+        flows = json.dumps([{"type": "tab", "id": TAB_ID, "label": "L"}, old_cfg])
+        result = await tools.deploy_nodered_flows(flows, mode="update_tab", tab_id=TAB_ID)
+        assert result["success"] is True
+        payload = next(c for c in tools.api_calls if c[0] == "PUT")[2]
+        assert payload["configs"] == []
+        assert old_cfg in payload["nodes"]

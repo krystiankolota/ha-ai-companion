@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getUsage } from '../lib/api'
+import ModelAdvisor from './ModelAdvisor'
 
 const MODEL_COLORS = ['#818cf8', '#34d399', '#f87171', '#fbbf24', '#22d3ee', '#a78bfa', '#fb923c']
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }]
@@ -159,6 +160,8 @@ export default function UsageTab() {
           )}
         </>
       )}
+
+      <ModelAdvisor />
     </div>
   )
 }
