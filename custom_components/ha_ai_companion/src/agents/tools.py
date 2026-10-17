@@ -1799,6 +1799,13 @@ class AgentTools(NavigationToolsMixin):
             logger.warning(f"memory_doctor: entity list unavailable: {e}")
         # A partial inventory would retire valid memories, so the stale check needs both sources.
         valid = set(states) | set(registry) if states and registry else None
+        if valid is not None:
+            try:  # memories may name services (notify.mobile_app_x); those are valid references too
+                services = await self._ws_call("get_services")
+                if isinstance(services, dict):
+                    valid |= {f"{d}.{s}" for d, svcs in services.items() for s in (svcs or {})}
+            except Exception as e:
+                logger.debug(f"memory_doctor: service list unavailable: {e}")
         issues = self.memory_manager.doctor(valid_entity_ids=valid, apply=True)
         note = ("Stale records were retired. Re-save corrected facts with save_memory if still true."
                 if issues["stale"] else "Memory is healthy.")

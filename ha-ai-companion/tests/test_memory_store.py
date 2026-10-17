@@ -271,3 +271,19 @@ def test_duplicate_still_applies_replaces(store):
 def test_procedure_key_is_searchable_by_slug(store):
     store.add("procedure", "Pop-up uses hash and card_type pop-up", key="pattern_bubble-card_syntax")
     assert store.search("bubble-card", kind="procedure")
+
+
+def test_template_variables_are_not_entities():
+    assert extract_entities("Use trigger.id and this.attributes with states.sensor for switch.a") == ["switch.a"]
+
+
+def test_doctor_accepts_service_references(store):
+    t = _tools(store)
+
+    async def ws_call(msg_type, **_):
+        return {"notify": {"mobile_app_s26": {}}}
+
+    t._ws_call = ws_call
+    store.add("preference", "Notify only notify.mobile_app_s26")
+    r = run(t.memory_doctor())
+    assert r["unverified"] == [] and r["stale"] == []

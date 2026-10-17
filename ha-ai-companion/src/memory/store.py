@@ -22,6 +22,8 @@ _MOJIBAKE_MARKERS = ('Ã', 'Å', 'Â', 'â€', 'ï¸', 'Ä\x85', 'Ä\x99', 'Ã�
 # entity_id pattern: domain.object_id (lowercase). Excludes file extensions.
 _ENTITY_RE = re.compile(r'\b([a-z][a-z0-9_]*\.[a-z0-9_]+)\b')
 _NON_ENTITY_SUFFIX = ('.md', '.yaml', '.yml', '.json', '.py', '.js', '.css', '.html', '.txt')
+# Jinja/automation variables look like entity_ids (trigger.id, this.attributes) but never are.
+_TEMPLATE_ROOTS = frozenset({'trigger', 'this', 'states', 'state_attr', 'repeat', 'wait', 'context', 'value_json'})
 
 
 def _mojibake_score(text: str) -> int:
@@ -54,6 +56,7 @@ def extract_entities(content: str) -> List[str]:
     out = {
         e for e in found
         if not e.endswith(_NON_ENTITY_SUFFIX) and 2 <= len(e.split('.', 1)[0]) <= 30
+        and e.split('.', 1)[0] not in _TEMPLATE_ROOTS
     }
     return sorted(out)
 
