@@ -100,8 +100,8 @@ export default function MemoryTab() {
 
   return (
     <div className="flex flex-col h-full overflow-y-auto px-4 py-4 max-w-3xl mx-auto w-full">
-      <div className="flex items-center justify-between mb-3">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+        <div className="flex-1 min-w-[12rem]">
           <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
             AI Memory
             {!!counts.candidate && (
@@ -114,7 +114,7 @@ export default function MemoryTab() {
             Facts the AI cannot read from Home Assistant. Only active memories are used in chats.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-shrink-0 whitespace-nowrap">
           <button onClick={() => { setCreating(true); setError('') }}
             className="text-xs px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg transition-colors">
             + New

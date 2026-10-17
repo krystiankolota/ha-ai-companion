@@ -23,31 +23,31 @@ function score(v) {
 function ModelRow({ m }) {
   return (
     <tr className="border-t border-surface-800">
-      <td className="py-1 pr-2 font-mono text-gray-300 truncate max-w-[14rem]" title={m.id}>{m.id}</td>
+      <td className="py-1 pr-2 font-mono text-gray-300 truncate max-w-[8.5rem] sm:max-w-[14rem]" title={m.id}>{m.id}</td>
       <td className="py-1 px-2 text-right tabular-nums">{score(m.intelligence)}</td>
       <td className="py-1 px-2 text-right tabular-nums">{score(m.agentic)}</td>
-      <td className="py-1 px-2 text-right tabular-nums text-gray-400">${m.price_in_per_m} / ${m.price_out_per_m}</td>
+      <td className="hidden sm:table-cell py-1 px-2 text-right tabular-nums text-gray-400">${m.price_in_per_m} / ${m.price_out_per_m}</td>
       <td className="py-1 px-2 text-right tabular-nums text-emerald-400">{usd(m.est_cost_per_session)}</td>
-      <td className="py-1 pl-2 text-right tabular-nums text-gray-400">{m.sessions_per_10usd ?? '—'}</td>
+      <td className="hidden sm:table-cell py-1 pl-2 text-right tabular-nums text-gray-400">{m.sessions_per_10usd ?? '—'}</td>
     </tr>
   )
 }
 
 function ModelTable({ rows }) {
   return (
-    <table className="w-full text-xs">
+    <div className="overflow-x-auto"><table className="w-full text-xs">
       <thead>
         <tr className="text-gray-500">
           <th className="text-left font-normal pb-1">Model</th>
           <th className="text-right font-normal pb-1 px-2">Intel.</th>
           <th className="text-right font-normal pb-1 px-2">Agentic</th>
-          <th className="text-right font-normal pb-1 px-2">$/M in / out</th>
+          <th className="hidden sm:table-cell text-right font-normal pb-1 px-2">$/M in / out</th>
           <th className="text-right font-normal pb-1 px-2">Est. / session</th>
-          <th className="text-right font-normal pb-1">Sessions / $10</th>
+          <th className="hidden sm:table-cell text-right font-normal pb-1">Sessions / $10</th>
         </tr>
       </thead>
       <tbody>{rows.map(m => <ModelRow key={m.id} m={m} />)}</tbody>
-    </table>
+    </table></div>
   )
 }
 

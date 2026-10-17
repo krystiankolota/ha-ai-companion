@@ -1333,10 +1333,23 @@ class AgentTools(NavigationToolsMixin):
         """Store (file_path, original, new) entries; return (changeset_id, diff_stats).
 
         The original is kept so the UI diff and the apply-time conflict check use
-        the exact content this proposal was built on.
+        the exact content this proposal was built on. A disk file with a pending
+        (unapproved) change never ends up with two cards: an edit built on the pending
+        content merges (both edits, diffed against disk); an edit built on the same disk
+        content replaces the pending one.
         """
         stored, stats = [], []
+        pending_file = getattr(self.agent_system, "pending_file", None)
         for file_path, original, new_content in entries:
+            supersedes = replaces = None
+            if pending_file and is_disk_file(file_path):
+                base = pending_file(file_path)
+                if base and (original or "") == base[1]["new_content"]:
+                    supersedes, original = base[0], base[1]["original_content"]
+                    self.agent_system.drop_pending_file(supersedes, file_path)
+                elif base and (original or "") == base[1]["original_content"]:
+                    replaces = base[0]
+                    self.agent_system.drop_pending_file(replaces, file_path)
             info = describe_change(file_path, original, new_content)
             stored.append({
                 "file_path": file_path,
@@ -1347,6 +1360,12 @@ class AgentTools(NavigationToolsMixin):
             stat = {k: info[k] for k in ("file_path", "added", "removed", "is_new_file")}
             if info["items"]:
                 stat["items"] = info["items"]
+            if supersedes:
+                stat["supersedes"] = supersedes
+            if replaces:
+                stat["supersedes"] = replaces
+                stat["note"] = (f"Replaced pending changeset {replaces} for this file; its edits are NOT "
+                                "included. Re-apply them with a targeted tool if they are still wanted.")
             stats.append(stat)
         if self.agent_system:
             changeset_id = self.agent_system.store_changeset({
@@ -1584,7 +1603,7 @@ class AgentTools(NavigationToolsMixin):
             from datetime import datetime, timedelta
             import uuid
 
-            current_content = await self.config_manager.read_file_raw(file_path, allow_missing=False)
+            current_content = await self._read_for_write(file_path, allow_missing=False)
             if current_content is None:
                 return {"success": False, "error": f"File not found: {file_path}"}
 
@@ -1671,7 +1690,7 @@ class AgentTools(NavigationToolsMixin):
             from datetime import datetime, timedelta
             import uuid
 
-            current_content = await self.config_manager.read_file_raw(file_path, allow_missing=False)
+            current_content = await self._read_for_write(file_path, allow_missing=False)
             if current_content is None:
                 return {"success": False, "error": f"File not found: {file_path}"}
 

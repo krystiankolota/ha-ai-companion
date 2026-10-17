@@ -41,8 +41,8 @@ export default function DiffModal() {
   const noTextChange = loaded && changes.every(c => !c.diff)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
-      <div className="bg-surface-900 border border-surface-700 rounded-2xl w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] flex flex-col shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4">
+      <div className="bg-surface-900 border border-surface-700 sm:rounded-2xl w-full max-w-5xl h-full sm:h-auto sm:max-h-[90vh] flex flex-col shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700 flex-shrink-0">
           <div>
@@ -61,7 +61,7 @@ export default function DiffModal() {
         </div>
 
         {/* Diff content */}
-        <div className="flex-1 overflow-auto p-4">
+        <div className="flex-1 overflow-auto p-2 sm:p-4">
           {changes.filter(c => c.items).map(c => (
             <div key={c.file_path} className="mb-3 text-sm">
               <div className="text-gray-400 text-xs mb-1">{c.file_path}</div>
@@ -78,7 +78,7 @@ export default function DiffModal() {
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end px-5 py-4 border-t border-surface-700 flex-shrink-0">
+        <div className="flex justify-end px-5 py-3 sm:py-4 border-t border-surface-700 flex-shrink-0">
           <button
             onClick={close}
             className="px-4 py-2 bg-surface-800 hover:bg-surface-700 border border-surface-600 text-gray-300 rounded-lg text-sm transition-colors"

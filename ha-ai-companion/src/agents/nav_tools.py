@@ -170,6 +170,20 @@ class NavigationToolsMixin:
             raise PermissionError("secrets.yaml is not readable")
         return await self.config_manager.read_file_raw(file_path, allow_missing=True)
 
+    async def _read_for_write(self, file_path: str, allow_missing: bool = True) -> Optional[str]:
+        """Base content for a new edit: the pending (unapproved) version if one exists, else disk.
+
+        Building on the pending version lets the store merge both edits into one changeset,
+        so the user never gets two cards for one file where approving one stales the other.
+        """
+        pending_file = getattr(self.agent_system, "pending_file", None)
+        pending = pending_file(file_path) if pending_file else None
+        if pending:
+            return pending[1]["new_content"]
+        if os.path.basename(file_path) == "secrets.yaml":
+            raise PermissionError("secrets.yaml is not readable")
+        return await self.config_manager.read_file_raw(file_path, allow_missing=allow_missing)
+
     # ------------------------------------------------------------------
     # Generic file navigation
     # ------------------------------------------------------------------
@@ -607,7 +621,7 @@ class NavigationToolsMixin:
             return {"success": False, "error": f"No writable {kind} list/mapping file was found."}
         if file_path and target["path"] != file_path:
             return {"success": False, "error": f"{file_path} is not a writable {kind} item file."}
-        original = await self._read_text(target["path"]) or ""
+        original = await self._read_for_write(target["path"]) or ""
         fmt, blocks = split_blocks(original)
         nl = "\r\n" if "\r\n" in original else "\n"
         if kind == "script":
@@ -691,7 +705,7 @@ class NavigationToolsMixin:
         if not self._target_allowed(layout, target):
             allowed = [e["path"] for e in layout.get("automation", []) if e["format"] == "list"]
             return {"success": False, "error": f"{target} is not an automation list file. Use one of: {allowed}"}
-        original = await self._read_text(target) or ""
+        original = await self._read_for_write(target) or ""
         try:
             new_text, mode = upsert_item(original, block, str(item["id"]), item.get("alias"))
         except ValueError as e:
@@ -713,7 +727,7 @@ class NavigationToolsMixin:
         if not entry.get("editable"):
             how = "propose_config_changes (single-item file)" if entry.get("single_item") else "patch_config_block (package/inline)"
             return {"success": False, "error": f"It lives in {entry['file']}. Use {how}."}
-        original = await self._read_text(entry["file"]) or ""
+        original = await self._read_for_write(entry["file"]) or ""
         new_text = remove_item(original, item_id=entry.get("id"), alias=entry.get("alias"))
         if new_text is None:
             return {"success": False, "error": "Automation not found in file (it may have just changed)."}

@@ -69,9 +69,17 @@ export function reducer(state, action) {
     case Actions.ADD_DISPLAY_MESSAGE: {
       // Remove any existing loading message before adding another if not already one
       const newMsg = { id: generateId(), ...action.payload }
+      // A changeset that merged an older pending one for the same file retires the older card.
+      const superseded = new Set((newMsg.changeset?.diff_stats || []).map(s => s.supersedes).filter(Boolean))
+      const prev = superseded.size
+        ? state.displayMessages.map(m =>
+            m.type === 'approval' && superseded.has(m.changeset?.changeset_id)
+              ? { ...m, changeset: { ...m.changeset, superseded_by: newMsg.changeset.changeset_id } }
+              : m)
+        : state.displayMessages
       return {
         ...state,
-        displayMessages: [...state.displayMessages, newMsg],
+        displayMessages: [...prev, newMsg],
       }
     }
 

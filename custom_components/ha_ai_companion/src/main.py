@@ -22,7 +22,7 @@ from .conversations import ConversationManager
 from .tasks import TaskManager
 from .runs import RunRegistry
 
-version = "1.23.3"
+version = "1.23.4"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -31,6 +31,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+_background_tasks: set = set()
 
 # Phase 2: Global configuration manager instance
 config_manager: Optional[ConfigurationManager] = None
@@ -981,11 +982,20 @@ async def generate_suggestions(request: Request):
         finally:
             await queue.put(None)  # sentinel
 
-    asyncio.create_task(run_generation())
+    # The task outlives a dropped client (tab switch, flaky mobile network); the result is
+    # still cached and the frontend polls /api/suggestions for it.
+    task = asyncio.create_task(run_generation())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     async def stream():
         while True:
-            item = await queue.get()
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=10)
+            except asyncio.TimeoutError:
+                # Keeps proxies and mobile connections from idling out during the long LLM call.
+                yield json_lib.dumps({"event": "heartbeat"}) + "\n"
+                continue
             if item is None:
                 break
             yield json_lib.dumps(item) + "\n"

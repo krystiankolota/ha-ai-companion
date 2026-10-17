@@ -8,6 +8,7 @@ import {
   deleteSession as apiDeleteSession,
 } from '../lib/api'
 import { generateSessionId } from '../lib/utils'
+import { changesetFromResult } from '../lib/changesets'
 
 const LAST_SESSION_KEY = 'ha_ai_last_session_id'
 
@@ -44,13 +45,8 @@ function buildDisplayMessages(history) {
       try {
         const result = JSON.parse(msg.content)
         msgs.push({ id: nextId(), type: 'tool_result', functionName: toolName, result })
-        if (toolName === 'propose_config_changes' && result.success) {
-          msgs.push({
-            id: nextId(),
-            type: 'system',
-            content: `Config change proposed (${result.total_files} file(s)) — changeset expired`,
-          })
-        }
+        const changeset = changesetFromResult(toolName, result)
+        if (changeset) msgs.push({ id: nextId(), type: 'approval', changeset })
       } catch (e) {
         // Malformed tool result — skip rendering
       }

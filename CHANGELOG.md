@@ -5,6 +5,17 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.4] - 2026-10-17
+
+### Fixed
+- Edits to the same file now merge into one pending changeset (one approval card), so approving no longer fails with "file changed, re-read". An older card for that file is marked superseded.
+- Approval cards survive a reload or tab switch: they are rebuilt from session history and check the server, showing "no longer available" for applied/expired changesets instead of a phantom approve button.
+- Agent only says "ready to approve" after a write tool returned a changeset.
+- HA config warnings (`check_config` valid-with-warnings, e.g. an integration that will not load) are now shown after approval.
+- Suggestions survive dropped connections: server heartbeat plus a fallback poll for the finished result, no more "network error" until tab switch.
+- A changeset can no longer be applied twice or merged into while it is being written.
+- "Fix in chat" on the Suggestions tab always starts a new conversation.
+- Mobile: readable diff view (wrapped lines, compact line numbers), full-screen diff modal, compact model advisor, wrapping memory header, footer hidden when empty.
 ## [1.23.3] - 2026-10-17
 
 ### Fixed

@@ -682,6 +682,8 @@ Other config files:
 - For scripts.yaml/scenes.yaml, prefer get_automation(kind='script'|'scene') and upsert_automation(kind='script'|'scene').
 - File layout: match the user's existing layout (single file vs split files). Never move items between files unless asked.
 - Never reproduce file content in text — call the tool directly.
+- Several edits to one file in a turn are fine: each write tool builds on the still-pending version and merges into one approval card. Never rewrite a whole file just to combine edits.
+- Only tell the user a change is ready to approve after a write tool returned a changeset_id in this turn.
 
 Entities:
 - search_entities: find entities by name/id/area words. Use it before writing YAML with entity_ids you have not seen.
@@ -2943,6 +2945,27 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         logger.info(f"Stored changeset {changeset_id} with {len(changeset.file_changes)} file(s)")
         return changeset_id
 
+    def pending_file(self, file_path: str):
+        """Newest unexpired pending change for file_path as (changeset_id, file_change), else None."""
+        now = datetime.now(timezone.utc)
+        for cid in reversed(list(self.pending_changesets)):
+            cs = self.pending_changesets[cid]
+            if datetime.fromisoformat(cs.expires_at) < now:
+                continue
+            fc = next((f for f in cs.file_changes if f["file_path"] == file_path), None)
+            if fc:
+                return cid, fc
+        return None
+
+    def drop_pending_file(self, changeset_id: str, file_path: str) -> None:
+        """Remove one file from a pending changeset (deleting it when empty) after a newer one absorbed it."""
+        cs = self.pending_changesets.get(changeset_id)
+        if not cs:
+            return
+        cs.file_changes = [f for f in cs.file_changes if f["file_path"] != file_path]
+        if not cs.file_changes:
+            del self.pending_changesets[changeset_id]
+
     async def process_approval(
         self,
         change_id: str,
@@ -2996,6 +3019,10 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 "message": "Changeset has expired. Please re-propose the changes."
             }
 
+        # Claim it before the first await so a concurrent edit cannot merge into
+        # (or a second click re-apply) a changeset that is being written.
+        del self.pending_changesets[change_id]
+
         # Apply changes
         try:
             applied_files = []
@@ -3012,7 +3039,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 if content_hash(current) != base_hash:
                     conflicts.append(file_change['file_path'])
             if conflicts:
-                del self.pending_changesets[change_id]
                 logger.warning(f"Approval refused: {conflicts} changed since changeset {change_id} was proposed")
                 return {
                     "success": False,
@@ -3081,11 +3107,11 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
             # Step 2: If validation requested and files were written, validate all at once
             validation_failed = False
+            validation_warnings = None
             if validate and applied_files:
                 try:
                     logger.info("Validating configuration after writing all files...")
-                    await self.config_manager.validate_config()
-                    logger.info("Configuration validation passed")
+                    validation_warnings = await self.config_manager.validate_config()
                 except Exception as e:
                     logger.error(f"Configuration validation failed: {e}")
                     validation_failed = True
@@ -3095,9 +3121,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         "file_path": "validation",
                         "error": f"Configuration validation failed: {str(e)}"
                     })
-
-            # Remove changeset from pending
-            del self.pending_changesets[change_id]
 
             # Keep the "before" content of every written file so this changeset
             # can be restored later (restore_changeset).
@@ -3149,7 +3172,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "applied_files": applied_files,
                     "failed_files": failed_files,
                     "config_reloaded": reload_success,
-                    **({"reload_error": reload_error} if reload_error else {})
+                    **({"reload_error": reload_error} if reload_error else {}),
+                    **({"validation_warnings": validation_warnings} if validation_warnings else {})
                 }
             else:
                 message = f"Successfully applied changes to {len(applied_files)} file(s)"
@@ -3159,17 +3183,24 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     message += (". WARNING: files were written but Home Assistant rejected the "
                                 f"reload with a real validation error: {reload_error}. The config on "
                                 "disk may be broken — call search_config_files to inspect and fix it.")
+                if validation_warnings:
+                    message += (". WARNING: Home Assistant config check reported problems (an integration "
+                                f"may not load): {validation_warnings[:1500]} — check whether this change "
+                                "caused them and fix it.")
                 return {
                     "success": True,
                     "applied": True,
                     "message": message,
                     "applied_files": applied_files,
                     "config_reloaded": reload_success,
-                    **({"reload_error": reload_error} if reload_error else {})
+                    **({"reload_error": reload_error} if reload_error else {}),
+                    **({"validation_warnings": validation_warnings} if validation_warnings else {})
                 }
 
         except Exception as e:
             logger.error(f"Error applying changeset: {e}", exc_info=True)
+            if not applied_files:
+                self.pending_changesets.setdefault(change_id, changeset)
             return {
                 "success": False,
                 "applied": False,

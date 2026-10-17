@@ -136,6 +136,14 @@ function AppInner() {
     dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'chat' })
   }, [dispatch, resetWS])
 
+  // "Fix in chat" / "Add to chat": fresh session with the message prefilled for editing.
+  const prefillNewChat = useCallback((message) => {
+    resetWS()
+    dispatch({ type: Actions.NEW_CHAT })
+    dispatch({ type: Actions.SET_CHAT_PREFILL, payload: message })
+    dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'chat' })
+  }, [dispatch, resetWS])
+
   useEffect(() => {
     const msg = pendingImplementRef.current
     if (msg && state.conversationHistory.length === 0) {
@@ -195,7 +203,7 @@ function AppInner() {
         <Header />
         <main className="flex-1 overflow-hidden">
           {state.activeTab === 'chat' && <ChatTab onSend={sendMessage} onStop={stopRun} />}
-          {state.activeTab === 'suggestions' && <SuggestionsTab onImplement={implementSuggestion} />}
+          {state.activeTab === 'suggestions' && <SuggestionsTab onImplement={implementSuggestion} onPrefillNewChat={prefillNewChat} />}
           {state.activeTab === 'memory' && <MemoryTab />}
           {state.activeTab === 'usage' && <UsageTab />}
           {state.activeTab === 'changes' && <ChangesTab />}

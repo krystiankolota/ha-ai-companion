@@ -1,15 +1,32 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAppContext } from '../../store/AppContext'
 import { Actions } from '../../store/reducer'
-import { submitApproval } from '../../lib/api'
+import { getChangeset, submitApproval } from '../../lib/api'
 
-// States: pending | confirming_reject | processing | approved | failed | rejected
-export default function ApprovalCard({ changeset }) {
+// States: pending | confirming_reject | processing | approved | failed | rejected | gone
+export default function ApprovalCard({ changeset: base }) {
   const { dispatch } = useAppContext()
   const [status, setStatus] = useState('pending')
   const [resultData, setResultData] = useState(null)
+  const [detail, setDetail] = useState(null)
+  const changesetId = base?.changeset_id
+  const supersededBy = base?.superseded_by
 
-  if (!changeset) return null
+  // The server is the source of truth: a replayed or merged card may no longer be
+  // pending, and the diff is computed from the exact content the proposal was built on.
+  useEffect(() => {
+    if (!changesetId) return
+    let cancelled = false
+    getChangeset(changesetId).then(cs => {
+      if (cancelled) return
+      if (!cs) setStatus(s => (s === 'pending' || s === 'confirming_reject' ? 'gone' : s))
+      else if (cs.file_changes) setDetail(cs.file_changes)
+    }).catch(err => console.warn('Failed to fetch changeset:', err))
+    return () => { cancelled = true }
+  }, [changesetId, supersededBy])
+
+  if (!base) return null
+  const changeset = { ...base, file_changes_detail: base.file_changes_detail || detail || undefined }
 
   const handleViewDiff = () => {
     dispatch({ type: Actions.SET_ACTIVE_DIFF, payload: changeset })
@@ -165,6 +182,11 @@ export default function ApprovalCard({ changeset }) {
               The config on disk may be broken — ask the assistant to inspect and fix it.
             </div>
           )}
+          {resultData?.validation_warnings && (
+            <div className="text-xs text-amber-400 break-words">
+              ⚠️ Home Assistant config check reported problems: {resultData.validation_warnings}
+            </div>
+          )}
           {resultData?.applied_files && resultData.applied_files.length > 0 && (
             <div className="text-xs text-gray-400 space-y-0.5">
               {resultData.applied_files.map((f, i) => (
@@ -194,6 +216,14 @@ export default function ApprovalCard({ changeset }) {
           >
             ↻ Try approve again
           </button>
+        </div>
+      )}
+
+      {status === 'gone' && (
+        <div className="text-xs text-gray-400">
+          {supersededBy
+            ? `Merged into a newer proposal (${supersededBy}) — use that card.`
+            : 'No longer pending — already applied, rejected, merged into a newer proposal or expired.'}
         </div>
       )}
 

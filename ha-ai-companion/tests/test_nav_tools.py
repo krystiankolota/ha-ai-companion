@@ -124,6 +124,22 @@ def test_upsert_replaces_in_place_and_stages_changeset(tools):
     assert r["diff_stats"][0]["items"]["changed"] == ["Evening light v2 (2)"]
 
 
+def test_second_edit_to_same_file_merges_into_one_pending_changeset(tools):
+    from src.agents.agent_system import AgentSystem
+
+    agent = AgentSystem.__new__(AgentSystem)
+    agent.pending_changesets = {}
+    tools.agent_system = agent
+    first = run(tools.upsert_automation("id: '2'\nalias: Evening v2\ntriggers: []\nactions: []\n"))
+    second = run(tools.upsert_automation("id: '1'\nalias: Morning v2\ntriggers: []\nactions: []\n"))
+    assert first["success"] and second["success"], (first, second)
+    assert list(agent.pending_changesets) == [second["changeset_id"]]
+    assert second["diff_stats"][0]["supersedes"] == first["changeset_id"]
+    fc = agent.pending_changesets[second["changeset_id"]].file_changes[0]
+    assert fc["original_content"] == AUTOS
+    assert "alias: Evening v2" in fc["new_content"] and "alias: Morning v2" in fc["new_content"]
+
+
 def test_upsert_new_goes_to_default_file_with_generated_id(tools):
     r = run(tools.upsert_automation("alias: New one\ntriggers: []\nactions: []\n"))
     assert r["success"], r

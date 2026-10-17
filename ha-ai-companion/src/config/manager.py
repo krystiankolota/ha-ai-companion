@@ -546,7 +546,7 @@ class ConfigurationManager:
         finally:
             await ws_client.close()
 
-    async def validate_config(self) -> None:
+    async def validate_config(self) -> Optional[str]:
         """
         Run Home Assistant configuration validation.
 
@@ -607,8 +607,12 @@ class ConfigurationManager:
 
                         # Check if validation passed
                         if result.get('result') == 'valid':
+                            warnings = result.get('warnings')
+                            if warnings:
+                                logger.warning(f"Configuration valid with warnings:\n{warnings}")
+                                return str(warnings)
                             logger.info("Configuration validation passed ✓")
-                            return
+                            return None
                         else:
                             # Validation failed - extract error details
                             errors = result.get('errors', 'Unknown validation error')

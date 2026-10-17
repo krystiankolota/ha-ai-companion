@@ -63,8 +63,12 @@ export function submitApproval(changeId, approved) {
   })
 }
 
-export function getChangeset(changesetId) {
-  return apiFetch(`api/changeset/${changesetId}`)
+// Resolves to null when the changeset is no longer pending (applied, rejected, merged or expired).
+export async function getChangeset(changesetId) {
+  const response = await fetch(`api/changeset/${changesetId}`)
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(response.statusText)
+  return response.json()
 }
 
 export function getAppliedChangesets(limit = 20) {
@@ -81,6 +85,34 @@ export function getSuggestions() {
 }
 
 export async function generateSuggestions(resourceTypes, extraPrompt, onStatus, onContextReady) {
+  // Compare against the cached run's timestamp, not the client clock (phone/server skew).
+  const baseline = () => getSuggestions().then(d => ({ ok: true, at: d?.generated_at ?? null }), () => ({ ok: false }))
+  let previous = await baseline()
+  if (!previous.ok) previous = await baseline()
+  try {
+    return await streamSuggestions(resourceTypes, extraPrompt, onStatus, onContextReady)
+  } catch (e) {
+    // Without a known baseline, polling could return the old cached run as "new".
+    if (e.fromServer || !previous.ok) throw e
+    // Stream dropped (tab switch, flaky mobile network); generation keeps running server-side.
+    if (onStatus) onStatus('Connection lost — waiting for the result…')
+    return pollSuggestions(previous.at)
+  }
+}
+
+async function pollSuggestions(previous, timeoutMs = 6 * 60 * 1000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 5000))
+    try {
+      const data = await getSuggestions()
+      if (data?.generated_at && data.generated_at !== previous) return data
+    } catch { /* keep waiting */ }
+  }
+  throw new Error('Suggestion generation did not finish in time')
+}
+
+async function streamSuggestions(resourceTypes, extraPrompt, onStatus, onContextReady) {
   const body = { resource_types: resourceTypes }
   if (extraPrompt) body.extra_prompt = extraPrompt
   const response = await fetch('api/suggestions/generate', {
@@ -91,7 +123,7 @@ export async function generateSuggestions(resourceTypes, extraPrompt, onStatus, 
   if (!response.ok) {
     let detail
     try { detail = (await response.json()).detail } catch { detail = response.statusText }
-    throw new Error(detail || response.statusText)
+    throw Object.assign(new Error(detail || response.statusText), { fromServer: true })
   }
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -104,7 +136,9 @@ export async function generateSuggestions(resourceTypes, extraPrompt, onStatus, 
     if (event.event === 'status' && onStatus) onStatus(event.message)
     else if (event.event === 'context_ready' && onContextReady) onContextReady(event)
     else if (event.event === 'result') result = event
-    else if (event.event === 'error') throw new Error(event.message || 'Suggestion generation failed')
+    else if (event.event === 'error') {
+      throw Object.assign(new Error(event.message || 'Suggestion generation failed'), { fromServer: true })
+    }
   }
   while (true) {
     const { done, value } = await reader.read()
@@ -115,6 +149,7 @@ export async function generateSuggestions(resourceTypes, extraPrompt, onStatus, 
     lines.forEach(handle)
   }
   handle(buffer + decoder.decode())
+  if (!result) throw new Error('Stream ended without a result')
   return result
 }
 

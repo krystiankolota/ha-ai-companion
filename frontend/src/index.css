@@ -149,3 +149,17 @@
 .d2h-code-side-line + .d2h-code-side-line {
   border-left-color: theme('colors.surface.700') !important;
 }
+
+/* Phones: one narrow line-number column and wrapped code instead of a sideways scroll. */
+@media (max-width: 639px) {
+  .d2h-file-list-wrapper { display: none !important; }
+  .d2h-diff-table { font-size: 11.5px !important; }
+  .d2h-diff-table td { line-height: 1.5 !important; }
+  .d2h-code-linenumber { width: 2.6em !important; min-width: 2.6em; }
+  .d2h-code-linenumber .line-num1 { display: none !important; }
+  .d2h-code-linenumber .line-num2 { display: inline !important; padding: 0 0.3em !important; float: none !important; }
+  .d2h-code-line { padding: 0 0.4em !important; white-space: normal !important; display: block !important; }
+  .d2h-code-line-prefix, .d2h-code-line ins, .d2h-code-line del { display: inline !important; }
+  .d2h-code-line-ctn { display: inline !important; width: auto !important; white-space: pre-wrap !important; word-break: break-all; }
+  .d2h-file-header { padding: 4px 6px !important; }
+}

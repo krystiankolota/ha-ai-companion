@@ -198,6 +198,7 @@ class TestPatchConfigKey:
 
         tools.agent_system = MagicMock()
         tools.agent_system.store_changeset = store_changeset
+        tools.agent_system.pending_file.return_value = None
 
         await tools.patch_config_key(
             file_path="configuration.yaml",
@@ -248,6 +249,7 @@ class TestPatchConfigKey:
 
         tools.agent_system = MagicMock()
         tools.agent_system.store_changeset = store_changeset
+        tools.agent_system.pending_file.return_value = None
 
         result = await tools.patch_config_key(
             file_path="automations.yaml",
@@ -293,6 +295,7 @@ class TestPatchConfigBlock:
 
         tools.agent_system = MagicMock()
         tools.agent_system.store_changeset = store_changeset
+        tools.agent_system.pending_file.return_value = None
 
         new_logger = "default: info\nlogs:\n  custom_components: warning\n"
         result = await tools.patch_config_block(
@@ -319,6 +322,7 @@ class TestPatchConfigBlock:
 
         tools.agent_system = MagicMock()
         tools.agent_system.store_changeset = store_changeset
+        tools.agent_system.pending_file.return_value = None
 
         new_automation = (
             "alias: Morning light\n"

@@ -1,7 +1,7 @@
 import { useRef, useCallback, useState } from 'react'
 import { Actions } from '../store/reducer'
 import { generateId } from '../lib/utils'
-import { getChangeset } from '../lib/api'
+import { changesetFromResult } from '../lib/changesets'
 import { toolLabel, makeArgsSummary, makeResultSummary } from '../lib/toolLabels'
 
 // Per-session markers for runs that may still be executing server-side.
@@ -376,38 +376,14 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
           })
         }
 
-        // Handle all changeset-returning tools — show approval card
-        const CHANGESET_TOOLS = ['propose_config_changes', 'patch_config_key', 'patch_config_block', 'add_nodered_flow', 'edit_nodered_tab', 'restore_changeset', 'upsert_automation', 'remove_automation']
-        const isChangesetTool = CHANGESET_TOOLS.includes(data.function)
-
-        if (isChangesetTool && data.result.success && data.result.changeset_id) {
-          const changesetData = {
-            changeset_id: data.result.changeset_id,
-            total_files: data.result.total_files,
-            files: data.result.files,
-            reason: data.result.reason,
-            diff_stats: data.result.diff_stats || [],
-          }
-
-          // The server computes each file's diff from the exact content the
-          // proposal was built on; fetch it after showing the card.
-          const msgId = generateId()
-          changesetData._msgId = msgId
+        // Handle all changeset-returning tools — show approval card.
+        // ApprovalCard fetches the server-side diff itself.
+        const changesetData = changesetFromResult(data.function, data.result)
+        if (changesetData) {
           dispatch({
             type: Actions.ADD_DISPLAY_MESSAGE,
-            payload: { id: msgId, type: 'approval', changeset: changesetData },
+            payload: { type: 'approval', changeset: changesetData },
           })
-          getChangeset(data.result.changeset_id).then(cs => {
-            if (cs && cs.file_changes) {
-              dispatch({
-                type: Actions.UPDATE_DISPLAY_MESSAGE,
-                payload: {
-                  id: msgId,
-                  updates: { changeset: { ...changesetData, file_changes_detail: cs.file_changes } },
-                },
-              })
-            }
-          }).catch(err => console.warn('Failed to fetch changeset for diff:', err))
         }
 
         // Save notification for save_memory

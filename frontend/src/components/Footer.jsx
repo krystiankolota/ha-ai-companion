@@ -6,8 +6,8 @@ export default function Footer() {
   const hasStats = tokenStats.input > 0 || tokenStats.output > 0
 
   return (
-    <footer className="border-t border-surface-700 px-4 py-2 flex items-center justify-between text-xs text-gray-500 flex-shrink-0 bg-surface-900">
-      <span>HA AI Companion</span>
+    <footer className={`${hasStats ? 'flex' : 'hidden sm:flex'} border-t border-surface-700 px-4 py-2 items-center justify-between text-xs text-gray-500 flex-shrink-0 bg-surface-900`}>
+      <span className="hidden sm:inline">HA AI Companion</span>
       {hasStats && (
         <div className="flex items-center gap-2">
           <span>in: {tokenStats.input.toLocaleString()}</span>

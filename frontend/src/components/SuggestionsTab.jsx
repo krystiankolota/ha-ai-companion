@@ -347,7 +347,7 @@ function fmtCountdown(secs) {
 
 // ── Main SuggestionsTab ────────────────────────────────────────────────────────
 
-export default function SuggestionsTab({ onImplement }) {
+export default function SuggestionsTab({ onImplement, onPrefillNewChat }) {
   const { dispatch } = useAppContext()
 
   const [resourceTypes, setResourceTypes] = useState(loadStoredResourceTypes)
@@ -530,10 +530,7 @@ export default function SuggestionsTab({ onImplement }) {
     }
   }
 
-  const switchToChat = useCallback((message) => {
-    dispatch({ type: Actions.SET_CHAT_PREFILL, payload: message })
-    dispatch({ type: Actions.SET_ACTIVE_TAB, payload: 'chat' })
-  }, [dispatch])
+  const switchToChat = onPrefillNewChat
 
   const visibleSuggestions = suggestions.filter(
     s => !dismissedTitles.has(s.title) && !appliedTitles.has(s.title)
