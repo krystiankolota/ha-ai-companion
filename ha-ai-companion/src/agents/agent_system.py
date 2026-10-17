@@ -1870,6 +1870,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 output_tokens = 0
                 cached_tokens = 0
                 call_cost = 0.0  # OpenRouter returns actual USD cost in usage.cost
+                served_model = active_model  # router slugs (openrouter/auto) report the real model per chunk
 
                 _stream_iter = stream.__aiter__()
                 while True:
@@ -1885,6 +1886,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         return
                     if not _has_chunk:
                         break
+                    if isinstance(getattr(chunk, 'model', None), str) and chunk.model:
+                        served_model = chunk.model
                     # Guard: some providers (e.g. Anthropic/Haiku) send a final
                     # usage-only chunk with an empty choices array.
                     if not chunk.choices:
@@ -1986,7 +1989,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             # mislabeled normal turns as 'suggestion' in the Usage
                             # tab. The model is already captured in `model` below.
                             phase="main_agent",
-                            model=active_model,
+                            model=served_model,
                             iteration=iteration,
                             input_tokens=input_tokens,
                             cached_tokens=cached_tokens,
@@ -1996,6 +1999,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     except Exception as _uerr:
                         logger.debug("usage record failed: %s", _uerr)
                 total_cost_usd += call_cost or 0.0
+                turn_model = served_model
 
                 # Check if we have tool calls
                 if not accumulated_tool_calls:

@@ -261,3 +261,12 @@ def test_turn_outcome_recorded_once_per_turn(agent):
     _, _, kinds = _run(agent, [], attrs={"usage_manager": um})  # client fails: no scripted reply
     assert "error" in kinds
     assert um.record_turn.call_count == 1 and um.record_turn.call_args.kwargs["ok"] is False
+
+
+def test_router_slug_records_served_model(agent):
+    um = MagicMock()
+    routed = [NS(choices=c.choices, usage=c.usage, model="z-ai/glm-5.3-flash") for c in _final()]
+    _, _, kinds = _run(agent, [routed], attrs={"usage_manager": um})
+    assert kinds[-1] == "complete"
+    assert um.record.call_args.kwargs["model"] == "z-ai/glm-5.3-flash"
+    assert um.record_turn.call_args.kwargs["model"] == "z-ai/glm-5.3-flash"

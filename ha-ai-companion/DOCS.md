@@ -163,6 +163,8 @@ nodered_flows_file: ""
 
 The main model runs the full chat and tool loop on every iteration. The agent does not switch models mid-turn, which helps keep the provider prompt cache stable. The optional `fast_model` is used only for the Suggestions tab, conversation summaries, and memory extraction and consolidation. It uses the main provider URL and key; blank means use the main model. `COMPLEXITY_ROUTING=on` is an opt-in exception: simple read-only turns can use the fast model for the whole turn.
 
+OpenRouter's Auto Router (`openrouter/auto`, `openrouter/auto-beta`) works with tools, and the Usage tab records the model it actually picked. Do not use it as the main model: it can pick a different model on each request, which breaks the prompt cache and makes results less repeatable. It is fine as `fast_model`.
+
 **Which model should I choose?** The main model needs to handle both reading and edits. The fast model is for side tasks, so choose one that is capable but inexpensive. OpenRouter prices below are USD per 1M input/output tokens as of October 2026; prices change, so check the model advisor before choosing.
 
 | Use | Model | Input / output per 1M | Notes |

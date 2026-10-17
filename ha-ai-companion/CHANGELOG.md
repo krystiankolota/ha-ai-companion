@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0] - 2026-10-17
+
+### Changed
+- OpenRouter Auto Router support: usage and turn stats record the model the router actually served (`chunk.model`), not `openrouter/auto`, so the Usage tab and model advisor stay accurate.
+- Docs: Auto Router works with tools; recommended only as `fast_model`, not the main model (re-ranks per request, breaks the prompt cache).
 ## [1.22.0] - 2026-10-17
 
 ### Added
