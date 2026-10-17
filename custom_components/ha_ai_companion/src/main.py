@@ -22,7 +22,7 @@ from .conversations import ConversationManager
 from .tasks import TaskManager
 from .runs import RunRegistry
 
-version = "1.23.2"
+version = "1.23.3"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -990,7 +990,12 @@ async def generate_suggestions(request: Request):
                 break
             yield json_lib.dumps(item) + "\n"
 
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
+    # HA ingress compresses application/*json and buffers the whole stream; event-stream is exempt.
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # --- Memory endpoints ---

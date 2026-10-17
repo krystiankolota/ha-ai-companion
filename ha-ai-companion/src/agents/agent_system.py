@@ -9,7 +9,7 @@ import unicodedata
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
-from ..agents.tools import AgentTools
+from ..agents.tools import AgentTools, _compact_states
 from .diffing import content_hash
 from .changeset_history import ChangesetHistory
 from ..env_utils import env_positive_int
@@ -160,6 +160,67 @@ def _is_duplicate_suggestion(suggestion: Dict[str, Any], aliases: List[str]) -> 
         if alias_tokens and len(candidate_tokens & alias_tokens) / min(len(candidate_tokens), len(alias_tokens)) >= 0.8:
             return True
     return False
+
+
+_NAMING_DOMAINS = {
+    "light", "switch", "sensor", "binary_sensor", "climate", "cover", "fan", "lock",
+    "media_player", "camera", "vacuum", "valve", "water_heater", "humidifier", "lawn_mower",
+}
+_RAW_NAME_PATTERNS = [
+    (re.compile(r"\d{9,}"), "contains a long numeric device ID"),
+    (re.compile(r"\b(?:[0-9a-f]{2}[:_-]){5}[0-9a-f]{2}\b|\b[0-9a-f]{12,}\b", re.I), "contains a MAC/hex address"),
+    (re.compile(r"_?tz[e0-9]\d{3}_[a-z0-9]{8}", re.I), "contains a Tuya manufacturer code"),
+    (re.compile(r"\bts\d{4}[a-z]?\b", re.I), "contains a Zigbee model code"),
+]
+
+
+def _detect_naming_issues(states: List[Dict[str, Any]], limit: int = 50) -> List[Dict[str, Any]]:
+    """Flag names that are provably raw: missing, slug-like, device codes, or duplicated."""
+    issues: List[Dict[str, Any]] = []
+    by_name: Dict[str, List[tuple]] = {}
+    for state in states:
+        entity_id = state.get("entity_id", "")
+        if entity_id.split(".")[0] not in _NAMING_DOMAINS:
+            continue
+        name = str((state.get("attributes") or {}).get("friendly_name") or "").strip()
+        reason = None
+        if not name:
+            reason = "has no friendly name"
+        elif re.fullmatch(r"[a-z0-9_]+", name):
+            reason = "name is a raw slug"
+        else:
+            reason = next((why for rx, why in _RAW_NAME_PATTERNS if rx.search(name)), None)
+        if reason:
+            issues.append({"entity_id": entity_id, "current_name": name, "reason": reason})
+        else:
+            by_name.setdefault(name.lower(), []).append((entity_id, name))
+    for group in by_name.values():
+        if len(group) > 1:
+            for entity_id, name in group:
+                others = ", ".join(other for other, _ in group if other != entity_id)
+                issues.append({"entity_id": entity_id, "current_name": name, "reason": f"same name as {others}"})
+    return issues[:limit]
+
+
+# Domains that never drive an automation idea (firmware, one-shot buttons, platform plumbing).
+_SUGGESTION_SKIP_DOMAINS = {
+    "update", "button", "image", "tts", "stt", "conversation", "ai_task", "notify", "event", "wake_word",
+}
+
+
+def _suggestion_states(states: List[Dict[str, Any]], registry: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """User-facing entities only: drop diagnostic/config/hidden entities and plumbing domains."""
+    reg = {e.get("entity_id"): e for e in registry or []}
+    kept = []
+    for state in states:
+        entity_id = state.get("entity_id", "")
+        entry = reg.get(entity_id) or {}
+        if entity_id.split(".")[0] in _SUGGESTION_SKIP_DOMAINS:
+            continue
+        if entry.get("entity_category") or entry.get("hidden_by") or entry.get("disabled_by"):
+            continue
+        kept.append(state)
+    return kept
 
 # Maps deprecated tool names to their current equivalents.
 # Applied when replaying conversation_history so old sessions don't break.
@@ -3159,16 +3220,20 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             included_paths: set = set()
             suggestion_resource_files = {"automations": [], "scenes": [], "scripts": []}
 
+            suggestion_states: List[Dict[str, Any]] = []
             if 'entity_states' in active_types:
                 await _emit("Fetching entity states…")
-                entity_states_result = await self.tools.get_entity_states()
-                states = entity_states_result.get("states", "")
-                # states is now compact text; _format_entity_states_compact no longer needed here
-                entity_states_text = states if isinstance(states, str) else self._format_entity_states_compact(states)
+                self.tools.clear_turn_cache()
+                all_states = await self.tools._all_states()
+                suggestion_states = _suggestion_states(all_states, await self.tools._get_all_entities())
+                entity_states_text = _compact_states([
+                    {**s, "friendly_name": (s.get("attributes") or {}).get("friendly_name")}
+                    for s in suggestion_states
+                ])
                 context_sections.append(f"## Current entity states\n{entity_states_text}")
-                entity_count = entity_states_result.get("count", 0)
+                entity_count = len(suggestion_states)
                 context_summary.append({"type": "entity_states", "count": entity_count, "chars": len(entity_states_text)})
-                await _emit(f"✓ Entity states: {entity_count} entities")
+                await _emit(f"✓ Entity states: {entity_count} of {len(all_states)} entities (diagnostic/config/hidden skipped)")
 
             if 'automations' in active_types:
                 await _emit("Loading automations…")
@@ -3399,17 +3464,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "do not include that entity in the suggestion. "
                 )
 
-            naming_instruction = ""
-            if 'entity_states' in active_types:
-                naming_instruction = (
-                    "Also review entity friendly_names and flag ONLY names where the device's purpose or function "
-                    "is genuinely ambiguous — i.e. a knowledgeable person could not determine what the device does "
-                    "from the name alone (e.g. 'pompa', 'sensor_1', 'device_003', 'nowy_guzik'). "
-                    "Do NOT flag cosmetic issues: punctuation, capitalisation, hyphenation, word order, "
-                    "abbreviations, or names that are simply short. "
-                    "Keep naming_issues minimal — fewer is better. "
-                )
-
             messages = [
                 {
                     "role": "system",
@@ -3417,17 +3471,13 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         "You are a Home Assistant expert. "
                         f"{suggest_instruction} "
                         f"{entity_grounding}"
-                        f"{naming_instruction}"
-                        "Return ONLY valid JSON — an object with: "
-                        "'suggestions' (array of suggestions) and "
-                        "'naming_issues' (array of unclear names, may be empty). "
+                        "Return ONLY valid JSON — an object with "
+                        "'suggestions' (array of suggestions). "
                         "Each suggestion must have: title (string), description (string), "
                         "type (either 'new' for new automations/scripts or 'improvement' for improving existing ones), "
                         "category (one of: lighting, climate, security, energy, comfort, other), "
                         "entities (array of entity_id strings that actually exist), "
-                        "implementation_hint (string with brief YAML hint or description of what to change). "
-                        "Each naming_issue must have: entity_id (string), current_name (string), "
-                        "suggested_name (string), reason (string)."
+                        "implementation_hint (string with brief YAML hint or description of what to change)."
                     )
                 },
                 {
@@ -3544,12 +3594,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 logger.warning("Suggestions JSON parse failed: %s", parse_error)
                 await _emit({"event": "error", "message": str(parse_error)})
                 return {"success": False, "error": str(parse_error), "context_summary": context_summary}
-            if isinstance(parsed, dict):
-                suggestions = parsed.get("suggestions", [])
-                naming_issues = parsed.get("naming_issues", [])
-            else:
-                suggestions = parsed
-                naming_issues = []
+            suggestions = parsed.get("suggestions", []) if isinstance(parsed, dict) else parsed
+            naming_issues = _detect_naming_issues(suggestion_states)
             if not isinstance(suggestions, list):
                 message = "The suggestion model returned JSON with no suggestions array. Try generating again."
                 await _emit({"event": "error", "message": message})

@@ -179,21 +179,24 @@ function SuggestionCard({ suggestion, onAddToChat, onImplement, onDismiss, onMar
 function NamingIssuesSection({ issues, onSwitchToChat, onFixed }) {
   if (!issues || issues.length === 0) return null
 
-  const fixOne = (entity_id, suggested_name) => {
-    onSwitchToChat(`Please rename entity ${entity_id} to have the friendly name "${suggested_name}"`)
-    onFixed?.([entity_id])
+  const ask = (lines) =>
+    `These entity names look raw or duplicated. For each, inspect its device, area and integration, ` +
+    `propose a clear name in my language, and rename it after I approve:\n${lines}`
+
+  const fixOne = (issue) => {
+    onSwitchToChat(ask(`- ${issue.entity_id} ("${issue.current_name}"): ${issue.reason}`))
+    onFixed?.([issue.entity_id])
   }
 
   const fixAll = () => {
-    const lines = issues.map(i => `- ${i.entity_id}: rename to "${i.suggested_name}"`).join('\n')
-    onSwitchToChat(`Please rename all these entities to have clearer friendly names:\n${lines}`)
+    onSwitchToChat(ask(issues.map(i => `- ${i.entity_id} ("${i.current_name}"): ${i.reason}`).join('\n')))
     onFixed?.(issues.map(i => i.entity_id))
   }
 
   return (
     <div className="bg-surface-900 border border-surface-700 rounded-xl p-4 mb-4">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-gray-200">🏷️ Unclear entity names ({issues.length})</h3>
+        <h3 className="text-sm font-semibold text-gray-200">🏷️ Raw or duplicate entity names ({issues.length})</h3>
         <button
           onClick={fixAll}
           className="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
@@ -201,24 +204,20 @@ function NamingIssuesSection({ issues, onSwitchToChat, onFixed }) {
           Fix all in chat
         </button>
       </div>
-      <p className="text-xs text-gray-400 mb-3">These entity names may be confusing. Click "Fix in chat" to rename them.</p>
+      <p className="text-xs text-gray-400 mb-3">Found by a rule check: missing names, raw slugs, device codes or duplicates.</p>
       <div className="space-y-2">
         {issues.map((issue, i) => (
           <div key={i} className="text-xs bg-surface-800 rounded-lg px-3 py-2 space-y-1">
             <div className="flex items-start justify-between gap-2 min-w-0">
               <span className="font-mono text-indigo-300 break-all min-w-0">{issue.entity_id}</span>
               <button
-                onClick={() => fixOne(issue.entity_id, issue.suggested_name)}
+                onClick={() => fixOne(issue)}
                 className="px-2 py-1 bg-surface-700 hover:bg-surface-600 text-gray-300 rounded transition-colors flex-shrink-0 text-[11px]"
               >
                 Fix in chat
               </button>
             </div>
-            <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-              <span className="text-gray-400 break-words">"{issue.current_name}"</span>
-              <span className="text-gray-600">→</span>
-              <span className="text-emerald-400 break-words">"{issue.suggested_name}"</span>
-            </div>
+            <div className="text-gray-400 break-words min-w-0">{issue.current_name ? `"${issue.current_name}"` : '(no name)'}</div>
             {issue.reason && <div className="text-gray-500 text-[10px] break-words">{issue.reason}</div>}
           </div>
         ))}

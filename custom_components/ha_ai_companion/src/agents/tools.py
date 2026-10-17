@@ -512,6 +512,8 @@ class AgentTools(NavigationToolsMixin):
                         "device_id": entity.device_id,
                         "platform": entity.platform,
                         "disabled_by": entity.disabled_by,
+                        "hidden_by": entity.hidden_by,
+                        "entity_category": entity.entity_category,
                     })
                 logger.debug(f"Retrieved {len(entities)} entities via hass API")
                 self._turn_registry_cache["entities"] = entities

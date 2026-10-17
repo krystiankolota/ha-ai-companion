@@ -340,6 +340,17 @@ async def _register_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
                 try:
                     async with session.post(url, data=data, headers=headers) as resp:
+                        content_type = resp.headers.get('Content-Type', '')
+                        if content_type.startswith('text/event-stream'):
+                            stream = web.StreamResponse(status=resp.status, headers={
+                                'Content-Type': content_type, 'Cache-Control': 'no-cache',
+                            })
+                            await stream.prepare(request)
+                            async for chunk, _ in resp.content.iter_chunks():
+                                await stream.write(chunk)
+                            await stream.write_eof()
+                            return stream
+
                         body = await resp.read()
 
                         # Create response and copy headers

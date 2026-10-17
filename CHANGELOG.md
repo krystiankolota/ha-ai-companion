@@ -5,6 +5,14 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.3] - 2026-10-17
+
+### Fixed
+- Suggestions progress now streams live through HA ingress (was stuck on "Starting…" until done): the response is `text/event-stream`, which ingress does not compress/buffer. HACS proxy streams it too.
+- Suggestions context skips diagnostic, config, hidden and plumbing entities (update/button/…): ~50% smaller entity list, no more context-cap truncation on large homes.
+
+### Changed
+- "Unclear entity names" is now a deterministic rule check (no LLM tokens): missing names, raw slugs, device IDs/model codes and duplicate names. "Fix in chat" asks the agent to inspect the device and propose a name.
 ## [1.23.2] - 2026-10-17
 
 ### Fixed

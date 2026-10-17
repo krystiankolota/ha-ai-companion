@@ -7,8 +7,10 @@ from fastapi.testclient import TestClient
 from src import main
 from src.agents.agent_system import (
     _build_suggestion_outlines,
+    _detect_naming_issues,
     _is_duplicate_suggestion,
     _parse_suggestion_response,
+    _suggestion_states,
 )
 
 
@@ -115,3 +117,40 @@ def test_suggestion_outlines_obey_shared_character_budget():
     }, max_chars=40)
 
     assert sum(len(text) for text in outlines.values()) <= 40
+
+def test_detect_naming_issues_flags_only_provably_raw_names():
+    def s(eid, name=None):
+        return {"entity_id": eid, "attributes": {"friendly_name": name} if name else {}}
+
+    issues = _detect_naming_issues([
+        s("sensor.sonoff_1002560190_energy_cost"),
+        s("sensor.total_gas_cost_daily", "total_gas_cost_daily"),
+        s("switch.tz3000_m8f3z8ju_ts000f", "_TZ3000_m8f3z8ju TS000F"),
+        s("sensor.t1", "Czujnik temperatura"),
+        s("sensor.t2", "czujnik temperatura"),
+        s("light.salon", "Salon lampa"),
+        s("automation.raw", "raw_slug"),
+    ])
+    reasons = {i["entity_id"]: i["reason"] for i in issues}
+
+    assert reasons["sensor.sonoff_1002560190_energy_cost"] == "has no friendly name"
+    assert reasons["sensor.total_gas_cost_daily"] == "name is a raw slug"
+    assert "Tuya" in reasons["switch.tz3000_m8f3z8ju_ts000f"]
+    assert reasons["sensor.t1"] == "same name as sensor.t2"
+    assert "light.salon" not in reasons
+    assert "automation.raw" not in reasons
+    assert all("suggested_name" not in i for i in issues)
+
+def test_suggestion_states_skip_diagnostic_config_hidden_and_plumbing():
+    states = [{"entity_id": e} for e in (
+        "light.salon", "sensor.rssi", "switch.child_lock", "sensor.hidden", "update.fw", "button.restart", "sensor.temp",
+    )]
+    registry = [
+        {"entity_id": "sensor.rssi", "entity_category": "diagnostic"},
+        {"entity_id": "switch.child_lock", "entity_category": "config"},
+        {"entity_id": "sensor.hidden", "hidden_by": "user"},
+    ]
+
+    kept = [s["entity_id"] for s in _suggestion_states(states, registry)]
+
+    assert kept == ["light.salon", "sensor.temp"]
