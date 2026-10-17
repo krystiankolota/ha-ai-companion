@@ -202,6 +202,9 @@ No layers (simplest)? Only **Main** matters. Both layers set (best cost control)
 | `enable_cache_control` | Boolean | `false` | Force prompt caching on. It is on automatically for OpenRouter and Claude models |
 | `usage_tracking` | List | `stream_options` | Token tracking: `stream_options` (OpenAI/Gemini), `usage` (Anthropic/OpenRouter), `disabled` (Ollama) |
 | `max_iterations` | Integer | `0` (=25) | Max tool-call rounds per turn before the agent stops. Lower it to cap cost on runaway turns. |
+| `reasoning_effort` | List | empty | OpenRouter `reasoning.effort` (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`). Empty = not sent, model default. Higher can improve hard edits but costs more output tokens. |
+
+Advanced env var (not an option): `TOOL_RESULT_MAX_CHARS` (default 12000) caps entity-state, listing and log tool results. File reads are never capped.
 
 **Node-RED Integration (optional)**
 

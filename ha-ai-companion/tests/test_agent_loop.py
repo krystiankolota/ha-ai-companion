@@ -145,3 +145,37 @@ def test_usage_rejection_keeps_session_routing(agent):
     assert len(fake.requests) == 2 and "stream_options" in fake.requests[0]
     assert "stream_options" not in retry
     assert retry.get("extra_body", {}).get("session_id") == "sess-1"
+
+
+def test_prefix_stable_and_context_in_user_message(agent):
+    fake1, _, _ = _run(agent, [_final()], msg="first question")
+    fake2, _, _ = _run(agent, [_final()], msg="another question")
+    r1, r2 = fake1.requests[0], fake2.requests[0]
+    # Cache prefix: system message and tool schemas byte-identical across turns.
+    assert json.dumps(r1["messages"][0]) == json.dumps(r2["messages"][0])
+    assert json.dumps(r1.get("tools")) == json.dumps(r2.get("tools"))
+    user = r2["messages"][-1]
+    assert user["role"] == "user" and user["content"].startswith("another question")
+    assert user["content"].rstrip().endswith("</context>")
+
+
+def test_cap_tool_result_only_for_listing_tools(monkeypatch):
+    from src.agents.agent_system import _cap_tool_result
+    monkeypatch.setenv("TOOL_RESULT_MAX_CHARS", "100")
+    big = "x" * 500
+    capped = _cap_tool_result("get_entity_states", big)
+    assert len(capped) < 300 and capped.startswith("x" * 100)
+    # File-content tools are never truncated: a cut read could be written back.
+    assert _cap_tool_result("get_automation", big) == big
+    assert _cap_tool_result("search_config_files", big) == big
+
+
+def test_reasoning_effort_sent_only_when_set(agent, monkeypatch):
+    fake, _, _ = _run(agent, [_final()])
+    assert "reasoning" not in (fake.requests[0].get("extra_body") or {})
+    monkeypatch.setenv("REASONING_EFFORT", "High")
+    fake, _, _ = _run(agent, [_final()])
+    assert fake.requests[0]["extra_body"]["reasoning"] == {"effort": "high"}
+    monkeypatch.setenv("REASONING_EFFORT", "turbo")
+    fake, _, _ = _run(agent, [_final()])
+    assert "reasoning" not in fake.requests[0]["extra_body"]

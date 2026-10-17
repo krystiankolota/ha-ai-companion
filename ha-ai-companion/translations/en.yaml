@@ -67,6 +67,11 @@ configuration:
       Controls randomness of AI responses (0.0–2.0).
       Lower = more focused, higher = more creative. Leave empty for model default.
       Recommended: 0.3–0.7 for config changes.
+  reasoning_effort:
+    name: Reasoning effort (optional, OpenRouter)
+    description: >-
+      Sent as OpenRouter reasoning.effort for reasoning models.
+      Leave empty to use the model default. Higher = better quality, more output tokens.
   enable_cache_control:
     name: Enable Prompt Caching
     description: >-

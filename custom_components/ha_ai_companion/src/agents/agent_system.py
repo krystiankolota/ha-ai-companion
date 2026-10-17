@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import re
@@ -110,6 +112,28 @@ def _complexity_routing_enabled() -> bool:
     # Opt-in: when on, short read-only turns never reach the main model, which
     # hid the user's chosen main model (log 2026-10-16, gpt-6.1-sol never ran).
     return os.getenv("COMPLEXITY_ROUTING", "off").strip().lower() in ("on", "1", "true", "yes")
+
+
+_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+_SUMMARY_KEEP_RECENT = 10
+_SUMMARY_STEP = 10
+
+# Listing/state/log tools only. File-content tools are never capped: a cut read
+# could be written back as a truncated file.
+_CAPPED_TOOLS = frozenset({
+    "get_entity_states", "search_entities", "list_automations", "get_automation_traces",
+    "get_ha_error_log", "get_ha_issues", "get_lovelace_resources", "search_past_sessions",
+    "list_changesets", "list_dashboards", "search_memory",
+})
+
+
+def _cap_tool_result(name: str, content: str) -> str:
+    """Cap once at insertion so the in-turn prefix stays stable for the provider cache."""
+    limit = env_positive_int("TOOL_RESULT_MAX_CHARS", 12000)
+    if name not in _CAPPED_TOOLS or len(content) <= limit:
+        return content
+    return (content[:limit] + f"\n\n[Truncated: showed {limit} of {len(content)} chars. "
+            "Narrow the query (filter, domain, area) to see the rest.]")
 
 
 def _merge_reasoning_details(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -287,6 +311,8 @@ class AgentSystem:
 
         # Per-client cache: tracks whether usage-tracking params were rejected (BUG-8)
         # Keys: 'main', 'suggestion', 'config' — value: True = params accepted, False = rejected
+        # session_id -> (messages covered, prefix digest, summary text); see _summarize_old_history.
+        self._summary_cache: Dict[str, tuple] = {}
         self._client_usage_ok: Dict[str, Optional[bool]] = {
             'main': None, 'suggestion': None, 'config': None
         }
@@ -318,6 +344,14 @@ class AgentSystem:
         if self.temperature is not None:
             logger.info(f"Temperature: {self.temperature}")
         logger.info(f"Cache control: {'enabled' if self.enable_cache_control else 'disabled'}")
+        # OpenRouter reasoning.effort; empty = not sent (provider/model default).
+        _effort = os.getenv('REASONING_EFFORT', '').strip().lower()
+        if _effort == 'null':  # bashio::config output for an unset optional key
+            _effort = ''
+        if _effort and _effort not in _REASONING_EFFORTS:
+            logger.warning(f"Invalid REASONING_EFFORT '{_effort}' — ignored")
+            _effort = ''
+        self.reasoning_effort = _effort
         logger.info(f"Usage tracking: {self.usage_tracking} (suggestion: {self.suggestion_usage_tracking}, config: {self.config_usage_tracking})")
 
         # Per-call usage/cost log (Track 1). Derive the dir from the memory dir
@@ -427,7 +461,7 @@ Memory (save_memory / search_memory / delete_memory):
 - Save ONLY durable facts the user stated that HA cannot tell you: preferences, residents and their devices, unclear device purposes, routines, decisions, corrections.
 - NEVER save session actions, sensor readings, created automations, device specs, or anything in HA config/registry.
 - One short fact per memory. Correct with replaces=[id]; retire wrong ones with delete_memory.
-- Relevant memories are injected below as [kind #id]; HA state wins if they conflict. search_memory for anything not shown.
+- Relevant memories and the current time come in a <context> block at the end of the user's message; HA state wins if they conflict. search_memory for anything not shown.
 - search_past_sessions when the user refers to earlier work.
 
 Production system: safety and clarity first."""
@@ -639,40 +673,6 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             for d, entries in sorted(by_domain.items())
         )
 
-    @staticmethod
-    def _prune_old_tool_messages(messages: list, keep_blocks: int = 6) -> list:
-        """Remove oldest tool call+result blocks beyond keep_blocks to keep context lean.
-
-        keep_blocks=6 allows up to 6 read/write iterations before pruning starts.
-        Pruning only applies when there are already more blocks than keep_blocks —
-        short single-turn operations (3–4 tool calls) are never affected.
-        """
-        blocks = []  # [(assistant_idx, [tool_indices...])]
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                block_start = i
-                tool_idxs = []
-                j = i + 1
-                while j < len(messages) and messages[j].get("role") == "tool":
-                    tool_idxs.append(j)
-                    j += 1
-                if tool_idxs:
-                    blocks.append((block_start, tool_idxs))
-                i = j
-            else:
-                i += 1
-        if len(blocks) <= keep_blocks:
-            return messages
-        to_remove: set = set()
-        for block_start, tool_idxs in blocks[:-keep_blocks]:
-            to_remove.add(block_start)
-            to_remove.update(tool_idxs)
-        pruned = [m for k, m in enumerate(messages) if k not in to_remove]
-        logger.debug(f"Pruned {len(messages) - len(pruned)} old tool messages (kept last {keep_blocks} blocks)")
-        return pruned
-
     async def _dispatch_tool(self, function_name: str, function_args: dict, turn_state: Optional[dict] = None) -> dict:
         """Execute a named tool and return its result dict.
 
@@ -837,6 +837,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             if topic_fragments:
                 system_content = system_content + "\n\n" + "\n\n".join(topic_fragments)
 
+            # Time and recalled memory change every turn. They ride on the CURRENT
+            # user message (never the system prompt) so system + tools + history stay
+            # a byte-identical prefix and the provider cache survives across turns.
             dynamic_content = f"Current date/time: {now_str}"
             if self.memory_manager:
                 try:
@@ -847,15 +850,12 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     logger.warning(f"Failed to load memory context: {mem_err}")
 
             if self.enable_cache_control:
-                # Breakpoint on the static block only: time/memory change every turn
-                # and would otherwise invalidate the cached prefix. OpenRouter honours
-                # block-level markers (Anthropic, Alibaba, Google, OpenAI GPT-5.6+).
+                # OpenRouter honours block-level markers (Anthropic, Alibaba, Google, OpenAI GPT-5.6+).
                 system_message = {"role": "system", "content": [
                     {"type": "text", "text": system_content, "cache_control": {"type": "ephemeral"}},
-                    {"type": "text", "text": dynamic_content},
                 ]}
             else:
-                system_message = {"role": "system", "content": system_content + "\n\n" + dynamic_content}
+                system_message = {"role": "system", "content": system_content}
             messages = [system_message]
 
             # Track the starting point for new messages (after history)
@@ -882,17 +882,17 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         messages.append(msg)
                 history_length += len(conversation_history)
 
-            # BUG-6: Summarize very long conversations to avoid context overflow.
-            # Threshold lowered 30 → 14 (token cost): old turns rarely earn
-            # their verbatim cost once tool payloads are also truncated above.
-            if conversation_history and len(conversation_history) > 14:
+            # Summarize long conversations; the summary is reused per session so the
+            # prefix stays stable (see _summarize_old_history).
+            if conversation_history and len(conversation_history) >= _SUMMARY_KEEP_RECENT + _SUMMARY_STEP:
                 try:
-                    messages = await self._summarize_old_history(messages)
+                    messages = await self._summarize_old_history(messages, session_id=session_id)
                 except Exception as sum_err:
                     logger.warning(f"History summarization failed (continuing without): {sum_err}")
 
-            # Add current user message
-            messages.append({"role": "user", "content": user_message})
+            turn_start = len(messages)
+            user_msg = {"role": "user", "content": f"{user_message}\n\n<context>\n{dynamic_content}\n</context>"}
+            messages.append(user_msg)
 
             # Define available tools for function calling with cache control
             # Mark tools for caching to reduce repeated processing
@@ -900,23 +900,23 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 "type": "function",
                 "function": {
                     "name": "propose_config_changes",
-                    "description": "Propose changes to one or more configuration files for user approval. Use for new files, structural rewrites, or multi-file changes. For changing a single existing key use patch_config_key instead. For replacing one named section (e.g. one automation, the logger block) use patch_config_block instead.",
+                    "description": "Stage whole-file changes for user approval: new files, restructuring, multi-file edits. Prefer patch_config_key (one key) or patch_config_block (one section).",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "changes": {
                                 "type": "array",
-                                "description": "Array of file changes. Each change must include file_path and new_content.",
+                                "description": "File changes.",
                                 "items": {
                                     "type": "object",
                                     "properties": {
                                         "file_path": {
                                             "type": "string",
-                                            "description": "Relative path to config file (e.g., 'configuration.yaml', 'switches.yaml'). New areas can be specified with 'areas/{area_id}.json' and must include the 'name'"
+                                            "description": "Relative path, e.g. 'switches.yaml'. New area: 'areas/{area_id}.json' with a 'name'."
                                         },
                                         "new_content": {
                                             "type": "string",
-                                            "description": "The complete new content of the file as a valid YAML string. Include all lines - both changed and unchanged."
+                                            "description": "Complete new file content, unchanged lines included."
                                         }
                                     },
                                     "required": ["file_path", "new_content"]
@@ -924,7 +924,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             },
                             "confirm_delete": {
                                 "type": "boolean",
-                                "description": "Set to true only when the user explicitly wants to delete automations/scripts/scenes. Bypasses the deletion safety guard. Default false."
+                                "description": "True only when the user explicitly asked to delete automations/scripts/scenes."
                             },
                         },
                         "required": ["changes"]
@@ -1004,24 +1004,21 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                         "properties": {
                             "file_path": {
                                 "type": "string",
-                                "description": "Relative path to the config file, e.g. 'configuration.yaml'."
+                                "description": "Relative path, e.g. 'configuration.yaml'."
                             },
                             "key_path": {
                                 "type": "string",
                                 "description": (
-                                    "Dot-notation path to the key. Examples: "
-                                    "'logger.default', "
-                                    "'homeassistant.name', "
-                                    "'automations[0].trigger', "
+                                    "Dot path, e.g. 'logger.default' or "
                                     "'automations[alias=Morning light].action[0].service'."
                                 )
                             },
                             "new_value": {
-                                "description": "New value to set. Can be a string, number, boolean, list, or object."
+                                "description": "Any JSON value."
                             },
                             "description": {
                                 "type": "string",
-                                "description": "Brief human-readable description of the change for the approval UI."
+                                "description": "Short summary for the approval card."
                             }
                         },
                         "required": ["file_path", "key_path", "new_value"]
@@ -1034,35 +1031,29 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 "function": {
                     "name": "patch_config_block",
                     "description": (
-                        "Replace an entire YAML block (subtree) without rewriting the whole file. "
-                        "Use this to replace a named section such as the logger config, one automation entry, "
-                        "or a homeassistant block. All other parts of the file are preserved. "
-                        "Do NOT use for simple scalar changes — use patch_config_key for those. "
-                        "Do NOT use for adding a new top-level key that doesn't exist yet — use propose_config_changes."
+                        "Replace one existing YAML block (e.g. one automation, the logger section); the rest of "
+                        "the file is kept. Scalars: patch_config_key. New top-level keys: propose_config_changes."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "file_path": {
                                 "type": "string",
-                                "description": "Relative path to the config file, e.g. 'automations.yaml'."
+                                "description": "Relative path, e.g. 'automations.yaml'."
                             },
                             "anchor": {
                                 "type": "string",
                                 "description": (
-                                    "Dot-notation path identifying the block to replace. Examples: "
-                                    "'logger' (top-level key), "
-                                    "'automations[alias=Morning light]' (list item by alias), "
-                                    "'homeassistant' (replace the homeassistant section)."
+                                    "Dot path of the block, e.g. 'logger' or 'automations[alias=Morning light]'."
                                 )
                             },
                             "new_block": {
                                 "type": "string",
-                                "description": "Valid YAML string for the replacement. Must match the structure of the block being replaced."
+                                "description": "Replacement YAML for that block."
                             },
                             "description": {
                                 "type": "string",
-                                "description": "Brief human-readable description of the change for the approval UI."
+                                "description": "Short summary for the approval card."
                             }
                         },
                         "required": ["file_path", "anchor", "new_block"]
@@ -1083,28 +1074,27 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "function": {
                         "name": "search_config_files",
                         "description": (
-                            "Search configuration files (all YAML files, plus device/entity/area virtual files). "
-                            "Lovelace dashboards are NOT searched by default — pass include_lovelace=true only when editing or reading dashboard UI. "
-                            "Devices/entities/areas are ONLY included when search_pattern is provided."
+                            "Search config files (YAML plus device/entity/area virtual files; the virtual files "
+                            "only when search_pattern is set). Dashboards only with include_lovelace=true."
                         ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "search_pattern": {
                                     "type": "string",
-                                    "description": "Optional text to search for in file contents (case-insensitive). Only files containing this text will be returned. Omit to list all files (files over 60 lines come back as an outline with line ranges)."
+                                    "description": "Case-insensitive text to match. Omit to list all files (files over 60 lines come back as an outline)."
                                 },
                                 "include_lovelace": {
                                     "type": "boolean",
-                                    "description": "Set to true to also search Lovelace dashboard files (lovelace.yaml, lovelace/*.yaml). Only needed for dashboard UI work. Default: false."
+                                    "description": "Also search Lovelace dashboards. Default false."
                                 },
                                 "context_lines": {
                                     "type": "integer",
-                                    "description": "Lines of context around each match in snippet mode (default 12). Increase to 40+ when you need more surrounding content."
+                                    "description": "Context lines per match (default 12)."
                                 },
                                 "full_content": {
                                     "type": "boolean",
-                                    "description": "Return full file content instead of snippets. Use when you need to read an entire file before editing it. Default: false."
+                                    "description": "Return whole files instead of snippets. Default false."
                                 }
                             },
                             "required": []
@@ -1152,22 +1142,19 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "function": {
                         "name": "get_entity_states",
                         "description": (
-                            "Get the current live states of Home Assistant entities. "
-                            "Returns a compact one-line-per-entity format: domain: \"name\"[entity_id]=state. "
-                            "For specific questions, pass *query* — semantic search returns the ~40 most relevant entities. "
-                            "Pass *domain_filter* to limit to a single HA domain (e.g. 'light', 'switch', 'sensor', 'climate'). "
-                            "Omit both arguments only when a broad overview of ALL entities is genuinely needed."
+                            "Live entity states, one line each: domain: \"name\"[entity_id]=state. "
+                            "Pass query (semantic, ~40 best matches) or domain_filter; omit both only for a full overview."
                         ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "domain_filter": {
                                     "type": "string",
-                                    "description": "HA domain to limit results (e.g. 'light', 'switch', 'sensor', 'binary_sensor', 'climate', 'media_player'). When set, *query* is ignored."
+                                    "description": "One HA domain, e.g. 'light'. Overrides query."
                                 },
                                 "query": {
                                     "type": "string",
-                                    "description": "Natural language description of which entities you need (e.g. 'bedroom lights', 'door and window sensors', 'heating climate devices'). Triggers semantic search — returns ~40 most relevant entities. Ignored when domain_filter is set."
+                                    "description": "What you need, e.g. 'bedroom lights'."
                                 }
                             },
                             "required": []
@@ -1179,13 +1166,13 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     "type": "function",
                     "function": {
                         "name": "search_past_sessions",
-                        "description": "Keyword search across past conversation sessions. Use this when the user references something discussed before (e.g. 'that automation we made last week', 'remember when we fixed...'), or before starting work on a topic that likely has prior history. Returns matching sessions with excerpts.",
+                        "description": "Keyword search of past sessions, with excerpts. Use when the user refers to earlier work.",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "query": {
                                     "type": "string",
-                                    "description": "Search query, e.g. 'morning routine automation', 'boiler heating schedule', 'dashboard lights card'."
+                                    "description": "Keywords, e.g. 'boiler schedule'."
                                 },
                                 "limit": {
                                     "type": "integer",
@@ -1324,19 +1311,19 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             "properties": {
                                 "name": {
                                     "type": "string",
-                                    "description": "Short human-readable label for this task, e.g. 'Morning briefing'."
+                                    "description": "Short label."
                                 },
                                 "prompt": {
                                     "type": "string",
-                                    "description": "The prompt the AI runs each time. Should produce a self-contained plain-text result (max 255 chars)."
+                                    "description": "Prompt run each time; result is plain text, max 255 chars."
                                 },
                                 "entity_id": {
                                     "type": "string",
-                                    "description": "input_text entity to write the result to, e.g. 'input_text.morning_briefing'."
+                                    "description": "Target input_text entity."
                                 },
                                 "schedule": {
                                     "type": "string",
-                                    "description": "When to run. Format: 'daily HH:MM' (24-hour local time). Example: 'daily 08:00'."
+                                    "description": "'daily HH:MM' (24h local)."
                                 }
                             },
                             "required": ["name", "prompt", "entity_id", "schedule"]
@@ -1417,6 +1404,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
 
             _has_write_intent_flag = _has_write_intent(user_message)
+            _tools_chars = len(json.dumps(tools))
 
             # Complexity routing (opt-in, COMPLEXITY_ROUTING=on): keep simple,
             # read-only Q&A turns on the cheaper research model for the whole turn.
@@ -1458,10 +1446,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 iteration += 1
                 logger.info(f"[ITERATION {iteration}] Calling OpenAI streaming API")
 
-                # Prune old tool exchange blocks only in long conversations to keep context lean.
-                # Don't prune in short single-turn operations — AI needs file content it just read.
-                if iteration > 1 and len(messages) > 30:
-                    messages = self._prune_old_tool_messages(messages, keep_blocks=3)
+                # No mid-turn pruning: removing blocks changes the prefix and voids the
+                # provider cache for the whole rest of the turn. Size is bounded at insertion.
 
                 # Select client+model: config once tool results exist, suggestion before that.
                 has_tool_results = any(m.get("role") == "tool" for m in messages)
@@ -1502,6 +1488,13 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 # Call OpenAI API with streaming
                 # When forcing text-first (Tier B), omit tools entirely — passing tools=[...]
                 # with tool_choice="none" is redundant and may cause provider validation errors.
+                _sz = [len(json.dumps(m, default=str)) for m in messages]
+                logger.info(
+                    "[CTX] iter=%d system=%d tools=%d history=%d turn=%d max_tool=%d",
+                    iteration, _sz[0], 0 if _force_text_first else _tools_chars,
+                    sum(_sz[1:turn_start]), sum(_sz[turn_start:]),
+                    max((s for s, m in zip(_sz, messages) if m.get("role") == "tool"), default=0),
+                )
                 api_params = {
                     "model": active_model,
                     "messages": safe_messages,
@@ -1527,6 +1520,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 # Sticky provider routing keeps the prompt cache warm across iterations.
                 if _is_openrouter and session_id:
                     api_params.setdefault("extra_body", {})["session_id"] = str(session_id)[:256]
+                if _is_openrouter and self.reasoning_effort:
+                    api_params.setdefault("extra_body", {})["reasoning"] = {"effort": self.reasoning_effort}
                 # If disabled, don't add any usage tracking parameters
 
                 # Add temperature if specified
@@ -1934,6 +1929,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     # Error recovery: inject a retry directive for correctable failures.
                     # Skip for: successes, approval-gated results (changeset_id), timed-out calls, blocked calls.
                     tool_result_content = json.dumps(result)
+                    tool_result_content = _cap_tool_result(function_name, tool_result_content)
                     _is_failure = not result.get("success", True) and not result.get("blocked", False)
                     _is_approval_gated = "changeset_id" in result
                     _is_infra_error = "timed out" in result.get("error", "").lower()
@@ -2078,7 +2074,9 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             # Fire-and-forget memory consolidation — runs after response is delivered.
             # Gate: only run when message content signals a durable new fact, and session
             # is established enough (≥5 user turns) to contain worth-keeping information.
-            all_messages = messages + new_messages
+            # The injected <context> (recalled memories) must not be re-extracted as new facts.
+            all_messages = [{"role": "user", "content": user_message} if m is user_msg else m
+                            for m in messages] + new_messages
             user_turns = sum(1 for m in all_messages if m.get("role") == "user")
             if user_turns >= 5 and self._should_consolidate(user_message, accumulated_content):
                 asyncio.ensure_future(self._run_memory_consolidation(all_messages))
@@ -2373,83 +2371,89 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         )
         return response
 
-    async def _summarize_old_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def _summarize_old_history(self, messages: List[Dict[str, Any]],
+                                     session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Replace old history with one summary block, keeping recent messages verbatim.
+
+        The split point only moves every _SUMMARY_STEP messages and the summary text is
+        reused per session until then, so the prompt prefix stays byte-identical across
+        turns (provider cache) and the summary LLM call runs once per step, not per turn.
+        When the split moves, only the new messages are folded into the previous summary.
         """
-        BUG-6: When conversation history is very long (>30 messages / 15 exchanges),
-        summarise the oldest half into a single system message so the context stays manageable.
-        Keeps the system prompt + summarised block + recent messages intact.
-        """
-        import json
-        # messages[0] is the system prompt; the rest are history + current user msg
-        # (current user msg is NOT yet added when this is called — it's added right after)
-        # Identify the history portion (everything after system message)
         system_msg = messages[0]
         history = messages[1:]
 
-        # Keep the newest 10 messages verbatim; summarize the rest
-        # (lowered from 20 — token cost; old tool exchanges rarely earn it)
-        keep_recent = 10
-        to_summarize = history[:-keep_recent] if len(history) > keep_recent else []
-        keep = history[-keep_recent:] if len(history) > keep_recent else history
-
-        # Don't let the keep window start mid tool-exchange: a leading 'tool'
-        # message without its assistant tool_calls parent is invalid for
-        # strict providers. Shift orphaned tool messages into the summary.
-        while keep and keep[0].get("role") == "tool":
-            to_summarize.append(keep.pop(0))
-
-        if not to_summarize:
+        k = ((len(history) - _SUMMARY_KEEP_RECENT) // _SUMMARY_STEP) * _SUMMARY_STEP
+        # A kept window must not start with an orphaned 'tool' message (strict providers).
+        while 0 < k < len(history) and history[k].get("role") == "tool":
+            k += 1
+        if k <= 0:
             return messages
+        to_summarize, keep = history[:k], history[k:]
 
-        # Build a slim text representation of the messages to summarise
-        summary_input = "\n".join(
-            f"{m['role'].upper()}: {m.get('content', '') if isinstance(m.get('content'), str) else ''}"
-            for m in to_summarize
-            if m.get('role') in ('user', 'assistant')
-        )
+        def digest(msgs):
+            return hashlib.sha1(json.dumps(
+                [(m.get("role"), m.get("content") if isinstance(m.get("content"), str) else "") for m in msgs]
+            ).encode("utf-8")).hexdigest()
 
-        # Nothing textual to compress — skip the API call (it would return empty
-        # content and crash on .strip(), and history would never shrink anyway).
-        if not summary_input.strip():
-            logger.info("Summarization skipped: no textual content in old messages")
-            return messages
-
-        summary_prompt = [
-            {"role": "system", "content": "Summarise the following conversation in concise bullet points, capturing all important facts, decisions, and context. Be brief — max 400 words."},
-            {"role": "user", "content": summary_input}
-        ]
-
-        try:
-            # Use cheaper suggestion model — summarization is compression, not reasoning.
-            resp = await self._completion_with_usage(
-                self.suggestion_client, 'suggestion', phase="summarization",
-                model=self.suggestion_model,
-                messages=summary_prompt,
-                stream=False,
-                max_tokens=600,
-            )
-            # content can be None (model returned no text / tool-only) and choices
-            # can be empty on some providers — guard both before .strip().
-            choice = resp.choices[0] if resp.choices else None
-            summary_text = ((choice.message.content if choice else None) or "").strip()
-            if not summary_text:
-                logger.warning("Summarization returned empty content — using extractive fallback")
-        except Exception as e:
-            logger.warning(f"Summarization API call failed: {e} — using extractive fallback")
-            summary_text = ""
-        if not summary_text:
-            # Keeping the full history would make every later turn pay for it again;
-            # fall back to the user's own earlier requests (cheap, deterministic).
-            asks = [m["content"].strip().splitlines()[0][:200] for m in to_summarize
-                    if m.get("role") == "user" and isinstance(m.get("content"), str) and m["content"].strip()]
-            summary_text = "Earlier user requests:\n" + "\n".join(f"- {a}" for a in asks[-8:])
+        # Entry = (k, digest of history[:k], text). Reuse or fold only while that exact
+        # prefix is unchanged; a sliding/reloaded/edited history rebuilds from scratch.
+        cached = self._summary_cache.get(session_id) if session_id else None
+        if cached and cached[0] == k and cached[1] == digest(to_summarize):
+            summary_text = cached[2]
+        else:
+            prev_k, prev_text = 0, ""
+            if cached and cached[0] < k and cached[1] == digest(to_summarize[:cached[0]]):
+                prev_k, prev_text = cached[0], cached[2]
+            summary_text = await self._summarize_messages(to_summarize[prev_k:], prev_text, to_summarize)
+            if session_id:
+                self._summary_cache[session_id] = (k, digest(to_summarize), summary_text)
+                while len(self._summary_cache) > 100:
+                    self._summary_cache.pop(next(iter(self._summary_cache)))
+            logger.info(f"Summarized {len(to_summarize)} old messages into a single block ({len(summary_text)} chars)")
 
         summary_msg = {
             "role": "system",
             "content": f"[Earlier conversation summary]\n{summary_text}"
         }
-        logger.info(f"Summarized {len(to_summarize)} old messages into a single block ({len(summary_text)} chars)")
         return [system_msg, summary_msg] + keep
+
+    async def _summarize_messages(self, new_part, prev_summary: str, all_old) -> str:
+        """LLM summary of new_part folded into prev_summary; extractive fallback."""
+        summary_input = "\n".join(
+            f"{m['role'].upper()}: {m.get('content') if isinstance(m.get('content'), str) else ''}"
+            for m in new_part if m.get('role') in ('user', 'assistant')
+        )
+        if prev_summary:
+            summary_input = f"PREVIOUS SUMMARY:\n{prev_summary}\n\nNEW MESSAGES:\n{summary_input}"
+        summary_text = ""
+        if summary_input.strip():
+            summary_prompt = [
+                {"role": "system", "content": "Summarise the following conversation in concise bullet points, capturing all important facts, decisions, and context. If a previous summary is given, merge it with the new messages. Be brief — max 400 words."},
+                {"role": "user", "content": summary_input}
+            ]
+            try:
+                # Cheaper suggestion model — summarization is compression, not reasoning.
+                # 1500 tokens: reasoning models spent all of 600 on thinking and returned empty text.
+                resp = await self._completion_with_usage(
+                    self.suggestion_client, 'suggestion', phase="summarization",
+                    model=self.suggestion_model,
+                    messages=summary_prompt,
+                    stream=False,
+                    max_tokens=1500,
+                )
+                choice = resp.choices[0] if resp.choices else None
+                summary_text = ((choice.message.content if choice else None) or "").strip()
+                if not summary_text:
+                    logger.warning("Summarization returned empty content — using extractive fallback")
+            except Exception as e:
+                logger.warning(f"Summarization API call failed: {e} — using extractive fallback")
+        if not summary_text:
+            # Cheap, deterministic: the user's own earlier requests.
+            asks = [m["content"].strip().splitlines()[0][:200] for m in all_old
+                    if m.get("role") == "user" and isinstance(m.get("content"), str) and m["content"].strip()]
+            summary_text = "Earlier user requests:\n" + "\n".join(f"- {a}" for a in asks[-8:])
+        return summary_text
 
     _CONSOLIDATION_TRIGGERS = (
         # English — explicit preference/correction/identity signals

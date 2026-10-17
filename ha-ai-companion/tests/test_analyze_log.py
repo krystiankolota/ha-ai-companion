@@ -10,9 +10,11 @@ _spec.loader.exec_module(analyze_log)
 LOG = """\
 2026-09-05 08:23:39,196 - src.agents.agent_system - INFO - Agent streaming user message: fix the heating notification
 2026-09-05 08:23:40,000 - src.agents.agent_system - INFO - [ITERATION 1] Calling OpenAI streaming API
+2026-09-05 08:23:40,000 - src.agents.agent_system - INFO - [CTX] iter=1 system=5000 tools=18000 history=300 turn=50 max_tool=0
 2026-09-05 08:23:40,001 - src.agents.agent_system - INFO - [ITERATION 1] Model: deepseek/deepseek-v4-flash (main)
 2026-09-05 08:23:50,000 - src.agents.agent_system - INFO - [ITERATION 1] Calling tool: search_config_files
 2026-09-05 08:23:51,000 - src.agents.agent_system - INFO - [ITERATION 2] Calling OpenAI streaming API
+2026-09-05 08:23:51,000 - src.agents.agent_system - INFO - [CTX] iter=2 system=5000 tools=18000 history=300 turn=900 max_tool=800
 2026-09-05 08:23:55,000 - src.agents.agent_system - WARNING - [ITERATION 2] Tool 'patch_config_key' error: Key path 'x' not found
 2026-09-05 08:23:55,001 - src.agents.agent_system - INFO - [RETRY] Injecting retry directive 1/2 for 'patch_config_key'
 2026-09-05 08:24:00,000 - src.agents.agent_system - INFO - Agent completed after 3 iteration(s) - Total tokens: 1234 (input: 1000, output: 234, cached: 0)
@@ -30,4 +32,6 @@ def test_parse_turns_and_report():
     assert err["patch_config_key"] == 1 and not turns[1]["done"]
     out = io.StringIO()
     analyze_log.report(turns, use, err, problems, out=out)
+    assert t["ctx"] == (5000, 18000, 300, 900, 800) and t["cached_pct"] == 0
+    assert "max_tool=800" in out.getvalue() and "cached=0%" in out.getvalue()
     assert "NOT COMPLETED" in out.getvalue() and "patch_config_key" in out.getvalue()

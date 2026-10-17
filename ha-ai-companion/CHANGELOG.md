@@ -5,6 +5,18 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-10-17
+
+### Changed — token diet (fewer credits per turn)
+- **Stable prompt prefix for provider caching.** The system message and tool list are now identical every turn. The current time and recalled memories go in a `<context>` block on the current user message. Before, they sat in the system message and broke the cache every turn.
+- **Stable history summary.** Long chats are summarized once per 10 new messages and the summary is reused, not regenerated every turn. Only new messages are merged into the old summary. Empty summaries from reasoning models are fixed (`max_tokens` 1500).
+- **No mid-turn pruning.** Old tool results are no longer removed during a turn, which used to break the cache on every step. Instead, large listing, state and log results are capped once at `TOOL_RESULT_MAX_CHARS` (default 12000). File reads are never capped.
+- **Smaller tool schemas.** Tool descriptions are shorter (about 18k → 15k chars per request).
+
+### Added
+- **`reasoning_effort` option** (OpenRouter). Sends `reasoning.effort` (`none` … `xhigh`). Empty = not sent, model default.
+- **Context diagnostics.** A `[CTX]` log line per step shows system, tools, history and turn size. `scripts/analyze_log.py` reports it with the cached-token percentage.
+
 ## [1.19.0] - 2026-10-17
 
 ### Changed — v2 refactor: OpenRouter/GPT support, live progress, restore, smarter context, memory v2

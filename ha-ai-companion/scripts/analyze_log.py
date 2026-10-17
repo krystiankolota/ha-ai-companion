@@ -14,6 +14,8 @@ from datetime import datetime
 
 LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) - ([\w.]+) - (\w+) - (.*)$")
 ITER = re.compile(r"\[ITERATION (\d+)\]")
+CTX = re.compile(r"\[CTX\] iter=\d+ system=(\d+) tools=(\d+) history=(\d+) turn=(\d+) max_tool=(\d+)")
+CACHED = re.compile(r"\(input: (\d+), output: \d+, cached: (\d+)\)")
 
 
 def _ts(s):
@@ -36,7 +38,8 @@ def parse(lines):
         ts, level, msg = _ts(m.group(1)), m.group(3), m.group(4)
         if msg.startswith("Agent streaming user message:"):
             cur = {"start": ts, "end": ts, "msg": msg.split(":", 1)[1].strip()[:70], "model": "", "iters": 0,
-                   "tools": Counter(), "errors": [], "retries": 0, "tokens": "", "max_wait": 0.0, "done": False}
+                   "tools": Counter(), "errors": [], "retries": 0, "tokens": "", "max_wait": 0.0, "done": False,
+                   "ctx": None, "cached_pct": None}
             turns.append(cur)
             wait_start = None
             continue
@@ -65,11 +68,20 @@ def parse(lines):
         if e and level == "WARNING":
             cur["errors"].append(f"{e.group(1)}: {e.group(2)[:90]}")
             tool_err[e.group(1)] += 1
+        x = CTX.search(msg)
+        if x:
+            # Chars, last iteration wins for the fixed parts; turn/max_tool keep the peak.
+            sysc, tools, hist, turn, mt = map(int, x.groups())
+            prev = cur["ctx"] or (0, 0, 0, 0, 0)
+            cur["ctx"] = (sysc, tools, hist, max(prev[3], turn), max(prev[4], mt))
         if msg.startswith("[RETRY]"):
             cur["retries"] += 1
         c = re.search(r"Agent completed after (\d+) iteration\(s\) - Total tokens: (\d+)", msg)
         if c:
             cur.update(done=True, iters=int(c.group(1)), tokens=c.group(2))
+            k = CACHED.search(msg)
+            if k and int(k.group(1)):
+                cur["cached_pct"] = 100 * int(k.group(2)) // int(k.group(1))
     return turns, tool_use, tool_err, problems
 
 
@@ -83,6 +95,12 @@ def report(turns, tool_use, tool_err, problems, last=None, out=sys.stdout):
         w(f"#{i} {t['start']:%m-%d %H:%M} {dur:6.0f}s {state:13} iters={t['iters']:<2} tokens={t['tokens'] or '?':>7} "
           f"retries={t['retries']} slowest_model_wait={t['max_wait']:.0f}s {t['model']}\n")
         w(f"    \"{t['msg']}\"\n")
+        if t["ctx"] or t["cached_pct"] is not None:
+            c = t["ctx"]
+            parts = [f"sys={c[0]} tools={c[1]} history={c[2]} turn_peak={c[3]} max_tool={c[4]} chars"] if c else []
+            if t["cached_pct"] is not None:
+                parts.append(f"cached={t['cached_pct']}%")
+            w("    ctx: " + " ".join(parts) + "\n")
         if t["tools"]:
             w("    tools: " + ", ".join(f"{k}×{v}" for k, v in t["tools"].most_common()) + "\n")
         for e in t["errors"][:5]:

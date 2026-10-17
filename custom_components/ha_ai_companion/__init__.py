@@ -19,6 +19,7 @@ from .const import (
     CONF_MODEL,
     CONF_LOG_LEVEL,
     CONF_TEMPERATURE,
+    CONF_REASONING_EFFORT,
     CONF_SYSTEM_PROMPT_FILE,
     CONF_ENABLE_CACHE_CONTROL,
     CONF_USAGE_TRACKING,
@@ -108,6 +109,8 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     if config.get(CONF_TEMPERATURE):
         os.environ["TEMPERATURE"] = str(config.get(CONF_TEMPERATURE))
+
+    os.environ["REASONING_EFFORT"] = config.get(CONF_REASONING_EFFORT) or ""
 
     if config.get(CONF_SYSTEM_PROMPT_FILE):
         os.environ["SYSTEM_PROMPT_FILE"] = config.get(CONF_SYSTEM_PROMPT_FILE)

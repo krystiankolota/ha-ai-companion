@@ -1,5 +1,5 @@
 name: "HA AI Companion"
-version: "1.19.0"
+version: "1.20.0"
 slug: "ha-ai-companion"
 description: "AI-powered Home Assistant companion — manage config, dashboards, automations and memory via natural language"
 url: "https://github.com/krystiankolota/ha-ai-companion"
@@ -88,6 +88,7 @@ schema:
   reasoning_api_key: str?
   log_level: list(debug|info|warning|error)
   temperature: str?
+  reasoning_effort: list(none|minimal|low|medium|high|xhigh)?
   enable_cache_control: bool
   max_iterations: int?
   usage_tracking: list(stream_options|usage|disabled)
