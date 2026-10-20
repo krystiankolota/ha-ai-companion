@@ -5,6 +5,11 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.5] - 2026-10-21
+
+### Fixed
+- Node-RED node edits (`nodered_patch_nodes`) now show an approval card. The changeset was stored, but the chat never showed it, so there was nothing to accept. Cards now appear for any tool result that returns a changeset, so new write tools cannot be missed.
+
 ## [1.23.4] - 2026-10-17
 
 ### Fixed

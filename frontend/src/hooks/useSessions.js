@@ -45,7 +45,7 @@ function buildDisplayMessages(history) {
       try {
         const result = JSON.parse(msg.content)
         msgs.push({ id: nextId(), type: 'tool_result', functionName: toolName, result })
-        const changeset = changesetFromResult(toolName, result)
+        const changeset = changesetFromResult(result)
         if (changeset) msgs.push({ id: nextId(), type: 'approval', changeset })
       } catch (e) {
         // Malformed tool result — skip rendering

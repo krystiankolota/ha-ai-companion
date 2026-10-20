@@ -378,7 +378,7 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
 
         // Handle all changeset-returning tools — show approval card.
         // ApprovalCard fetches the server-side diff itself.
-        const changesetData = changesetFromResult(data.function, data.result)
+        const changesetData = changesetFromResult(data.result)
         if (changesetData) {
           dispatch({
             type: Actions.ADD_DISPLAY_MESSAGE,
