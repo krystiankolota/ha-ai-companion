@@ -278,6 +278,87 @@ class TestPatchConfigKey:
         assert stats["added"] == 1
         assert stats["removed"] == 1
 
+    @pytest.mark.asyncio
+    async def test_json_string_value_written_as_mapping(self):
+        tools = make_tools({"configuration.yaml": SIMPLE_YAML})
+        stored = {}
+        tools.agent_system = MagicMock()
+        tools.agent_system.store_changeset = lambda d: stored.setdefault("c", d["file_changes"]) and "j1"
+        tools.agent_system.pending_file.return_value = None
+
+        result = await tools.patch_config_key(
+            file_path="configuration.yaml",
+            key_path="logger.logs",
+            new_value='[{"platform": "statistics", "max_age": {"days": 5}}]',
+        )
+        assert result["success"] is True
+        new_content = stored["c"][0]["new_content"]
+        assert "- platform: statistics" in new_content
+        assert "days: 5" in new_content
+        assert '"platform"' not in new_content
+
+    @pytest.mark.asyncio
+    async def test_template_string_value_kept(self):
+        tools = make_tools({"configuration.yaml": SIMPLE_YAML})
+        stored = {}
+        tools.agent_system = MagicMock()
+        tools.agent_system.store_changeset = lambda d: stored.setdefault("c", d["file_changes"]) and "j2"
+        tools.agent_system.pending_file.return_value = None
+
+        await tools.patch_config_key(
+            file_path="configuration.yaml",
+            key_path="logger.default",
+            new_value="{{ states('sensor.x') }}",
+        )
+        assert "{{ states('sensor.x') }}" in stored["c"][0]["new_content"]
+
+
+class TestPlatformsAdded:
+    def test_detects_new_platform_ignores_triggers(self):
+        from src.agents.agent_system import _platforms_added
+        before = "sensor:\n  - platform: template\n"
+        after = (
+            "sensor:\n  - platform: template\n  - platform: statistics\n"
+            "automation:\n  - trigger:\n      - platform: state\n"
+            "homeassistant:\n  packages:\n    p:\n      binary_sensor:\n        - platform: threshold\n"
+        )
+        changes = [{"file_path": "configuration.yaml", "original_content": before, "new_content": after}]
+        assert _platforms_added(changes, ["configuration.yaml"]) == {"statistics", "threshold"}
+        assert _platforms_added(changes, []) == set()
+
+    def test_include_tags_tolerated(self):
+        from src.agents.agent_system import _platforms_added
+        changes = [{"file_path": "configuration.yaml", "original_content": "",
+                    "new_content": "automation: !include automations.yaml\nsensor:\n  - platform: statistics\n"}]
+        assert _platforms_added(changes, ["configuration.yaml"]) == {"statistics"}
+
+    def test_root_list_and_repeat_entries(self):
+        from src.agents.agent_system import _platforms_added
+        changes = [
+            {"file_path": "sensors.yaml", "original_content": "[]\n",
+             "new_content": "- platform: statistics\n  name: a\n"},
+            {"file_path": "configuration.yaml", "original_content": "sensor:\n  - platform: snmp\n",
+             "new_content": "sensor:\n  - platform: snmp\n  - platform: snmp\n"},
+        ]
+        assert _platforms_added(changes, ["sensors.yaml", "configuration.yaml"]) == {"statistics", "snmp"}
+
+
+class TestJsonStringPayloadKept:
+    @pytest.mark.asyncio
+    async def test_literal_json_string_stays_string(self):
+        tools = make_tools({"automations.yaml": "- alias: A\n  action:\n    - service: mqtt.publish\n      data:\n        payload: 'x'\n"})
+        stored = {}
+        tools.agent_system = MagicMock()
+        tools.agent_system.store_changeset = lambda d: stored.setdefault("c", d["file_changes"]) and "j3"
+        tools.agent_system.pending_file.return_value = None
+
+        await tools.patch_config_key(
+            file_path="automations.yaml",
+            key_path="[alias=A].action[0].data.payload",
+            new_value='{"state":"OFF"}',
+        )
+        assert "payload: '{\"state\":\"OFF\"}'" in stored["c"][0]["new_content"]
+
 
 # ---------------------------------------------------------------------------
 # patch_config_block

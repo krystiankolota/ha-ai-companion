@@ -6,11 +6,12 @@ import os
 import re
 import time
 import unicodedata
+from collections import Counter
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
 from ..agents.tools import AgentTools, _compact_states
-from .diffing import content_hash
+from .diffing import content_hash, is_disk_file
 from .changeset_history import ChangesetHistory
 from ..env_utils import env_positive_int
 from ..config import ConfigurationManager
@@ -22,6 +23,39 @@ from dataclasses import dataclass, asdict
 
 
 logger = logging.getLogger(__name__)
+
+_TRIGGER_KEYS = {"trigger", "triggers"}
+
+
+def _yaml_platforms(text: str) -> Counter:
+    """Counts of `platform:` list entries (sensor:, notify:, included list files), not triggers."""
+    try:
+        root = load_tolerant(text) if text else None
+    except Exception:
+        return Counter()
+    found, stack = Counter(), [root]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            stack.extend(v for k, v in node.items() if k not in _TRIGGER_KEYS)
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, dict) and isinstance(item.get("platform"), str):
+                    found[item["platform"]] += 1
+                else:
+                    stack.append(item)
+    return found
+
+
+def _platforms_added(file_changes: List[Dict[str, Any]], applied: List[str]) -> set:
+    """Integration platforms with more entries in applied new content than in the original."""
+    added = set()
+    for fc in file_changes:
+        if fc.get("file_path") not in applied or fc["file_path"].startswith("nodered/"):
+            continue
+        added |= set(_yaml_platforms(fc.get("new_content") or "") - _yaml_platforms(fc.get("original_content") or ""))
+    return added
+
 
 def _parse_suggestion_response(raw: str) -> Any:
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, re.IGNORECASE)
@@ -706,6 +740,7 @@ Generation minimalism (least config that works):
 - Ask in order, stop at the first yes: does it need to exist? native HA feature (sun/time/numeric_state/template trigger, existing helper)? one simple automation? Node-RED only for genuinely complex flows.
 - No speculative helpers or options. Never trim safety conditions, validation, or notifications the user relies on.
 - Validate against current HA syntax (triggers:/conditions:/actions:, trigger: state). Warn about breaking changes.
+- Integration YAML (sensor platforms, template, etc.): use only option names you are sure exist, with every required key. On a config-check error, fix exactly the reported key (HA's "did you mean" is right) in the same structure; do not restructure.
 
 Memory (save_memory / search_memory / delete_memory):
 - Save ONLY durable facts the user stated that HA cannot tell you: preferences, residents and their devices, unclear device purposes, routines, decisions, corrections.
@@ -1299,7 +1334,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                                 )
                             },
                             "new_value": {
-                                "description": "Any JSON value."
+                                "description": "Any JSON value. Pass mappings/lists as JSON objects/arrays, not as quoted strings."
                             },
                             "description": {
                                 "type": "string",
@@ -2248,6 +2283,11 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                             result = {"success": False, "error": str(e)}
                     logger.info(f"[ITERATION {iteration}] Tool '{function_name}' done: success={result.get('success')}, blocked={result.get('blocked', False)}")
 
+                    if result.get("success") and result.get("changeset_id"):
+                        _problems = await self._precheck_changeset(result["changeset_id"])
+                        if _problems:
+                            result["config_check_errors"] = _problems
+
 
                     # Loop detection: track (tool, args) pairs and per-function call counts.
                     _call_key = (function_name, json.dumps(function_args, sort_keys=True))
@@ -2266,6 +2306,12 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     _is_failure = not result.get("success", True) and not result.get("blocked", False)
                     _is_approval_gated = "changeset_id" in result
                     _is_infra_error = "timed out" in result.get("error", "").lower()
+                    if result.get("config_check_errors"):
+                        tool_result_content += (
+                            "\n\n[HA config check of this proposal reports NEW problems (see config_check_errors). "
+                            "Fix exactly the reported keys now with the same tool — your fix merges into this "
+                            "pending change. Do not tell the user it is ready until the check is clean.]"
+                        )
                     if _is_failure and not _is_approval_gated and not _is_infra_error:
                         turn_tool_errors += 1
                         _err_msg = result.get("error", "")
@@ -2966,7 +3012,34 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         if not cs.file_changes:
             del self.pending_changesets[changeset_id]
 
+    async def _precheck_changeset(self, changeset_id: str) -> Optional[str]:
+        """New HA config-check problems the pending changeset would add, or None."""
+        cs = self.pending_changesets.get(changeset_id)
+        if not cs:
+            return None
+        files = [
+            (fc["file_path"], fc["new_content"]) for fc in cs.file_changes
+            if is_disk_file(fc["file_path"]) and fc["file_path"].endswith((".yaml", ".yml"))
+        ]
+        if not files:
+            return None
+        try:
+            problems = await self.config_manager.precheck_files(files)
+        except Exception as e:
+            logger.warning(f"[PRECHECK] Skipped for {changeset_id}: {e}")
+            return None
+        return problems[:2000] if problems else None
+
     async def process_approval(
+        self,
+        change_id: str,
+        approved: bool,
+        validate: bool = True
+    ) -> Dict[str, Any]:
+        async with self.config_manager.write_lock:
+            return await self._process_approval(change_id, approved, validate)
+
+    async def _process_approval(
         self,
         change_id: str,
         approved: bool,
@@ -3164,14 +3237,37 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     reload_error = str(e)
                     logger.warning(f"Failed to reload Home Assistant config: {e}")
 
+            # A YAML platform whose integration has no `<domain>.reload` service (e.g.
+            # `sensor: - platform: statistics` when statistics was only set up via UI)
+            # is silently skipped by reload — only a restart loads it.
+            restart_required = []
+            if reload_success:
+                try:
+                    from ..ha.ha_websocket import get_reloadable_domains_ws
+                    added = _platforms_added(changeset.file_changes, applied_files)
+                    if added:
+                        reloadable = await get_reloadable_domains_ws(
+                            "ws://supervisor/core/websocket", os.getenv('SUPERVISOR_TOKEN'))
+                        restart_required = sorted(added - reloadable)
+                        if restart_required:
+                            logger.info(f"Restart required for new platform(s): {restart_required}")
+                except Exception as e:
+                    logger.warning(f"Could not check reloadable domains: {e}")
+            restart_note = (
+                f". RESTART REQUIRED: new YAML platform(s) {', '.join(restart_required)} cannot be "
+                "reloaded — entities will not exist until Home Assistant restarts. Tell the user."
+                if restart_required else ""
+            )
+
             if failed_files:
                 return {
                     "success": True,
                     "applied": True,
-                    "message": f"Partially applied: {len(applied_files)} succeeded, {len(failed_files)} failed",
+                    "message": f"Partially applied: {len(applied_files)} succeeded, {len(failed_files)} failed" + restart_note,
                     "applied_files": applied_files,
                     "failed_files": failed_files,
                     "config_reloaded": reload_success,
+                    **({"restart_required": restart_required} if restart_required else {}),
                     **({"reload_error": reload_error} if reload_error else {}),
                     **({"validation_warnings": validation_warnings} if validation_warnings else {})
                 }
@@ -3187,12 +3283,14 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                     message += (". WARNING: Home Assistant config check reported problems (an integration "
                                 f"may not load): {validation_warnings[:1500]} — check whether this change "
                                 "caused them and fix it.")
+                message += restart_note
                 return {
                     "success": True,
                     "applied": True,
                     "message": message,
                     "applied_files": applied_files,
                     "config_reloaded": reload_success,
+                    **({"restart_required": restart_required} if restart_required else {}),
                     **({"reload_error": reload_error} if reload_error else {}),
                     **({"validation_warnings": validation_warnings} if validation_warnings else {})
                 }

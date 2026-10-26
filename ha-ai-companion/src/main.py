@@ -22,7 +22,7 @@ from .conversations import ConversationManager
 from .tasks import TaskManager
 from .runs import RunRegistry
 
-version = "1.23.5"
+version = "1.23.6"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()

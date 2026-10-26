@@ -5,6 +5,7 @@ Tool functions that agents can call to interact with configuration files.
 These wrap the ConfigurationManager for safe AI operations.
 """
 import asyncio
+import json
 import logging
 import math
 import os
@@ -1627,6 +1628,19 @@ class AgentTools(NavigationToolsMixin):
                         f"{self._yaml_path_hint(data, segments)}"
                     ),
                 }
+
+            # Models often send mappings/lists as JSON text; writing that verbatim
+            # yields a YAML string where HA expects a mapping. Only decode where the
+            # existing value is structured/empty, so literal JSON payload strings survive.
+            current = parent[final_key]
+            if (isinstance(new_value, str) and new_value.lstrip()[:1] in ("{", "[")
+                    and (current is None or isinstance(current, (dict, list)))):
+                try:
+                    parsed = json.loads(new_value)
+                    if isinstance(parsed, (dict, list)):
+                        new_value = parsed
+                except ValueError:
+                    pass
 
             parent[final_key] = new_value
 

@@ -776,6 +776,17 @@ async def get_lovelace_resources_ws(url: str, token: str) -> List[Dict[str, Any]
         await ws_client.close()
 
 
+async def get_reloadable_domains_ws(url: str, token: str) -> set:
+    """Domains that currently expose a `<domain>.reload` service."""
+    ws_client = HomeAssistantWebSocket(url, token)
+    try:
+        await ws_client.connect()
+        services = await ws_client.call("get_services")
+        return {d for d, svcs in (services or {}).items() if "reload" in (svcs or {})}
+    finally:
+        await ws_client.close()
+
+
 async def reload_homeassistant_config(url: str, token: str, domains: Optional[List[str]] = None) -> None:
     """
     Reload Home Assistant configuration: `<domain>.reload` for each given domain

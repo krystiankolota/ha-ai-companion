@@ -5,6 +5,15 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.6] - 2026-10-27
+
+### Added
+- Config check before approval: when the agent proposes a YAML change, the add-on briefly writes it, runs Home Assistant's config check, and restores the file right away. New problems go back to the agent so it fixes them in the same turn, and the approval card shows them. Originals are kept in a recovery file, so an interrupted check is undone at the next start.
+- After approval, the add-on tells you when a new YAML platform (for example a `statistics` sensor) needs a Home Assistant restart, because reload does not load it.
+
+### Fixed
+- `patch_config_key` no longer writes a JSON mapping or list as a quoted string ("expected a mapping"). Plain strings that only look like JSON stay strings.
+- The agent is told to use the exact option names of the integration and to fix only the key the error names, which cuts down on repeated fix rounds.
 ## [1.23.5] - 2026-10-21
 
 ### Fixed

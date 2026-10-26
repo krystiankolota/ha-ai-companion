@@ -7,5 +7,6 @@ export function changesetFromResult(result) {
     files: result.files,
     reason: result.reason,
     diff_stats: result.diff_stats || [],
+    config_check_errors: result.config_check_errors,
   }
 }

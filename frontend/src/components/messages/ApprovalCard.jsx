@@ -84,6 +84,12 @@ export default function ApprovalCard({ changeset: base }) {
         </div>
       </div>
 
+      {changeset.config_check_errors && (
+        <div className="mb-2 text-xs text-amber-400 whitespace-pre-wrap break-words">
+          ⚠️ HA config check found new problems in this proposal:{'\n'}{changeset.config_check_errors}
+        </div>
+      )}
+
       {/* File list */}
       {changeset.file_changes_detail && changeset.file_changes_detail.length > 0 && (
         <div className="mb-3 space-y-1">
@@ -180,6 +186,11 @@ export default function ApprovalCard({ changeset: base }) {
             <div className="text-xs text-amber-400">
               ⚠️ Files were written, but Home Assistant rejected the reload: {resultData.reload_error}.
               The config on disk may be broken — ask the assistant to inspect and fix it.
+            </div>
+          )}
+          {resultData?.restart_required?.length > 0 && (
+            <div className="text-xs text-amber-400">
+              ⚠️ Restart Home Assistant to load new platform(s): {resultData.restart_required.join(', ')}. Reload does not load them.
             </div>
           )}
           {resultData?.validation_warnings && (

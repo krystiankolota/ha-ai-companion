@@ -8,15 +8,27 @@ Handles all configuration file operations with:
 - Home Assistant validation
 - Rollback on failure
 """
+import asyncio
+import base64
+import hashlib
+import json
 import os
+import re
 import shutil
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from ruamel.yaml import YAML
 
 logger = logging.getLogger(__name__)
+
+_LINE_NO_RE = re.compile(r"line \d+")
+
+
+def _problem_key(line: str) -> str:
+    # Line numbers shift when a proposal adds lines; compare problems without them.
+    return _LINE_NO_RE.sub("line N", line).strip()
 
 
 class ConfigurationError(Exception):
@@ -66,7 +78,7 @@ class ConfigurationManager:
         self.max_backups = max_backups
         self.ha_check_config_cmd = ha_check_config_cmd
         self.hass = hass
-
+        self._write_lock: Optional[asyncio.Lock] = None
         # Initialize ruamel.yaml with comment preservation
         self.yaml = YAML()
         self.yaml.preserve_quotes = True
@@ -75,6 +87,7 @@ class ConfigurationManager:
 
         # Ensure directories exist
         self.backup_dir.mkdir(parents=True, exist_ok=True)
+        self._recover_interrupted_precheck()
 
         logger.info(f"ConfigurationManager initialized:")
         logger.info(f"  Config dir: {self.config_dir}")
@@ -631,6 +644,108 @@ class ConfigurationManager:
         except Exception as e:
             logger.error(f"Validation error: {str(e)}")
             raise ValidationError(f"Validation failed: {str(e)}")
+
+    @property
+    def write_lock(self) -> asyncio.Lock:
+        """Serializes disk writes between approval and the proposal pre-check (created lazily inside the loop)."""
+        if self._write_lock is None:
+            self._write_lock = asyncio.Lock()
+        return self._write_lock
+
+    async def _check_text(self) -> str:
+        """HA config-check problems as text ('' when clean)."""
+        try:
+            return await self.validate_config() or ""
+        except ValidationError as e:
+            return str(e)
+
+    @staticmethod
+    def _replace_bytes(path: Path, data: bytes) -> None:
+        tmp = path.with_name(path.name + ".precheck.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+
+    @property
+    def _precheck_manifest(self) -> Path:
+        return self.backup_dir / "precheck_recovery.json"
+
+    def _restore_precheck_entry(self, entry: Dict[str, Any]) -> None:
+        """Put back one pre-check file, unless it no longer holds exactly what we wrote."""
+        path = self._validate_path(entry["path"])
+        current = path.read_bytes() if path.exists() else None
+        if current is None or hashlib.sha256(current).hexdigest() != entry["written_sha"]:
+            if current != (None if entry["original"] is None else base64.b64decode(entry["original"])):
+                logger.warning(f"[PRECHECK] {entry['path']} changed during pre-check; leaving it as is")
+            return
+        if entry["original"] is None:
+            path.unlink()
+        else:
+            self._replace_bytes(path, base64.b64decode(entry["original"]))
+
+    def _restore_precheck(self, entries: List[Dict[str, Any]]) -> None:
+        """Restore every entry; keep only unresolved entries in the manifest for startup recovery."""
+        failed, errors = [], []
+        for entry in reversed(entries):
+            try:
+                self._restore_precheck_entry(entry)
+            except Exception as e:
+                failed.append(entry)
+                errors.append(f"{entry['path']}: {e}")
+        if failed:
+            self._replace_bytes(self._precheck_manifest, json.dumps(failed).encode("utf-8"))
+            logger.error(f"[PRECHECK] Restore failed, originals kept in {self._precheck_manifest}: {errors}")
+            raise ConfigurationError(f"Pre-check restore failed: {errors}")
+        self._precheck_manifest.unlink(missing_ok=True)
+
+    def _recover_interrupted_precheck(self) -> None:
+        if not self._precheck_manifest.exists():
+            return
+        logger.warning("[PRECHECK] Recovering files from an interrupted pre-check")
+        try:
+            self._restore_precheck(json.loads(self._precheck_manifest.read_text(encoding="utf-8")))
+        except Exception as e:
+            logger.error(f"[PRECHECK] Startup recovery failed: {e}")
+
+    async def precheck_files(self, files: List[Tuple[str, str]]) -> Optional[str]:
+        """
+        Run HA's config check against proposed content before the user approves it.
+
+        Briefly writes each (file_path, new_content), checks, and always restores the
+        original. Originals are first saved to a recovery manifest that startup replays
+        if the process dies mid-check. Returns only problems that the current config does
+        not already have, or None. Skipped (None) when no HA validation backend exists.
+        """
+        if self.hass is None and not os.getenv("SUPERVISOR_TOKEN"):
+            return None
+        async with self.write_lock:
+            self._recover_interrupted_precheck()
+            if self._precheck_manifest.exists():
+                raise ConfigurationError("Unresolved pre-check recovery; skipping pre-check")
+            before = await self._check_text()
+            entries = []
+            for file_path, content in files:
+                path = self._validate_path(file_path)
+                entries.append({
+                    "path": file_path,
+                    "original": base64.b64encode(path.read_bytes()).decode() if path.exists() else None,
+                    "written": content.encode("utf-8"),
+                })
+            manifest = [{"path": e["path"], "original": e["original"],
+                         "written_sha": hashlib.sha256(e["written"]).hexdigest()} for e in entries]
+            self._replace_bytes(self._precheck_manifest, json.dumps(manifest).encode("utf-8"))
+            try:
+                for e in entries:
+                    path = self._validate_path(e["path"])
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    self._replace_bytes(path, e["written"])
+                after = await self._check_text()
+            finally:
+                self._restore_precheck(manifest)
+        known = {_problem_key(line) for line in before.splitlines()}
+        new = [line for line in after.splitlines() if line.strip() and _problem_key(line) not in known]
+        if new:
+            logger.info(f"[PRECHECK] Proposal adds {len(new)} config-check problem(s)")
+        return "\n".join(new) or None
 
     def list_backups(self, file_path: Optional[str] = None) -> List[Dict[str, Any]]:
         """

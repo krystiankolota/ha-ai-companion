@@ -642,6 +642,7 @@ When the AI proposes changes:
 1. **Review the proposal**
    - An approval card appears in the chat
    - Shows changeset ID and number of files
+   - YAML proposals are checked with Home Assistant's config check first. The file is written for a moment and then restored right away. New problems go back to the AI so it can fix them, and the card shows them.
 
 2. **View changes**
    - Click **👁️ View Changes**
@@ -664,6 +665,7 @@ When the AI proposes changes:
 5. **Confirmation**
    - Success message shows applied files
    - Any errors are displayed clearly
+   - A note shows when a new YAML platform needs a Home Assistant restart
 
 ---
 
