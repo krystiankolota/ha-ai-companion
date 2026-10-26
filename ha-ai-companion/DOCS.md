@@ -594,6 +594,13 @@ After installation and configuration:
 
 The chat interface supports natural language requests about your Home Assistant configuration.
 
+#### Attaching images
+
+- Click 📎, paste, or drag and drop up to 3 images into the chat box. For example, attach a screenshot of a dashboard or an error.
+- The browser shrinks each image before sending it.
+- The model sees the images only in the message you send them with. Later messages keep a short note instead, so the images do not cost tokens again and are not stored.
+- The selected model must accept images. If it does not, the chat shows an error.
+
 #### Token Usage and Cost Display
 
 The footer displays cumulative token usage and provider-reported cost for the current session:

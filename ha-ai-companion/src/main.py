@@ -22,7 +22,7 @@ from .conversations import ConversationManager
 from .tasks import TaskManager
 from .runs import RunRegistry
 
-version = "1.23.6"
+version = "1.24.0"
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'info').upper()
@@ -358,11 +358,18 @@ async def chat_websocket(websocket: WebSocket):
                 session_id = data.get("session_id") or f"anon-{id(websocket)}"
                 user_message = data.get("message", "")
                 conversation_history = data.get("conversation_history")
+                images, img_err = _validate_chat_images(data.get("images"))
+                if img_err:
+                    await send_safe({"event": "error", "data": {"error": img_err}})
+                    continue
 
                 ok, err = await run_registry.start(
                     session_id,
-                    stream_factory=lambda um=user_message, ch=conversation_history, sid=session_id: _agent_event_stream(um, ch, sid),
-                    on_finish=_make_run_persister(data.get("session_id"), user_message),
+                    stream_factory=lambda um=user_message, ch=conversation_history, sid=session_id, im=images: _agent_event_stream(um, ch, sid, im),
+                    on_finish=_make_run_persister(
+                        data.get("session_id"),
+                        f"{user_message}\n\n[{len(images)} image(s) were attached to this message]" if images else user_message,
+                    ),
                 )
                 if not ok:
                     await send_safe({"event": "error", "data": {"error": err, "code": "run_active"}})
@@ -402,12 +409,31 @@ async def chat_websocket(websocket: WebSocket):
         await detach()
 
 
-async def _agent_event_stream(user_message: str, conversation_history, session_id=None):
+MAX_CHAT_IMAGES = 3
+MAX_CHAT_IMAGE_CHARS = 2_000_000  # total base64 data-URL size; stays under proxy WS frame limits
+_IMAGE_DATA_URL = re.compile(r"data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+")
+
+
+def _validate_chat_images(images):
+    """Return (images, error). Accept only small base64 PNG/JPEG/WebP/GIF data URLs."""
+    if not images:
+        return None, None
+    if not isinstance(images, list) or len(images) > MAX_CHAT_IMAGES:
+        return None, f"Attach at most {MAX_CHAT_IMAGES} images."
+    if not all(isinstance(i, str) and _IMAGE_DATA_URL.fullmatch(i) for i in images):
+        return None, "Images must be PNG, JPEG, WebP or GIF."
+    if sum(len(i) for i in images) > MAX_CHAT_IMAGE_CHARS:
+        return None, "Images are too large. Attach fewer or smaller images."
+    return images, None
+
+
+async def _agent_event_stream(user_message: str, conversation_history, session_id=None, images=None):
     """Adapt agent_system.chat_stream into normalized {event, data} messages."""
     async for event in agent_system.chat_stream(
         user_message=user_message,
         conversation_history=conversation_history,
         session_id=session_id,
+        images=images,
     ):
         event_data = event.get("data", "{}")
         if isinstance(event_data, str):

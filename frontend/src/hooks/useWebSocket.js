@@ -506,20 +506,20 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
     }
   }, [dispatch, removeLoadingIndicator, addLoadingIndicator, getConversationHistory, onAutoSave, getSessionId])
 
-  const sendMessage = useCallback(async (text) => {
+  const sendMessage = useCallback(async (text, images = []) => {
     if (!text || !text.trim()) return
     resumeGenRef.current++
 
-    // Add user message to display
+    // Add user message to display (thumbnails live only in this view, never in saved history)
     dispatch({
       type: Actions.ADD_DISPLAY_MESSAGE,
-      payload: { type: 'user', content: text },
+      payload: { type: 'user', content: text, images },
     })
 
-    // Add to conversation history
+    // History keeps a placeholder, not the image bytes: later turns would resend them (token cost).
     dispatch({
       type: Actions.PUSH_TO_HISTORY,
-      payload: { role: 'user', content: text },
+      payload: { role: 'user', content: images.length ? `${text}\n\n[${images.length} image(s) were attached to this message]` : text },
     })
 
     // Show loading indicator
@@ -561,6 +561,7 @@ export function useWebSocket(dispatch, getConversationHistory, onAutoSave, getSe
         message: text,
         session_id: sessionId,
         conversation_history: history.slice(0, -1).filter(m => m.role !== 'system_info'),
+        ...(images.length ? { images } : {}),
       }))
 
     } catch (error) {

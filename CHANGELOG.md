@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.0] - 2026-10-27
+
+### Added
+- Attach images to a chat message: use the 📎 button, paste, or drag and drop. You can add up to 3 images. The browser shrinks them before sending to keep cost low. The model sees the images only in the turn you send them. Later turns keep a short "[image(s) were attached]" note, so the images do not cost tokens again and are not stored in the session file.
+- A clear message is shown when the selected model does not accept images.
+- Turns with images always use the main model, even with `COMPLEXITY_ROUTING`.
 ## [1.23.6] - 2026-10-27
 
 ### Added

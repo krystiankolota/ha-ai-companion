@@ -12,7 +12,7 @@ import LoadingMessage from './messages/LoadingMessage'
 function MessageItem({ msg }) {
   switch (msg.type) {
     case 'user':
-      return <UserMessage content={msg.content} />
+      return <UserMessage content={msg.content} images={msg.images} />
     case 'assistant':
       return <AssistantMessage content={msg.content} isStreaming={msg.isStreaming} />
     case 'system':

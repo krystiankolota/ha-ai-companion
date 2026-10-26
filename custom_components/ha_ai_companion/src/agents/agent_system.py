@@ -1102,7 +1102,8 @@ fetch_url rules (CRITICAL — prevents infinite loops):
         self,
         user_message: str,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        images: Optional[List[str]] = None,
     ):
         """
         Process a user message and stream response events in real-time.
@@ -1111,6 +1112,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             user_message: The user's message/request
             conversation_history: Optional list of previous messages
                                 Format: [{"role": "user"|"assistant", "content": "..."}]
+            images: Optional validated image data URLs for this turn only
 
         Yields:
             Dict events with:
@@ -1212,6 +1214,11 @@ fetch_url rules (CRITICAL — prevents infinite loops):
 
             turn_start = len(messages)
             user_msg = {"role": "user", "content": f"{user_message}\n\n<context>\n{dynamic_content}\n</context>"}
+            if images:
+                # Images live only in this turn's request; history keeps the text placeholder.
+                user_msg["content"] = [{"type": "text", "text": user_msg["content"]}] + [
+                    {"type": "image_url", "image_url": {"url": url}} for url in images
+                ]
             messages.append(user_msg)
 
             # Define available tools for function calling with cache control
@@ -1770,6 +1777,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 _complexity_routing_enabled()
                 and not _has_write_intent_flag
                 and len(user_message) < 240
+                and not images
                 and self.suggestion_client is not None
                 and self.suggestion_model != self.config_model
             )
@@ -2475,9 +2483,12 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 }
             else:
                 logger.error(f"Agent streaming error: {e}", exc_info=True)
+                _err = str(e)
+                if images and "image" in _err.lower():
+                    _err = f"The model {turn_model or self.model} does not accept images. Pick a vision-capable model or send text only. ({_err[:200]})"
                 yield {
                     "event": "error",
-                    "data": json.dumps({"error": str(e)})
+                    "data": json.dumps({"error": _err})
                 }
         finally:
             # Every terminal path (success, error, watchdog timeout, stop) counts once.

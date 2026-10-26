@@ -270,3 +270,51 @@ def test_router_slug_records_served_model(agent):
     assert kinds[-1] == "complete"
     assert um.record.call_args.kwargs["model"] == "z-ai/glm-5.3-flash"
     assert um.record_turn.call_args.kwargs["model"] == "z-ai/glm-5.3-flash"
+
+IMG = "data:image/jpeg;base64,QUJD"
+
+
+def _run_images(make, script, images):
+    fake = FakeClient(script)
+
+    async def go():
+        a = make()
+        a.client = a.suggestion_client = a.config_client = fake
+        return [e async for e in a.chat_stream("what is this?", [], session_id="sess-1", images=images)]
+    return fake, asyncio.run(go())
+
+
+def test_images_sent_as_content_parts(agent):
+    fake, events = _run_images(agent, [_final("A dashboard.")], [IMG])
+    assert events[-1]["event"] == "complete", events
+    user = [m for m in fake.requests[0]["messages"] if m.get("role") == "user"][-1]
+    assert user["content"][0]["type"] == "text" and "what is this?" in user["content"][0]["text"]
+    assert user["content"][1] == {"type": "image_url", "image_url": {"url": IMG}}
+
+
+def test_provider_image_rejection_gets_clear_error(agent):
+    class Rejecting(FakeClient):
+        async def _create(self, **params):
+            raise Exception("No endpoints found that support image input")
+    fake = Rejecting([])
+
+    async def go():
+        a = agent()
+        a.client = a.suggestion_client = a.config_client = fake
+        return [e async for e in a.chat_stream("x", [], session_id="s", images=[IMG])]
+    events = asyncio.run(go())
+    err = json.loads(events[-1]["data"])["error"]
+    assert events[-1]["event"] == "error" and "does not accept images" in err
+
+
+def test_image_turn_never_routes_to_fast_model(agent, monkeypatch):
+    monkeypatch.setenv("COMPLEXITY_ROUTING", "on")
+    main, cheap = FakeClient([_final("A dashboard.")]), FakeClient([_final("cheap")])
+
+    async def go():
+        a = agent()
+        a.client = a.config_client = main
+        a.suggestion_client, a.suggestion_model = cheap, "cheap/model"
+        return [e async for e in a.chat_stream("what is this?", [], session_id="s", images=[IMG])]
+    asyncio.run(go())
+    assert main.requests and not cheap.requests

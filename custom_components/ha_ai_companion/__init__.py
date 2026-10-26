@@ -382,7 +382,8 @@ async def _register_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
         _LOGGER.info(f"WebSocket proxy request received for path: {request.match_info.get('path', '')}")
 
-        ws_server = web.WebSocketResponse()
+        # Chat messages may carry attached images (up to ~2 MB) plus history; aiohttp's default is 4 MB.
+        ws_server = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
         await ws_server.prepare(request)
 
         # Extract path from request
@@ -395,7 +396,7 @@ async def _register_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(ws_url) as ws_client:
+                async with session.ws_connect(ws_url, max_msg_size=16 * 1024 * 1024) as ws_client:
                     _LOGGER.info("WebSocket connection established to upstream server")
 
                     # Create bidirectional proxy
