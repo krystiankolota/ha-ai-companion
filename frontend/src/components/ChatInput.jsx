@@ -14,7 +14,8 @@ export default function ChatInput({ onSend, onStop }) {
   const genRef = useRef(0) // bumped on send so late conversions cannot attach to the next message
 
   const addFiles = useCallback(async (files) => {
-    const picked = Array.from(files || []).filter(f => f.type.startsWith('image/'))
+    // Mobile gallery providers can omit MIME metadata; let the image decoder validate it.
+    const picked = Array.from(files || []).filter(Boolean)
     if (!picked.length) return
     setImageError('')
     const gen = genRef.current
@@ -23,8 +24,8 @@ export default function ChatInput({ onSend, onStop }) {
       let url = null
       try {
         url = await shrinkImage(f)
-      } catch {
-        setImageError(`Could not read ${f.name || 'image'}.`)
+      } catch (error) {
+        setImageError(`Could not attach ${f.name || 'image'}. ${error.message}`)
       }
       setPending(n => n - 1)
       if (!url || gen !== genRef.current) continue
@@ -38,7 +39,7 @@ export default function ChatInput({ onSend, onStop }) {
 
   const handlePaste = useCallback((e) => {
     const files = Array.from(e.clipboardData?.items || [])
-      .filter(i => i.kind === 'file' && i.type.startsWith('image/'))
+      .filter(i => i.kind === 'file' && (!i.type || i.type.startsWith('image/')))
       .map(i => i.getAsFile())
     if (files.length) {
       e.preventDefault()
@@ -104,8 +105,8 @@ export default function ChatInput({ onSend, onStop }) {
               >×</button>
             </div>
           ))}
-          {pending > 0 && <span className="text-xs text-gray-400">Preparing image…</span>}
-          {imageError && <span className="text-xs text-amber-400">{imageError}</span>}
+          {pending > 0 && <span role="status" className="text-xs text-gray-400">Preparing image…</span>}
+          {imageError && <span role="alert" className="text-xs text-amber-400">{imageError}</span>}
         </div>
       )}
       <div className="flex gap-3 items-end max-w-4xl mx-auto">
@@ -139,7 +140,8 @@ export default function ChatInput({ onSend, onStop }) {
         ) : (
           <button
             onClick={handleSend}
-            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl px-5 py-3 text-sm font-medium transition-colors"
+            disabled={pending > 0}
+            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl px-5 py-3 text-sm font-medium transition-colors"
           >
             Send
           </button>

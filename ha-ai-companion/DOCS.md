@@ -598,6 +598,7 @@ The chat interface supports natural language requests about your Home Assistant 
 
 - Click 📎, paste, or drag and drop up to 3 images into the chat box. For example, attach a screenshot of a dashboard or an error.
 - The browser shrinks each image before sending it.
+- While an image is being prepared, Send is disabled. A preview appears when it is ready; unreadable images show an error.
 - The model sees the images only in the message you send them with. Later messages keep a short note instead, so the images do not cost tokens again and are not stored.
 - The selected model must accept images. If it does not, the chat shows an error.
 

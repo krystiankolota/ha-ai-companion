@@ -5,6 +5,12 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.1] - 2026-10-29
+
+### Fixed
+- Image attachments from mobile galleries are no longer silently ignored when file-type metadata is missing.
+- Image decoding uses the standard browser image loader for mobile compatibility. Unreadable images show a clear error, and sending is disabled while images are being prepared.
+
 ## [1.24.0] - 2026-10-27
 
 ### Added

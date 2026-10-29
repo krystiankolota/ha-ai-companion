@@ -5,15 +5,25 @@ const MAX_SIDE = 1568 // larger images cost more tokens without helping most vis
 
 // Downscale and re-encode as JPEG to cut upload size and token cost.
 export async function shrinkImage(file) {
-  const bitmap = await createImageBitmap(file)
-  const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height))
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(bitmap.width * scale)
-  canvas.height = Math.round(bitmap.height * scale)
-  const ctx = canvas.getContext('2d')
-  ctx.fillStyle = '#fff' // JPEG has no alpha; transparent PNGs would turn black
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-  bitmap.close?.()
-  return canvas.toDataURL('image/jpeg', 0.85)
+  const url = URL.createObjectURL(file)
+  try {
+    const image = new Image()
+    await new Promise((resolve, reject) => {
+      image.onload = resolve
+      image.onerror = () => reject(new Error('Could not decode a supported image. Try PNG or JPEG.'))
+      image.src = url
+    })
+    const scale = Math.min(1, MAX_SIDE / Math.max(image.naturalWidth, image.naturalHeight))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Image processing is unavailable in this browser.')
+    ctx.fillStyle = '#fff' // JPEG has no alpha; transparent PNGs would turn black
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+    return canvas.toDataURL('image/jpeg', 0.85)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
 }
