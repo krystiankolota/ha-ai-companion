@@ -59,6 +59,22 @@ def test_reordered_keys_inside_item_count_as_unchanged_items():
     assert describe_change("automations.yaml", AUTOS, reordered)["items"] is None
 
 
+def test_unreadable_or_wrong_shaped_yaml_does_not_claim_item_deletion():
+    for invalid in ("- - id: '1'\n- id: '2'\n", "- id: [broken\n", "not a list"):
+        info = describe_change("automations.yaml", AUTOS, invalid)
+        assert info["diff"]
+        assert info["items"] is None
+        assert describe_change("automations.yaml", invalid, AUTOS)["items"] is None
+
+
+def test_empty_list_still_reports_actual_item_deletion():
+    assert describe_change("automations.yaml", AUTOS, "[]\n")["items"] == {
+        "added": [],
+        "changed": [],
+        "removed": ["Morning light (1)", "Evening light (2)"],
+    }
+
+
 def test_virtual_paths_have_no_disk_hash():
     assert is_disk_file("automations.yaml")
     assert not is_disk_file("lovelace.yaml")
@@ -133,6 +149,7 @@ def test_new_file_proposal_conflicts_if_file_appeared(tmp_path, monkeypatch):
         "original_content": "", "base_hash": content_hash(""),
     }])
     assert asyncio.run(agent.process_approval("cs1", True, validate=False))["conflict"] is True
+
 
 def test_apply_rechecks_disk_file_after_slow_nodered_deploy(tmp_path, monkeypatch):
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)

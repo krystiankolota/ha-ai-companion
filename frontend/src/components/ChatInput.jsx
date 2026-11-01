@@ -110,12 +110,13 @@ export default function ChatInput({ onSend, onStop }) {
         </div>
       )}
       <div className="flex gap-3 items-end max-w-4xl mx-auto">
-        <input ref={fileRef} type="file" accept="image/*" multiple className="hidden"
+        {/* Android Companion can discard selections from a multi-file picker. */}
+        <input ref={fileRef} type="file" accept="image/*" className="hidden"
           onChange={e => { addFiles(e.target.files); e.target.value = '' }} />
         <button
           onClick={() => fileRef.current?.click()}
           disabled={isSending}
-          title="Attach images"
+          title="Attach images (up to 3, one at a time)"
           aria-label="Attach images"
           className="flex-shrink-0 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 border border-surface-700 text-gray-300 rounded-xl px-3 py-3 text-sm transition-colors"
         >📎</button>

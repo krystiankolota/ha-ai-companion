@@ -366,6 +366,25 @@ class TestJsonStringPayloadKept:
 
 class TestPatchConfigBlock:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "anchor,new_block,expected",
+        [
+            ("automations[alias=Morning light]", "- alias: Morning light\n", "mapping"),
+            ("[alias=Morning light].trigger", "platform: time\nat: '06:30:00'\n", "list"),
+        ],
+    )
+    async def test_rejects_replacement_with_wrong_container_shape(self, anchor, new_block, expected):
+        tools = make_tools({"automations.yaml": AUTOMATIONS_YAML})
+        tools.agent_system = MagicMock()
+        tools.agent_system.pending_file.return_value = None
+
+        result = await tools.patch_config_block("automations.yaml", anchor, new_block)
+
+        assert result["success"] is False
+        assert expected in result["error"]
+        tools.agent_system.store_changeset.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_replace_top_level_block(self):
         tools = make_tools({"configuration.yaml": SIMPLE_YAML})
         stored = {}

@@ -1734,6 +1734,17 @@ class AgentTools(NavigationToolsMixin):
                     ),
                 }
 
+            for container_type, shape in ((dict, "mapping"), (list, "list")):
+                if isinstance(parent[final_key], container_type) and not isinstance(new_node, container_type):
+                    hint = (
+                        "For one automation, pass its mapping without a leading '- ', or use upsert_automation."
+                        if shape == "mapping" else "Keep the surrounding YAML list for this block."
+                    )
+                    return {
+                        "success": False,
+                        "error": f"new_block must be a YAML {shape} to replace {anchor!r}. {hint}",
+                    }
+
             parent[final_key] = new_node
 
             buf = StringIO()

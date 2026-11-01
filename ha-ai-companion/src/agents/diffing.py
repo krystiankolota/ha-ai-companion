@@ -6,10 +6,14 @@ UI never has to reconstruct the "before" side from chat history.
 import difflib
 import hashlib
 import json
+import logging
 from io import StringIO
 from typing import Any, Dict, List, Optional
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+
+logger = logging.getLogger(__name__)
 
 # Paths that are not plain files under /config — no on-disk hash to compare.
 VIRTUAL_PREFIXES = ("nodered/", "devices/", "entities/", "areas/", "lovelace/")
@@ -48,17 +52,16 @@ def unified_diff(file_path: str, old: Optional[str], new: Optional[str]) -> str:
 
 
 def _load_yaml(text: str) -> Any:
-    try:
-        return YAML(typ="safe").load(StringIO(text)) if text and text.strip() else None
-    except Exception:
-        return None
+    return YAML(typ="safe").load(StringIO(text)) if text and text.strip() else None
 
 
 def _keyed(data: Any) -> Optional[Dict[str, Any]]:
     """Map items to a stable key: list items by id/alias, mappings by key."""
+    if data is None:
+        return {}
     if isinstance(data, dict):
         return {str(k): v for k, v in data.items()}
-    if isinstance(data, list) and data and all(isinstance(i, dict) for i in data):
+    if isinstance(data, list) and all(isinstance(i, dict) for i in data):
         out = {}
         for i, item in enumerate(data):
             key = item.get("id") or item.get("alias") or f"#{i}"
@@ -76,10 +79,15 @@ def items_summary(file_path: str, old: Optional[str], new: Optional[str]) -> Opt
     """Added/changed/removed items for list- or mapping-shaped YAML files."""
     if not file_path.endswith((".yaml", ".yml")) or file_path == "lovelace.yaml" or file_path.startswith("lovelace/"):
         return None
-    old_k, new_k = _keyed(_load_yaml(old or "")), _keyed(_load_yaml(new or ""))
-    if old_k is None and new_k is None:
+    try:
+        old_k, new_k = _keyed(_load_yaml(old or "")), _keyed(_load_yaml(new or ""))
+    except YAMLError:
+        logger.warning("Cannot summarize items in %s: YAML could not be parsed; use the text diff.", file_path)
         return None
-    old_k, new_k = old_k or {}, new_k or {}
+    if old_k is None or new_k is None:
+        if old_k is not None or new_k is not None:
+            logger.warning("Cannot compare item shapes in %s; use the text diff.", file_path)
+        return None
     summary = {
         "added": [_label(k, new_k[k]) for k in new_k if k not in old_k],
         "changed": [_label(k, new_k[k]) for k in new_k if k in old_k and new_k[k] != old_k[k]],
