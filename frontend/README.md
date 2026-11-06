@@ -1,21 +1,20 @@
-# HA AI Companion — Frontend
+# Frontend
 
-React + Vite + Tailwind CSS frontend.
+The frontend uses React, Vite, and Tailwind CSS.
 
 ## Build
 
+From the `frontend` directory, run:
+
 ```bash
-cd frontend
-npm install
+npm ci
 npm run build
 ```
 
-Output: `../custom_components/ha_ai_companion/static/dist/`
+Vite writes the bundle to `ha-ai-companion/static/dist`. The post-build script copies it and the shared backend files to the HACS component.
 
 ## Development
 
-```bash
-npm run dev
-```
+Run `npm run dev` from the `frontend` directory. The Vite configuration does not define an API or WebSocket proxy. Configure one if the development server must reach the backend.
 
-Note: The Vite dev server proxies API calls to the running HA backend. For local dev, you may need to configure the proxy in vite.config.js.
+See the [development guide](../ha-ai-companion/DOCS.md#development) for backend setup and tests.

@@ -1,83 +1,55 @@
-# HA AI Companion — HACS Custom Component
+# HA AI Companion HACS integration
 
-AI-powered Home Assistant companion for managing configuration, dashboards, automations, and more through natural language.
+Use natural language to inspect your Home Assistant configuration and propose changes.
 
-## Installation
+## Install
 
-1. Open **HACS** → Integrations → ⋮ → Custom repositories
-2. Add this repository URL, category: **Integration**
-3. Search for "HA AI Companion" → Download
-4. Restart Home Assistant
-5. **Settings** → Devices & Services → Add Integration → **HA AI Companion**
+1. In HACS, open Integrations and select Custom repositories.
+2. Add `https://github.com/krystiankolota/ha-ai-companion` as an Integration.
+3. Download HA AI Companion and restart Home Assistant.
+4. In Settings, Devices & Services, add the HA AI Companion integration.
+5. Enter your provider API key.
 
-## Configuration options
+The default API URL is `https://openrouter.ai/api/v1` and the default model is `z-ai/glm-5.3-flash`. You can choose another OpenAI-compatible provider that supports tool calls. The optional fast model uses the same API URL and key as the main model.
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `openai_api_url` | API endpoint (any OpenAI-compatible) | Google Gemini |
-| `openai_api_key` | API key | *(required)* |
-| `openai_model` | Model name | `gemini-2.5-flash` |
-| `log_level` | Logging verbosity | `info` |
-| `temperature` | Model temperature (optional) | model default |
-| `system_prompt_file` | Custom system prompt file path relative to `/config` | — |
-| `suggestion_prompt` | Extra instructions added to the system prompt | — |
-| `enable_cache_control` | Prompt caching (Anthropic Claude) | `false` |
-| `usage_tracking` | Token tracking: `stream_options`, `usage`, `disabled` | `stream_options` |
-| `max_iterations` | Max tool-call rounds per turn (0 = default 25) | `0` |
-| `research_model` | Research layer (cheaper) — reading/exploring & suggestions (optional) | main model |
-| `research_api_url` | API URL override for research layer (optional) | main URL |
-| `research_api_key` | API key override for research layer (optional) | main key |
-| `reasoning_model` | Reasoning layer (stronger) — planning & writing changes (optional) | main model |
-| `reasoning_api_url` | API URL override for reasoning layer (optional) | main URL |
-| `reasoning_api_key` | API key override for reasoning layer (optional) | main key |
-| `nodered_url` | Node-RED base URL (e.g. `http://homeassistant:1880`) | — |
-| `nodered_token` | Node-RED API token (if auth is enabled) | — |
-| `nodered_flows_file` | Path to Node-RED flows JSON export relative to `/config` | — |
-| `input_price_per_1m` | USD per 1M input tokens — enables cost display | `0.0` |
-| `output_price_per_1m` | USD per 1M output tokens | `0.0` |
+## Safety
 
-## What the companion can do
+Review every proposed diff. A YAML pre-check can temporarily write and restore files before approval. After approval, a validation or reload error does not guarantee rollback. Keep a separate Home Assistant backup and check the result.
 
-- **Read and edit** any YAML configuration file
-- **Manage dashboards** — list, read, edit, create and delete Lovelace dashboards
-- **Device / entity / area management** — rename, move to areas, update labels
-- **Suggest automations** — based on live entity states; select context sources; live progress stream; never duplicates existing ones
-- **Memory tab** — dedicated tab to browse, inspect and delete AI memory files
-- **Avoid duplicates** — reads Node-RED flows before suggesting new ones
-- **Persistent memory** — remembers your preferences and home layout across sessions
-- **Conversation history** — sessions saved server-side, accessible across page reloads with mobile-friendly sidebar
+Some actions run without an approval card. These include writing to an `input_text` helper and scheduling an AI task.
 
-## Services
+## Home Assistant services
 
-### `ha_ai_companion.chat`
-
-Send a message to the AI agent.
+The `ha_ai_companion.chat` service sends a message to the assistant. Use `response_variable` to receive the reply:
 
 ```yaml
-service: ha_ai_companion.chat
-data:
-  message: "Create a new kitchen dashboard"
-  session_id: ""  # optional, leave empty for current session
+- action: ha_ai_companion.chat
+  data:
+    message: "Which lights are on?"
+  response_variable: ai_reply
 ```
 
-### `ha_ai_companion.approve`
+The response contains `response`, `messages`, `changesets`, and `truncated`. The `response` field holds the final text. The `messages` field holds the assistant and tool messages from this turn. To continue a conversation, append the user message and these messages to `conversation_history`. The `truncated` field is `true` if the provider cuts the reply short.
 
-Approve or reject a proposed change.
+The `changesets` field lists proposed changes. For each proposal, use an authenticated Home Assistant request to `GET /api/ha_ai_companion/api/changeset/<changeset_id>` to inspect the diff. Review it before approval. If you omit `response_variable`, the action still runs but does not return the reply or proposals.
+
+The `ha_ai_companion.approve` service accepts a `change_id` and optional `approved` and `validate` values. Use it only for a proposal you have reviewed. Set `approved: false` to reject it.
+
+Request a response variable to receive the approval result:
 
 ```yaml
-service: ha_ai_companion.approve
-data:
-  change_id: "abc123"
-  approved: true
-  validate: true
+- action: ha_ai_companion.approve
+  data:
+    change_id: "abc123def456"
+    approved: true
+  response_variable: approval_result
 ```
 
-## Data stored
+The result includes `applied_files`, `failed_files`, `config_reloaded`, validation warnings, and any restart requirement. An expired proposal, failed file, validation failure, reload failure, or request error stops the automation. For a partial apply, the error lists files that were written and files that failed. Check the configuration before retrying.
 
-| Location | Contents |
-|----------|----------|
-| `/config/.ai_agent_sessions/` | Conversation session JSON files (max 50) |
-| `/config/.ai_agent_memories/` | Persistent memory markdown files |
+If you do not request a response variable, the action still checks the result. It logs validation warnings, restart requirements, and when Home Assistant did not reload. It still stops on errors.
+
+See the [full guide](https://github.com/krystiankolota/ha-ai-companion/blob/main/ha-ai-companion/DOCS.md) for configuration, data locations, and troubleshooting.
 
 ## License
 

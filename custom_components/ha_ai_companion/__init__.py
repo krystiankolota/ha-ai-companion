@@ -8,7 +8,8 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
 
@@ -212,30 +213,70 @@ async def _start_server(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def _register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Register component services."""
 
-    async def handle_chat(call: ServiceCall) -> dict[str, Any]:
+    async def handle_chat(call: ServiceCall) -> dict[str, Any] | None:
         """Handle chat service call."""
-        import aiohttp
+        from .src import main as backend
 
-        port = hass.data[DOMAIN][entry.entry_id]["port"]
-        message = call.data.get("message")
-        conversation_history = call.data.get("conversation_history", [])
+        if not backend.agent_system:
+            raise HomeAssistantError("The AI agent is not initialized.")
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"http://localhost:{port}/api/chat",
-                json={
-                    "message": message,
-                    "conversation_history": conversation_history
-                }
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    return result
-                else:
-                    _LOGGER.error("Chat request failed: %s", await resp.text())
-                    return {"success": False, "error": "Request failed"}
+        changesets = {}
+        completion = None
+        error = None
 
-    async def handle_approve(call: ServiceCall) -> dict[str, Any]:
+        def chat_error(message: str) -> HomeAssistantError:
+            if changesets:
+                message += f" Pending changesets: {', '.join(changesets)}."
+            return HomeAssistantError(message)
+
+        stream = backend._agent_event_stream(
+            call.data["message"], call.data.get("conversation_history", [])
+        )
+        try:
+            async for event in stream:
+                data = event.get("data")
+                if not isinstance(data, dict):
+                    raise chat_error("Chat returned invalid event data.")
+                if event.get("event") == "tool_result":
+                    result = data.get("result")
+                    if isinstance(result, dict) and result.get("success") and result.get("changeset_id"):
+                        changesets[result["changeset_id"]] = result
+                elif event.get("event") == "complete":
+                    completion = data
+                elif event.get("event") == "error":
+                    error = str(data.get("error") or "The AI agent reported an error.")
+        finally:
+            await stream.aclose()
+
+        if error:
+            raise chat_error(error)
+        if completion is None or not isinstance(completion.get("messages"), list):
+            raise chat_error("Chat ended without a valid completion.")
+
+        messages = completion["messages"]
+        response = next(
+            (
+                message["content"]
+                for message in reversed(messages)
+                if isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and not message.get("tool_calls")
+                and isinstance(message.get("content"), str)
+            ),
+            None,
+        )
+        if response is None:
+            raise chat_error("Chat completed without a final assistant reply.")
+        if not call.return_response:
+            return None
+        return {
+            "response": response,
+            "messages": messages,
+            "changesets": list(changesets.values()),
+            "truncated": bool(completion.get("truncated")),
+        }
+
+    async def handle_approve(call: ServiceCall) -> dict[str, Any] | None:
         """Handle approve service call."""
         import aiohttp
 
@@ -244,21 +285,65 @@ async def _register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
         approved = call.data.get("approved", True)
         validate = call.data.get("validate", True)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"http://localhost:{port}/api/approve",
-                json={
-                    "change_id": change_id,
-                    "approved": approved,
-                    "validate": validate
-                }
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    return result
-                else:
-                    _LOGGER.error("Approve request failed: %s", await resp.text())
-                    return {"success": False, "error": "Request failed"}
+        uncertain = "Changes may have been applied; check the configuration before retrying."
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"http://localhost:{port}/api/approve",
+                    json={
+                        "change_id": change_id,
+                        "approved": approved,
+                        "validate": validate
+                    }
+                ) as resp:
+                    if resp.status != 200:
+                        raise HomeAssistantError(
+                            f"Approval request failed (HTTP {resp.status}): {await resp.text()}. {uncertain}"
+                        )
+                    try:
+                        result = await resp.json()
+                    except (aiohttp.ContentTypeError, ValueError) as err:
+                        raise HomeAssistantError(f"Approval returned invalid JSON. {uncertain}") from err
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise HomeAssistantError(
+                f"Approval request failed: {str(err) or type(err).__name__}. {uncertain}"
+            ) from err
+
+        if not isinstance(result, dict):
+            raise HomeAssistantError(f"Approval returned an invalid result. {uncertain}")
+        applied_files = result.get("applied_files", [])
+        failed_files = result.get("failed_files", [])
+        if not isinstance(applied_files, list) or not isinstance(failed_files, list):
+            raise HomeAssistantError(f"Approval returned invalid file details. {uncertain}")
+        reload_error = result.get("reload_error")
+        if (
+            result.get("success") is not True
+            or result.get("applied") is not approved
+            or failed_files
+            or reload_error
+        ):
+            details = [str(result.get("message") or "Approval did not complete successfully.")]
+            if applied_files:
+                details.append("Already applied: " + ", ".join(map(str, applied_files)))
+            if failed_files:
+                details.append("Failed: " + "; ".join(
+                    f"{item.get('file_path', 'unknown')}: {item.get('error', 'unknown error')}"
+                    if isinstance(item, dict) else str(item)
+                    for item in failed_files
+                ))
+            if reload_error:
+                details.append(f"Reload error: {reload_error}")
+            raise HomeAssistantError(". ".join(details))
+
+        if call.return_response:
+            return result
+        if result.get("validation_warnings"):
+            _LOGGER.warning("Approval validation warnings: %s", result["validation_warnings"])
+        if result.get("restart_required"):
+            _LOGGER.warning("Approval requires a Home Assistant restart: %s", result["restart_required"])
+        if approved and result.get("config_reloaded") is False:
+            _LOGGER.warning("Approval applied changes, but Home Assistant configuration was not reloaded.")
+        return None
 
     # Register services
     hass.services.async_register(
@@ -268,7 +353,8 @@ async def _register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
         schema=vol.Schema({
             vol.Required("message"): cv.string,
             vol.Optional("conversation_history"): list,
-        })
+        }),
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     hass.services.async_register(
@@ -279,7 +365,8 @@ async def _register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
             vol.Required("change_id"): cv.string,
             vol.Optional("approved", default=True): cv.boolean,
             vol.Optional("validate", default=True): cv.boolean,
-        })
+        }),
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
 
