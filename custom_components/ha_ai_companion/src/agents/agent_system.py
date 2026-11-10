@@ -10,7 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
-from ..agents.tools import AgentTools, _compact_states
+from ..agents.tools import AgentTools
 from .diffing import content_hash, is_disk_file
 from .changeset_history import ChangesetHistory
 from ..env_utils import env_positive_int
@@ -194,6 +194,131 @@ def _is_duplicate_suggestion(suggestion: Dict[str, Any], aliases: List[str]) -> 
         if alias_tokens and len(candidate_tokens & alias_tokens) / min(len(candidate_tokens), len(alias_tokens)) >= 0.8:
             return True
     return False
+
+
+def _drop_seen_suggestions(suggestions: List[Any], titles: List[Any]) -> List[Any]:
+    """Remove suggestions whose normalized title the user already dismissed or applied."""
+    seen = {_normalize_suggestion_text(t) for t in titles or [] if isinstance(t, str)} - {""}
+    return [
+        s for s in suggestions
+        if not (isinstance(s, dict) and _normalize_suggestion_text(s.get("title")) in seen)
+    ]
+
+
+def _drop_tail_lines(section: str, cut: int) -> str:
+    """Remove at least `cut` chars from the end of a section, whole lines only; keep the header."""
+    head_end = section.find("\n")
+    if head_end < 0 or cut <= 0:
+        return section
+    end = max(section.rfind("\n", 0, max(0, len(section) - cut) + 1), head_end)
+    dropped = section[end:].count("\n")
+    return section[:end] + f"\n…[{dropped} lines omitted to fit the suggestion context budget]"
+
+
+# Domains the overview lists by name; everything else is only counted.
+_OVERVIEW_LISTED_DOMAINS = (
+    "light", "switch", "climate", "cover", "lock", "fan", "media_player", "vacuum", "water_heater",
+    "humidifier", "valve", "siren", "alarm_control_panel", "person",
+    "input_boolean", "input_select", "input_number", "input_datetime", "input_button",
+)
+_OVERVIEW_LISTED_BINARY = {"motion", "occupancy", "presence", "door", "window", "opening", "garage_door", "moisture", "smoke"}
+_OVERVIEW_ITEMS_PER_LINE = 20
+_OVERVIEW_TOP_COUNTS = 12
+_OVERVIEW_NO_AREA = "No area"
+
+
+def _build_home_overview(states: List[Dict[str, Any]], registry: Optional[List[Dict[str, Any]]] = None,
+                         devices: Optional[List[Dict[str, Any]]] = None,
+                         areas: Optional[List[Dict[str, Any]]] = None, max_chars: int = 24000,
+                         list_all: bool = False) -> str:
+    """Compact area → domain map of the home for suggestions.
+
+    Actionable entities are listed as "name"[entity_id]; the rest are counted by
+    domain/device_class (list_all=True lists every entity, for calls without lookup
+    tools). Whole lines are dropped to fit max_chars (fairly across areas), and each
+    area says how many listed entities it left out, so the model knows what it cannot see.
+    """
+    reg = {e.get("entity_id"): e for e in registry or []}
+    dev_area = {d.get("id"): d.get("area_id") for d in devices or []}
+    area_names = {a.get("area_id"): a.get("name") or a.get("area_id") for a in areas or []}
+    order = {d: i for i, d in enumerate(_OVERVIEW_LISTED_DOMAINS)}
+    groups: Dict[str, Dict[str, Any]] = {}
+    for s in states:
+        eid = s.get("entity_id", "")
+        domain = eid.split(".")[0]
+        attrs = s.get("attributes") or {}
+        dc = attrs.get("device_class")
+        entry = reg.get(eid) or {}
+        aid = entry.get("area_id") or dev_area.get(entry.get("device_id"))
+        area = area_names.get(aid, aid) or _OVERVIEW_NO_AREA
+        bucket = groups.setdefault(area, {"total": 0, "listed": {}, "counted": Counter()})
+        bucket["total"] += 1
+        if domain in order or (domain == "binary_sensor" and dc in _OVERVIEW_LISTED_BINARY):
+            key = f"binary_sensor/{dc}" if domain == "binary_sensor" else domain
+            bucket["listed"].setdefault(key, []).append(f'"{attrs.get("friendly_name") or eid}"[{eid}]')
+        elif list_all:
+            bucket["listed"].setdefault(f"{domain}/{dc}" if dc else domain, []).append(
+                f'"{attrs.get("friendly_name") or eid}"[{eid}]')
+        else:
+            bucket["counted"][f"{domain}/{dc}" if dc else domain] += 1
+
+    header = (
+        f"{len(states)} entities in {sum(1 for a in groups if a != _OVERVIEW_NO_AREA)} areas, "
+        'listed as "name"[entity_id] by domain/device_class.'
+        if list_all else
+        f"{len(states)} entities in {sum(1 for a in groups if a != _OVERVIEW_NO_AREA)} areas. "
+        'Actionable entities are listed as "name"[entity_id]; others are only counted '
+        "(domain/device_class×N) — look those up with search_entities or get_entity_states."
+    )
+
+    def note(area: str, n: int) -> str:
+        if list_all:
+            return f"  +{n} entities not shown"
+        how = f'search_entities(area="{area}")' if area != _OVERVIEW_NO_AREA else "search_entities(domain=...)"
+        return f"  +{n} listed entities not shown: {how}"
+
+    blocks = []
+    budget = max_chars - len(header) - 50  # room for the "+N areas not shown" line
+    for area in sorted(groups, key=lambda a: (a == _OVERVIEW_NO_AREA, a.lower())):
+        g = groups[area]
+        core = [f"### {area} ({g['total']} entities)"]
+        top = g["counted"].most_common()
+        if top:
+            shown = ", ".join(f"{k}×{n}" for k, n in top[:_OVERVIEW_TOP_COUNTS])
+            more = len(top) - _OVERVIEW_TOP_COUNTS
+            core.append(f"counted: {shown}" + (f", +{more} more kinds" if more > 0 else ""))
+        details = []
+        for key in sorted(g["listed"], key=lambda k: (order.get(k.split("/")[0], len(order)), k)):
+            items = g["listed"][key]
+            for i in range(0, len(items), _OVERVIEW_ITEMS_PER_LINE):
+                chunk = items[i:i + _OVERVIEW_ITEMS_PER_LINE]
+                details.append((len(chunk), f"{key}: {', '.join(chunk)}"))
+        cost = sum(len(line) + 1 for line in core) + len(note(area, sum(n for n, _ in details))) + 1
+        if cost > budget:
+            continue
+        budget -= cost
+        blocks.append({"area": area, "core": core, "details": details, "kept": set()})
+
+    # Round-robin: every area gets its first detail line before any gets a second.
+    depth = 0
+    while any(depth < len(b["details"]) for b in blocks):
+        for b in blocks:
+            if depth < len(b["details"]) and len(b["details"][depth][1]) + 1 <= budget:
+                budget -= len(b["details"][depth][1]) + 1
+                b["kept"].add(depth)
+        depth += 1
+
+    lines = [header]
+    for b in blocks:
+        lines.extend(b["core"])
+        lines.extend(line for i, (_, line) in enumerate(b["details"]) if i in b["kept"])
+        missing = sum(n for i, (n, _) in enumerate(b["details"]) if i not in b["kept"])
+        if missing:
+            lines.append(note(b["area"], missing))
+    skipped = len(groups) - len(blocks)
+    if skipped:
+        lines.append(f"+{skipped} areas not shown: search_entities(area=...)")
+    return "\n".join(lines)
 
 
 _NAMING_DOMAINS = {
@@ -3316,6 +3441,79 @@ fetch_url rules (CRITICAL — prevents infinite loops):
                 "message": f"Error applying changes: {str(e)}"
             }
 
+    _SUGGESTION_READ_TOOLS = ("outline_file", "read_range", "search_entities", "list_automations", "get_automation")
+    _SUGGESTION_TOOL_RESULT_CHARS = 12000
+
+    def _suggestion_tool_schemas(self) -> List[Dict[str, Any]]:
+        """Read-only tools the suggestion loop may call. Writes are never offered."""
+        def fn(name, description, properties=None):
+            return {"type": "function", "function": {
+                "name": name, "description": description,
+                "parameters": {"type": "object", "properties": properties or {}, "required": []},
+            }}
+        tools = [t for t in self._nav_tool_schemas() if t["function"]["name"] in self._SUGGESTION_READ_TOOLS]
+        tools.append(fn(
+            "get_entity_states",
+            "Live entity states, one line each. Pass query (semantic, ~40 best matches) or domain_filter.",
+            {"domain_filter": {"type": "string"}, "query": {"type": "string"}},
+        ))
+        tools.append(fn("list_dashboards", "List Lovelace dashboards (title, url_path)."))
+        if os.getenv("NODERED_URL"):
+            tools.append(fn("get_nodered_flows", "All Node-RED flows as JSON (large)."))
+        return tools
+
+    async def _suggestion_tool_loop(self, messages: List[Dict[str, Any]], api_params: Dict[str, Any],
+                                    max_rounds: int, emit) -> str:
+        """Let the suggestion model look things up with read-only tools, then answer.
+
+        Returns the final text (may be empty). The last round sends tool_choice="none"
+        so the model must answer. Tools outside the allowlist are blocked BEFORE
+        dispatch, and invalid tool-call JSON goes back to the model as an error result.
+        """
+        tools = self._suggestion_tool_schemas()
+        allowed = {t["function"]["name"] for t in tools}
+        msgs = list(messages)
+        for round_no in range(max_rounds + 1):
+            final = round_no == max_rounds
+            response = await self._completion_with_usage(
+                self.suggestion_client, "suggestion", phase="suggestions",
+                messages=msgs, tools=tools, tool_choice="none" if final else "auto", **api_params,
+            )
+            message = response.choices[0].message if response.choices else None
+            calls = (getattr(message, "tool_calls", None) or []) if message else []
+            if final or not calls:
+                return ((message.content if message else None) or "").strip()
+            assistant = {"role": "assistant", "content": message.content or "", "tool_calls": [
+                {"id": c.id, "type": "function",
+                 "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
+                for c in calls
+            ]}
+            # Providers with encrypted reasoning reject tool continuations without it.
+            reasoning = (getattr(message, "model_extra", None) or {}).get("reasoning_details")
+            if reasoning:
+                assistant["reasoning_details"] = reasoning
+            msgs.append(assistant)
+            for c in calls:
+                name = c.function.name
+                args, arg_err = self._parse_tool_args(c.function.arguments)
+                if not arg_err and not isinstance(args, dict):
+                    arg_err = "arguments must be a JSON object"
+                if name not in allowed:
+                    result = {"blocked": True, "error": f"{name} is not available here. Use only the read-only tools."}
+                elif arg_err:
+                    result = {"success": False, "error": f"Invalid tool arguments JSON: {arg_err}"}
+                else:
+                    await emit(f"🔎 {name}({', '.join(f'{k}={v!r}' for k, v in args.items())[:120]})")
+                    try:
+                        result = await asyncio.wait_for(self._dispatch_tool(name, args), timeout=60.0)
+                    except Exception as e:
+                        result = {"success": False, "error": f"{type(e).__name__}: {e}"}
+                text = json.dumps(result, ensure_ascii=False, default=str)
+                if len(text) > self._SUGGESTION_TOOL_RESULT_CHARS:
+                    text = text[:self._SUGGESTION_TOOL_RESULT_CHARS] + " …[truncated — narrow the query]"
+                msgs.append({"role": "tool", "tool_call_id": c.id, "content": text})
+        return ""
+
     async def generate_suggestions(self, extra_prompt: Optional[str] = None, resource_types: Optional[List[str]] = None, progress_cb=None) -> Dict[str, Any]:
         """
         Generate automation suggestions by pre-fetching context and making a single AI call.
@@ -3361,19 +3559,30 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             suggestion_resource_files = {"automations": [], "scenes": [], "scripts": []}
 
             suggestion_states: List[Dict[str, Any]] = []
+            mode = (os.getenv("SUGGESTION_MODE", "") or "tools").strip().lower()
+            use_tools = mode != "single" and not _is_text_first_family(self.suggestion_model)
+            max_rounds = env_positive_int("SUGGESTION_MAX_TOOL_ROUNDS", 6)
+            overview_idx, overview_inputs = None, None
+
+            def _overview_section(list_all: bool) -> str:
+                # Without lookup tools the model must see every entity id it may reference.
+                text = _build_home_overview(*overview_inputs, max_chars=60000 if list_all else 24000,
+                                            list_all=list_all)
+                return f"## Home overview (areas → entities)\n{text}"
+
             if 'entity_states' in active_types:
                 await _emit("Fetching entity states…")
                 self.tools.clear_turn_cache()
                 all_states = await self.tools._all_states()
-                suggestion_states = _suggestion_states(all_states, await self.tools._get_all_entities())
-                entity_states_text = _compact_states([
-                    {**s, "friendly_name": (s.get("attributes") or {}).get("friendly_name")}
-                    for s in suggestion_states
-                ])
-                context_sections.append(f"## Current entity states\n{entity_states_text}")
+                registry = await self.tools._get_all_entities()
+                suggestion_states = _suggestion_states(all_states, registry)
+                overview_inputs = (suggestion_states, registry, await self.tools._get_all_devices(),
+                                   await self.tools._get_all_areas())
+                overview_idx = len(context_sections)
+                context_sections.append(_overview_section(list_all=not use_tools))
                 entity_count = len(suggestion_states)
-                context_summary.append({"type": "entity_states", "count": entity_count, "chars": len(entity_states_text)})
-                await _emit(f"✓ Entity states: {entity_count} of {len(all_states)} entities (diagnostic/config/hidden skipped)")
+                context_summary.append({"type": "entity_states", "count": entity_count, "chars": len(context_sections[-1])})
+                await _emit(f"✓ Home overview: {entity_count} of {len(all_states)} entities (diagnostic/config/hidden skipped)")
 
             if 'automations' in active_types:
                 await _emit("Loading automations…")
@@ -3542,28 +3751,34 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             # Hard total-context budget: very large homes (hundreds of entities + full
             # automation YAML) can produce a prompt so big the model returns empty
             # content. Cap the combined section size and trim the largest sections first
-            # (tail-truncate, keeping each section's header) until under budget.
+            # (whole lines from the end, keeping each section's header) until under budget.
             try:
                 ctx_cap = int(os.getenv('SUGGESTION_CTX_CAP', '') or 80000)
             except ValueError:
                 ctx_cap = 80000
-            total_section_chars = sum(len(s) for s in context_sections)
-            if total_section_chars > ctx_cap:
-                over = total_section_chars - ctx_cap
-                # Largest sections first so we shave the worst offenders, not the small ones.
-                for i in sorted(range(len(context_sections)), key=lambda j: len(context_sections[j]), reverse=True):
-                    if over <= 0:
-                        break
-                    s = context_sections[i]
-                    cut = min(over, max(0, len(s) - 200))  # never shrink a section below ~200 chars
-                    if cut > 0:
-                        context_sections[i] = s[: len(s) - cut] + f"\n…[truncated {cut} chars to fit suggestion context budget]"
-                        over -= cut
-                logger.warning(
-                    "Suggestion context %d chars exceeded %d cap — truncated largest sections (nodered/dashboards are opt-in to avoid this)",
-                    total_section_chars, ctx_cap,
-                )
 
+            def _pack(sections: List[str]) -> List[str]:
+                sections = list(sections)
+                total_section_chars = sum(len(s) for s in sections)
+                if total_section_chars > ctx_cap:
+                    over = total_section_chars - ctx_cap
+                    # Largest sections first so we shave the worst offenders, not the small ones.
+                    for i in sorted(range(len(sections)), key=lambda j: len(sections[j]), reverse=True):
+                        if over <= 0:
+                            break
+                        s = sections[i]
+                        cut = min(over, max(0, len(s) - 200))  # never shrink a section below ~200 chars
+                        if cut > 0:
+                            sections[i] = _drop_tail_lines(s, cut)
+                            over -= len(s) - len(sections[i])
+                    logger.warning(
+                        "Suggestion context %d chars exceeded %d cap — truncated largest sections (nodered/dashboards are opt-in to avoid this)",
+                        total_section_chars, ctx_cap,
+                    )
+                return sections
+
+            raw_sections = list(context_sections)
+            context_sections = _pack(raw_sections)
             context = "\n\n".join(context_sections)
 
             # Determine what types of suggestions to generate based on available context.
@@ -3599,52 +3814,44 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             entity_grounding = ""
             if 'entity_states' in active_types:
                 entity_grounding = (
-                    "CRITICAL: Only reference entity_ids that appear in the '## Current entity states' section. "
-                    "Never invent or guess entity_ids. If an entity for a given location or device is not in the list, "
-                    "do not include that entity in the suggestion. "
+                    "CRITICAL: Only reference entity_ids listed in the '## Home overview' section"
+                    "{verified}. Never invent or guess entity_ids. If you cannot find an entity for a "
+                    "location or device, leave it out of the suggestion. "
+                )
+
+            tool_guidance = (
+                "The context is a compact overview, not everything. Use the read-only tools to look up "
+                "entities, states, automations, or files you need (at most "
+                f"{max_rounds} rounds; batch calls in one round). Then return the JSON. "
+            )
+
+            def _system_prompt(with_tools: bool) -> str:
+                return (
+                    "You are a Home Assistant expert. "
+                    f"{suggest_instruction} "
+                    f"{entity_grounding.format(verified=' or confirmed with a tool' if with_tools else '')}"
+                    f"{tool_guidance if with_tools else ''}"
+                    "Return ONLY valid JSON — an object with "
+                    "'suggestions' (array of suggestions). "
+                    "Each suggestion must have: title (string), description (string), "
+                    "type (either 'new' for new automations/scripts or 'improvement' for improving existing ones), "
+                    "category (one of: lighting, climate, security, energy, comfort, other), "
+                    "entities (array of entity_id strings that actually exist), "
+                    "implementation_hint (string with brief YAML hint or description of what to change)."
                 )
 
             messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a Home Assistant expert. "
-                        f"{suggest_instruction} "
-                        f"{entity_grounding}"
-                        "Return ONLY valid JSON — an object with "
-                        "'suggestions' (array of suggestions). "
-                        "Each suggestion must have: title (string), description (string), "
-                        "type (either 'new' for new automations/scripts or 'improvement' for improving existing ones), "
-                        "category (one of: lighting, climate, security, energy, comfort, other), "
-                        "entities (array of entity_id strings that actually exist), "
-                        "implementation_hint (string with brief YAML hint or description of what to change)."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": context
-                }
+                {"role": "system", "content": _system_prompt(use_tools)},
+                {"role": "user", "content": context},
             ]
 
             api_params = {
                 "model": self.suggestion_model,
-                "messages": messages,
                 "stream": False,
                 "temperature": self.suggestion_temperature,
             }
             if self.suggestion_max_tokens:
                 api_params["max_tokens"] = self.suggestion_max_tokens
-
-            # Request usage accounting so this call lands in the Usage tab. OpenRouter
-            # only returns real USD cost + native token counts when asked via extra_body
-            # (a top-level `usage` param is rejected by the OpenAI client). Reuse the
-            # 'suggestion' slot's rejection memory — same client as the in-chat phase.
-            _sugg_tracking = self.suggestion_usage_tracking
-            _is_openrouter = 'openrouter' in str(getattr(self.suggestion_client, 'base_url', '')).lower()
-            if _sugg_tracking != 'disabled' and (_is_openrouter or _sugg_tracking == 'usage'):
-                api_params["extra_body"] = {"usage": {"include": True}}
-            if self._client_usage_ok.get('suggestion') is False:
-                api_params.pop("extra_body", None)
 
             total_chars = sum(c.get("chars", 0) for c in context_summary)
 
@@ -3671,52 +3878,32 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             })
 
             await _emit(f"Calling AI model ({len(context_sections)} context sections, ~{total_chars // 1000}K chars)…")
-            try:
-                response = await self.suggestion_client.chat.completions.create(**api_params)
-                if self._client_usage_ok.get('suggestion') is None and "extra_body" in api_params:
-                    self._client_usage_ok['suggestion'] = True
-            except Exception as api_err:
-                # Provider rejected the usage param — mark slot + retry without it.
-                err_str = str(api_err).lower()
-                if "extra_body" in api_params and ('usage' in err_str or 'extra' in err_str or 'unknown' in err_str):
-                    logger.warning(f"Suggestion API rejected usage param, retrying without: {api_err}")
-                    self._client_usage_ok['suggestion'] = False
-                    api_params.pop("extra_body", None)
-                    response = await self.suggestion_client.chat.completions.create(**api_params)
-                else:
-                    raise
-
-            # Record per-call usage/cost so the Suggestions tab shows up in Usage.
-            if self.usage_manager is not None:
+            raw = ""
+            if use_tools:
                 try:
-                    u = getattr(response, "usage", None)
-                    if u:
-                        in_tok = getattr(u, 'prompt_tokens', 0) or getattr(u, 'input_tokens', 0) or 0
-                        out_tok = getattr(u, 'completion_tokens', 0) or getattr(u, 'output_tokens', 0) or 0
-                        cached = 0
-                        if hasattr(u, 'cached_tokens'):
-                            cached = u.cached_tokens or 0
-                        elif getattr(u, 'prompt_tokens_details', None):
-                            cached = getattr(u.prompt_tokens_details, 'cached_tokens', 0) or 0
-                        self.usage_manager.record(
-                            session_id=None,
-                            phase="suggestions",
-                            model=self.suggestion_model,
-                            iteration=0,
-                            input_tokens=in_tok,
-                            cached_tokens=cached,
-                            output_tokens=out_tok,
-                            cost_usd=getattr(u, 'cost', 0) or 0.0,
-                        )
-                except Exception as _uerr:
-                    logger.debug("suggestions usage record failed: %s", _uerr)
-
-            # content can be None (model hit max_tokens with reasoning-only output,
-            # refused, or truncated on a very large prompt) and choices can be empty
-            # on some providers — guard both before .strip() so a null response gives
-            # a clear error instead of crashing the whole suggestion run.
-            choice = response.choices[0] if response.choices else None
-            raw = ((choice.message.content if choice else None) or "").strip()
+                    raw = await self._suggestion_tool_loop(messages, api_params, max_rounds, _emit)
+                    if _looks_like_pseudo_tool_call(raw):
+                        raw = ""
+                    if raw:
+                        _parse_suggestion_response(raw)
+                except Exception as loop_err:
+                    logger.warning("Suggestion tool loop failed, falling back to single-shot: %s", loop_err)
+                    raw = ""
+                if not raw:
+                    await _emit("Tool lookup gave no usable answer — retrying in single-shot mode…")
+            if not raw:
+                messages[0]["content"] = _system_prompt(False)
+                if use_tools and overview_idx is not None:
+                    raw_sections[overview_idx] = _overview_section(list_all=True)
+                    messages[1]["content"] = "\n\n".join(_pack(raw_sections))
+                response = await self._completion_with_usage(
+                    self.suggestion_client, "suggestion", phase="suggestions",
+                    messages=messages, **api_params,
+                )
+                # content can be None (max_tokens hit with reasoning-only output, refusal,
+                # truncation) and choices can be empty on some providers.
+                choice = response.choices[0] if response.choices else None
+                raw = ((choice.message.content if choice else None) or "").strip()
             if not raw:
                 logger.warning(
                     "Suggestions model returned empty content (model=%s, ~%dK chars in) — likely over the output token limit or truncated",
@@ -3751,6 +3938,7 @@ fetch_url rules (CRITICAL — prevents infinite loops):
             removed_duplicates = before_filter - len(suggestions)
             if removed_duplicates:
                 logger.info("Dropped %d suggestions duplicating existing automation aliases", removed_duplicates)
+            suggestions = _drop_seen_suggestions(suggestions, list(dismissed) + list(applied))
 
             logger.info(f"Generated {len(suggestions)} automation suggestions, {len(naming_issues)} naming issues")
             await _emit(f"✓ Done: {len(suggestions)} suggestion(s), {len(naming_issues)} naming issue(s)")

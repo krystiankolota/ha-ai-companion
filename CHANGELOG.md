@@ -5,6 +5,16 @@ All notable changes to the HA AI Companion add-on will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2026-11-10
+
+### Changed
+- Suggestions now send a compact home overview instead of every entity state. The overview groups entities by area, lists actionable entities by name and id, and counts the rest. On a 1,052-entity home it is about 11K characters instead of about 81K.
+- The suggestion model can look up details with read-only tools (entities, states, automations, config files, dashboards, Node-RED) for up to 6 rounds. Write tools are blocked. Set `SUGGESTION_MODE=single` to use one call without tools (it lists every entity id instead), and `SUGGESTION_MAX_TOOL_ROUNDS` to change the round limit.
+- When the context is still too large, whole lines are dropped and the section says how many lines were left out.
+
+### Fixed
+- Dismissed and applied suggestions are removed from the result even when the model suggests them again.
+
 ## [1.24.3] - 2026-11-06
 
 ### Fixed

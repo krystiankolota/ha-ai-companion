@@ -318,3 +318,134 @@ def test_image_turn_never_routes_to_fast_model(agent, monkeypatch):
         return [e async for e in a.chat_stream("what is this?", [], session_id="s", images=[IMG])]
     asyncio.run(go())
     assert main.requests and not cheap.requests
+
+
+# --- generate_suggestions: bounded read-only tool loop -------------------------
+
+class _JsonClient:
+    """Non-streaming fake: each create() pops (content, tool_calls)."""
+
+    def __init__(self, replies):
+        self.replies, self.requests = list(replies), []
+        self.base_url = "https://openrouter.ai/api/v1"
+        self.chat = NS(completions=NS(create=self._create))
+
+    async def _create(self, **params):
+        self.requests.append(params)
+        content, calls, *extra = self.replies.pop(0)
+        usage = NS(prompt_tokens=50, completion_tokens=5, total_tokens=55, prompt_tokens_details=None)
+        return NS(choices=[NS(message=NS(content=content, tool_calls=calls, model_extra=(extra or [None])[0]), finish_reason="stop")], usage=usage)
+
+
+def _tc(name, args, cid):
+    raw = args if isinstance(args, str) else json.dumps(args)
+    return NS(id=cid, type="function", function=NS(name=name, arguments=raw))
+
+
+SUGG_JSON = json.dumps({"suggestions": [
+    {"title": "Desk lamp at dusk", "type": "new", "entities": ["light.desk"]},
+    {"title": "Old idea", "type": "new"},
+]})
+
+
+def _suggest(make, replies, monkeypatch, tmp_path, model=None):
+    monkeypatch.setenv("HA_CONFIG_DIR", str(tmp_path))
+    (tmp_path / ".ai_agent_suggestions_dismissed.json").write_text('["Old idea"]', encoding="utf-8")
+    fake, calls = _JsonClient(replies), []
+
+    async def go():
+        a = make()
+        a.client = a.suggestion_client = fake
+        if model:
+            a.suggestion_model = model
+
+        async def states():
+            return [{"entity_id": "light.desk", "attributes": {"friendly_name": "Desk"}},
+                    {"entity_id": "sensor.desk_temp", "attributes": {"friendly_name": "Desk temp", "device_class": "temperature"}}]
+
+        async def empty():
+            return []
+
+        async def search_entities(**kw):
+            calls.append(("search_entities", kw))
+            return {"success": True, "entities": '"Desk"[light.desk]=off'}
+
+        async def propose_config_changes(**kw):
+            calls.append(("propose_config_changes", kw))
+            return {"success": True}
+
+        a.tools._all_states = states
+        a.tools._get_all_entities = a.tools._get_all_devices = a.tools._get_all_areas = empty
+        a.tools.search_entities = search_entities
+        a.tools.propose_config_changes = propose_config_changes
+        events = []
+
+        async def cb(e):
+            events.append(e)
+
+        return await a.generate_suggestions(resource_types=["entity_states"], progress_cb=cb), events
+
+    result, events = asyncio.run(go())
+    return fake, result, events, calls
+
+
+def _tool_names(request):
+    return {t["function"]["name"] for t in request.get("tools", [])}
+
+
+def test_suggestions_tool_loop_blocks_writes_survives_bad_args_and_filters_dismissed(agent, monkeypatch, tmp_path):
+    fake, result, events, calls = _suggest(agent, [
+        (None, [_tc("search_entities", {"query": "desk"}, "c1")], {"reasoning_details": [{"type": "reasoning.encrypted", "data": "x"}]}),
+        (None, [_tc("propose_config_changes", {"changes": []}, "c2"),
+                _tc("search_entities", '{"query": "a"b"}', "c3")]),
+        (SUGG_JSON, None),
+    ], monkeypatch, tmp_path)
+
+    assert result["success"], result
+    assert [s["title"] for s in result["suggestions"]] == ["Desk lamp at dusk"]
+    assert calls == [("search_entities", {"query": "desk"})]
+    assert "propose_config_changes" not in _tool_names(fake.requests[0])
+    assert {"search_entities", "get_entity_states", "list_automations"} <= _tool_names(fake.requests[0])
+    tool_msgs = {m["tool_call_id"]: m["content"] for m in fake.requests[2]["messages"] if m.get("role") == "tool"}
+    assert '"blocked": true' in tool_msgs["c2"]
+    assert "invalid" in tool_msgs["c3"].lower()
+    assert "[light.desk]=off" in tool_msgs["c1"]
+    assert any("search_entities" in str(e.get("message", "")) for e in events)
+    replayed = [m for m in fake.requests[1]["messages"] if m.get("role") == "assistant"]
+    assert replayed[0]["reasoning_details"] == [{"type": "reasoning.encrypted", "data": "x"}]
+    assert "sensor.desk_temp" not in fake.requests[0]["messages"][1]["content"]
+
+
+def test_suggestions_tool_loop_forces_answer_after_round_cap(agent, monkeypatch, tmp_path):
+    monkeypatch.setenv("SUGGESTION_MAX_TOOL_ROUNDS", "1")
+    fake, result, _, _ = _suggest(agent, [
+        (None, [_tc("search_entities", {"query": "desk"}, "c1")]),
+        (SUGG_JSON, None),
+    ], monkeypatch, tmp_path)
+
+    assert result["success"], result
+    assert fake.requests[0]["tool_choice"] == "auto"
+    assert fake.requests[1]["tool_choice"] == "none"
+
+
+def test_suggestions_fall_back_to_single_shot_when_loop_returns_no_json(agent, monkeypatch, tmp_path):
+    fake, result, _, _ = _suggest(agent, [
+        ("I would suggest a few things, but let me think.", None),
+        (SUGG_JSON, None),
+    ], monkeypatch, tmp_path)
+
+    assert result["success"], result
+    assert len(fake.requests) == 2
+    assert "tools" in fake.requests[0] and "tools" not in fake.requests[1]
+    assert "[sensor.desk_temp]" in fake.requests[1]["messages"][1]["content"]
+
+
+@pytest.mark.parametrize("env,model", [({"SUGGESTION_MODE": "single"}, None), ({}, "google/gemini-2.5-flash")])
+def test_suggestions_single_shot_for_single_mode_and_text_first_models(agent, monkeypatch, tmp_path, env, model):
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    fake, result, _, _ = _suggest(agent, [(SUGG_JSON, None)], monkeypatch, tmp_path, model=model)
+
+    assert result["success"], result
+    assert len(fake.requests) == 1 and "tools" not in fake.requests[0]
+    assert "[sensor.desk_temp]" in fake.requests[0]["messages"][1]["content"]

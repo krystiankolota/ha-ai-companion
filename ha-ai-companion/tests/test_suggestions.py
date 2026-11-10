@@ -6,8 +6,11 @@ from fastapi.testclient import TestClient
 
 from src import main
 from src.agents.agent_system import (
+    _build_home_overview,
     _build_suggestion_outlines,
     _detect_naming_issues,
+    _drop_seen_suggestions,
+    _drop_tail_lines,
     _is_duplicate_suggestion,
     _parse_suggestion_response,
     _suggestion_states,
@@ -154,3 +157,88 @@ def test_suggestion_states_skip_diagnostic_config_hidden_and_plumbing():
     kept = [s["entity_id"] for s in _suggestion_states(states, registry)]
 
     assert kept == ["light.salon", "sensor.temp"]
+
+def _big_home(n_areas=20, per_area=50):
+    states, registry, areas = [], [], []
+    for a in range(n_areas):
+        aid = f"area_{a}"
+        areas.append({"area_id": aid, "name": f"Room {a}"})
+        for i in range(per_area):
+            domain = ("light", "switch", "sensor", "sensor", "binary_sensor")[i % 5]
+            eid = f"{domain}.room_{a}_{domain}_{i}"
+            dc = {"sensor": "temperature", "binary_sensor": "motion"}.get(domain)
+            attrs = {"friendly_name": f"Room {a} {domain} {i}"}
+            if dc:
+                attrs["device_class"] = dc
+            states.append({"entity_id": eid, "state": "on", "attributes": attrs})
+            registry.append({"entity_id": eid, "area_id": aid})
+    states.append({"entity_id": "light.loose", "state": "off", "attributes": {"friendly_name": "Loose lamp"}})
+    return states, registry, areas
+
+
+def test_home_overview_fits_budget_names_every_area_and_lists_omissions():
+    states, registry, areas = _big_home()
+
+    overview = _build_home_overview(states, registry, [], areas, max_chars=6000)
+
+    assert len(overview) <= 6000
+    for a in range(20):
+        assert f"### Room {a} (" in overview
+    assert "### No area (1 entities)" in overview
+    assert 'search_entities(area="Room 0")' in overview
+    assert "sensor/temperature×20" in overview
+    # Every listed entity line is complete: no "name"[id cut in half.
+    for line in overview.splitlines():
+        assert line.count("[") == line.count("]")
+
+
+def test_home_overview_lists_actionable_entities_with_ids_and_counts_the_rest():
+    states, registry, areas = _big_home(n_areas=1, per_area=10)
+
+    overview = _build_home_overview(states, registry, [], areas)
+
+    assert '"Room 0 light 0"[light.room_0_light_0]' in overview
+    assert '"Room 0 binary_sensor 4"[binary_sensor.room_0_binary_sensor_4]' in overview
+    assert "sensor.room_0_sensor_2" not in overview
+    assert "not shown" not in overview
+
+
+def test_home_overview_uses_device_area_when_entity_has_none():
+    overview = _build_home_overview(
+        [{"entity_id": "light.desk", "attributes": {"friendly_name": "Desk"}}],
+        [{"entity_id": "light.desk", "device_id": "dev1"}],
+        [{"id": "dev1", "area_id": "office"}],
+        [{"area_id": "office", "name": "Office"}],
+    )
+
+    assert "### Office (1 entities)" in overview
+
+
+def test_drop_tail_lines_keeps_header_and_whole_lines():
+    section = "## Header\n" + "\n".join(f"line {i:03d}" for i in range(100))
+
+    trimmed = _drop_tail_lines(section, 300)
+
+    assert trimmed.startswith("## Header\nline 000\n")
+    body = trimmed.splitlines()
+    assert body[-1].startswith("…[") and "lines omitted" in body[-1]
+    assert all(l == "## Header" or l.startswith("line ") and len(l) == 8 for l in body[:-1])
+    assert len(trimmed) <= len(section) - 300 + 60
+
+
+def test_drop_seen_suggestions_matches_normalized_titles():
+    kept = _drop_seen_suggestions(
+        [{"title": "Éclairage du soir"}, {"title": "Night lights"}, "junk"],
+        ["ÉCLAIRAGE du soir!", None],
+    )
+
+    assert kept == [{"title": "Night lights"}, "junk"]
+
+
+def test_home_overview_list_all_lists_counted_entities_too():
+    states, registry, areas = _big_home(n_areas=1, per_area=10)
+
+    overview = _build_home_overview(states, registry, [], areas, list_all=True)
+
+    assert '"Room 0 sensor 2"[sensor.room_0_sensor_2]' in overview
+    assert "counted:" not in overview
